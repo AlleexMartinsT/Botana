@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+secrets/
+token.json
+.venv/
+relatorios/
+xmls_baixados/
+*.iss
+dist/
+build/
+Output/

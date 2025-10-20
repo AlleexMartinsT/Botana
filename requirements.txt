@@ -1,0 +1,35 @@
+# === Google APIs ===
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+google-auth-httplib2==0.2.0
+google-api-python-client==2.149.0
+gspread==6.1.2
+
+# === Utilitários e manipulação ===
+python-dotenv==1.0.1
+pytz==2024.2
+PyPDF2==3.0.1
+pdf2image==1.16.3
+pytesseract==0.3.10
+
+# === Tray Icon ===
+plyer==2.1.0
+
+# === XML, PDF e parsing ===
+lxml==5.3.0
+numpy==2.3.4
+opencv-python==4.12.0.88
+
+# === Sistema e logs ===
+colorama==0.4.6
+tqdm==4.66.5
+logger==1.4
+colorlog==6.6.0
+
+# === Interface (ícone na bandeja) ===
+pystray==0.19.5
+Pillow==10.4.0
+
+# === Outros úteis (segurança e compatibilidade) ===
+requests==2.32.3
+protobuf==5.28.2
