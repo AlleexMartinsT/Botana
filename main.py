@@ -50,37 +50,47 @@ def processar_emails_enviados():
             logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
             continue
 
-        dados_xml = None
-        num_boleto = None
-        sucesso_na_mensagem = False
+        dados_xmls = []
+        boletos = []
 
+        # 🔁 Processa todos os anexos
         for arquivo in arquivos:
-            # 1️⃣ XML
+            nome_arquivo = os.path.basename(arquivo)
+
+            # XML → extrai dados e guarda
             if arquivo.lower().endswith(".xml"):
                 try:
                     dados = extrairDadosXML(arquivo)
                     if not dados:
-                        logger.info("Ignorado (destinatário é o nosso).")
+                        motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
+                        logger.info(f"Ignorado XML (motivo: {motivo}).")
                         os.remove(arquivo)
                         continue
-                    dados_xml = dados
-                    os.remove(arquivo)
+
+                    # 🔍 Ignora vendas à vista
+                    forma_pag = dados.get("formaPagamento", "").strip().lower()
+                    if "vista" in forma_pag or "à vista" in forma_pag or "Venda a vista" in forma_pag:
+                        logger.info("💰 NF %s ignorada (venda à vista).", dados.get("nf"))
+                        os.remove(arquivo)
+                        continue
+
+                    dados_xmls.append(dados)
                 except Exception as e:
                     logger.exception("Erro extraindo XML %s: %s", arquivo, e)
-                    os.remove(arquivo)
-                    continue
+                finally:
+                    try:
+                        os.remove(arquivo)
+                    except OSError:
+                        pass
 
-            # 2️⃣ PDF → só extrai número BLT ou BOLETO do nome do arquivo
+            # PDF → tenta identificar boleto
             elif arquivo.lower().endswith(".pdf"):
-                nome_arquivo = os.path.basename(arquivo)
-                
-                # Aceita separadores comuns antes de BLT ou BOLETO
                 if re.search(r"[_\s-]?(BLT|BOLETO)", nome_arquivo.upper()):
                     match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_arquivo)
                     if match:
-                        num_boleto = match[-1]  # pega o último número, que geralmente é o boleto
+                        num_boleto = match[-1]
+                        boletos.append(num_boleto)
                         logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-
                     else:
                         logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
                 else:
@@ -91,65 +101,65 @@ def processar_emails_enviados():
                 except OSError:
                     pass
 
-
-        # 3️⃣ Se não houver XML, pula
-        if not dados_xml:
+        # ⚠️ Nenhum XML → não processa
+        if not dados_xmls:
             logger.info("Nenhum XML válido encontrado neste e-mail.")
             continue
 
-        # Define planilha
-        cnpj_emit = dados_xml.get("cnpjEmitente")
-        ano = dados_xml.get("anoVencimento")
-        planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
-        if not planilha_id:
-            logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
-            continue
+        # 🔁 Para cada XML encontrado
+        for dados_xml in dados_xmls:
+            cnpj_emit = dados_xml.get("cnpjEmitente")
+            ano = dados_xml.get("anoVencimento")
+            planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
+            if not planilha_id:
+                logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
+                continue
 
-        # Descrição final: nome do destinatário + BLT (se tiver)
-        if num_boleto:
-            dados_xml["descricao"] = f"{dados_xml['destinatario']} BLT {num_boleto} (Bot)"
-        else:
-            if "18471209000107" in cnpj_emit.upper():
-                dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP BR (Bot)"
-            else:
-                dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP CX (Bot)"
+            # 💡 Se houver vários boletos, cria uma linha para cada boleto
+            boletos_para_processar = boletos or [None]
 
-                # Atualiza planilha com tratamento de limite da API
-        for tentativa in range(5):
-            try:
-                creds = Credentials.from_service_account_file(
-                    GOOGLE_CREDENTIALS_SHEETS,
-                    scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                )
-                gc = gspread.authorize(creds)
-
-                # Cache simples de planilhas já abertas
-                if not hasattr(processar_emails_enviados, "_cache"):
-                    processar_emails_enviados._cache = {}
-
-                cache = processar_emails_enviados._cache
-                if planilha_id not in cache:
-                    cache[planilha_id] = gc.open_by_key(planilha_id)
-
-                planilha = cache[planilha_id]
-
-                atualizarPlanilha(planilha, dados_xml)
-                total_processados += 1
-                break  # saiu com sucesso ✅
-
-            except gspread.exceptions.APIError as e:
-                if "429" in str(e):
-                    logger.warning("⚠️ Limite da API atingido (tentativa %d/5). Aguardando 30 segundos...", tentativa + 1)
-                    from sheets_writer import apiCooldown
-                    apiCooldown()
-                    continue  # tenta novamente
+            for num_boleto in boletos_para_processar:
+                if num_boleto:
+                    dados_xml["descricao"] = f"{dados_xml['destinatario']} BLT {num_boleto} (Bot)"
                 else:
-                    logger.exception("Erro ao atualizar planilha: %s", e)
-                    break
+                    if "18471209000107" in cnpj_emit.upper():
+                        dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP BR (Bot)"
+                    else:
+                        dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP CX (Bot)"
 
-            except Exception as e:
-                logger.exception("Falha inesperada ao atualizar planilha: %s", e)
-                break
+                # 🧾 Atualiza planilha com tratamento de limite
+                for tentativa in range(5):
+                    try:
+                        creds = Credentials.from_service_account_file(
+                            GOOGLE_CREDENTIALS_SHEETS,
+                            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                        )
+                        gc = gspread.authorize(creds)
+
+                        if not hasattr(processar_emails_enviados, "_cache"):
+                            processar_emails_enviados._cache = {}
+                        cache = processar_emails_enviados._cache
+
+                        if planilha_id not in cache:
+                            cache[planilha_id] = gc.open_by_key(planilha_id)
+                        planilha = cache[planilha_id]
+
+                        atualizarPlanilha(planilha, dados_xml)
+                        total_processados += 1
+                        break
+                    except gspread.exceptions.APIError as e:
+                        if "429" in str(e):
+                            logger.warning("⚠️ Limite da API atingido (tentativa %d/5). Aguardando 30 segundos...", tentativa + 1)
+                            from sheets_writer import apiCooldown
+                            apiCooldown()
+                            continue
+                        else:
+                            logger.exception("Erro ao atualizar planilha: %s", e)
+                            break
+                    except Exception as e:
+                        logger.exception("Falha inesperada ao atualizar planilha: %s", e)
+                        break
+
 
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
 
@@ -191,7 +201,6 @@ def parar_verificacao():
 def on_quit():
     """Chamado quando o usuário clica em 'Sair' no tray."""
     parar_verificacao()
-    print("[Main] Encerrando Finance Bot...")
     time.sleep(1)
     sys.exit(0)
 

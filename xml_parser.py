@@ -1,5 +1,6 @@
 import xml.etree.ElementTree as ET
-import datetime
+import datetime, re
+from config import CNPJ_MVA, CNPJ_EH
 
 def extrairDadosXML(caminhoXML):
     tree = ET.parse(caminhoXML)
@@ -20,10 +21,23 @@ def extrairDadosXML(caminhoXML):
         "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns)),
         "parcelas": [],
     }
+    nat_op = ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper()
+    
+    # Ignora se o destinatário for nossa própria empresa (pelo CNPJ)
+    cnpj_dest = dest.findtext("ns:CNPJ", default="", namespaces=ns)
+    cnpj_dest = re.sub(r"\D", "", cnpj_dest) 
 
-    # Ignora se o destinatário for nossa própria empresa
-    nome_dest = (dados["destinatario"] or "").upper()
-    if "MVA" in nome_dest or "ELETRONICA HORIZONTE" in nome_dest:
+    forma_pag = str(dados.get("formaPagamento", "")).strip()
+    if (
+        "VISTA" in nat_op
+        or "VENDA A VISTA" in nat_op
+        or forma_pag in ["01", "03", "04"]
+    ):
+        print(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (venda à vista / cartão).")
+        return None
+
+    if cnpj_dest in (re.sub(r"\D", "", CNPJ_MVA), re.sub(r"\D", "", CNPJ_EH)):
+        print(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {cnpj_dest})")
         return None
 
     # Extrai parcelas (duplicatas/faturas)

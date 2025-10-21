@@ -9,3 +9,5 @@ xmls_baixados/
 dist/
 build/
 Output/
+*.spec
+
