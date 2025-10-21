@@ -85,8 +85,13 @@ def processar_emails_enviados():
 
             # PDF → tenta identificar boleto
             elif arquivo.lower().endswith(".pdf"):
-                if re.search(r"[_\s-]?(BLT|BOLETO)", nome_arquivo.upper()):
-                    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_arquivo)
+                nome_upper = nome_arquivo.upper()
+
+                # 🔍 Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
+                padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
+
+                if re.search(padrao_boleto, nome_upper):
+                    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
                     if match:
                         num_boleto = match[-1]
                         boletos.append(num_boleto)
@@ -96,10 +101,20 @@ def processar_emails_enviados():
                 else:
                     logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
 
-                try:
-                    os.remove(arquivo)
-                except OSError:
-                    pass
+                    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_arquivo)
+                    if match:
+                        num_boleto = match[-1]
+                        boletos.append(num_boleto)
+                        logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
+                    else:
+                        logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
+            else:
+                logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
+
+            try:
+                os.remove(arquivo)
+            except OSError:
+                pass
 
         # ⚠️ Nenhum XML → não processa
         if not dados_xmls:
