@@ -3,9 +3,7 @@ import os
 import time
 from datetime import datetime
 
-from config import RELATORIO_DIR, RELATORIO_DIR as relatorioDir
-from config import RELATORIO_DIR as REL_DIR  # redundância para compatibilidade
-from config import RELATORIO_DIR as RELATORIO_DIR_dup
+from config import RELATORIO_DIR as relatorioDir
 
 # Variáveis de relatório de sessão
 eventosProcessados = []
@@ -14,7 +12,7 @@ historicoEventos = set()
 
 RELATORIO_TXT = "relatorio_status.txt"
 RELATORIO_TEMP = "relatorio_temp.tmp"
-ultimoRelatorio = {"Conta Principal": None, "Conta NFe": None}
+ultimoRelatorio = {"Conta Principal": None}
 
 def limparRelatoriosAntigos():
     agora = datetime.now()

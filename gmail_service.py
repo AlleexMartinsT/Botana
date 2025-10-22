@@ -3,12 +3,13 @@ import os
 import base64
 import time
 import logging
-from typing import List, Tuple, Dict, Any
+from typing import List, Dict, Any
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from config import GOOGLE_CREDENTIALS_GMAIL, DOWNLOAD_DIR
+
 
 # Scopes: precisamos de modify para acrescentar labels (e opcionalmente marcar como lido)
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
@@ -54,16 +55,49 @@ def ensure_label(service, label_name: str = LABEL_NAME) -> str:
 
 def buscarMessagesEnviados(service, max_results: int = 15) -> List[Dict[str, Any]]:
     """
-    Busca mensagens 'in:sent has:attachment filename:xml' e retorna a lista de message dicts (id + threadId).
+    Busca threads com mensagens enviadas contendo anexos XML
+    e retorna todas as mensagens (enviadas e recebidas) dentro dessas threads.
     """
     q = "in:sent has:attachment filename:xml"
+
     try:
-        resp = service.users().messages().list(userId="me", q=q, maxResults=max_results).execute()
-        msgs = resp.get("messages", []) or []
-        logger.info("Buscar: %d mensagens encontradas", len(msgs))
-        return msgs
+        resp = service.users().threads().list(userId="me", q=q, maxResults=max_results).execute()
+        threads = resp.get("threads", []) or []
+        results = []
+
+        logger.info("Buscar: %d threads encontradas", len(threads))
+
+        for t in threads:
+            thread_id = t.get("id")
+            try:
+                thread = service.users().threads().get(userId="me", id=thread_id).execute()
+                msgs = thread.get("messages", [])
+                
+                for msg in msgs:
+                    payload = msg.get("payload", {})
+                    parts = payload.get("parts", []) or []
+
+                    # Verifica anexos dentro das partes aninhadas (caso Gmail codifique assim)
+                    for part in parts:
+                        if "parts" in part:
+                            for sub in part["parts"]:
+                                if sub.get("filename", "").lower().endswith(".xml"):
+                                    break
+
+                    results.append({
+                        "id": msg["id"],
+                        "threadId": msg["threadId"],
+                        "labelIds": msg.get("labelIds", []),
+                        "snippet": msg.get("snippet", ""),
+                    })
+
+            except Exception as e:
+                logger.warning("Falha ao obter thread %s: %s", thread_id, e)
+                continue
+        return results
+
     except Exception as e:
-        logger.exception("Erro ao listar mensagens: %s", e)
+        logger.exception("Erro ao listar threads: %s", e)
         return []
 
 def _flatten_parts(parts):
@@ -180,7 +214,6 @@ def _decode_base64_fixed(data: str) -> bytes:
     if missing_padding:
         data += "=" * (4 - missing_padding)
     return base64.b64decode(data, validate=False)
-
 
 def marcar_mensagem_com_label(service, msg_id: str, label_name: str = LABEL_NAME):
     try:

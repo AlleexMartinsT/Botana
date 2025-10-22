@@ -102,7 +102,7 @@ def atualizarPlanilha(planilha, dados):
             empresa = "MVA" if "MVA" in nome_planilha.upper() else "EH"
             nome_aba = nomeAba
             
-            logger.info(f"✅ NF {dados['nf']} registrada em '{nome_planilha}' / aba '{nome_aba}'")
+            logger.info(f"✅ NF {dados['nf']} registrada em '{nome_planilha}' / aba '{nome_aba}'\n")
             break
         except gspread.exceptions.APIError as e:
             if "429" in str(e):

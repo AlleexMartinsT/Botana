@@ -100,7 +100,6 @@ def run_tray(on_quit_callback, start_callback=None):
         """Aciona a verificação manual ou inicia o loop do main."""
         if start_callback:
             # Se o main.py passou um callback, inicia o loop principal
-            print("[Tray] Iniciando loop principal via callback.")
             atualizar_cor("green")
             threading.Thread(target=start_callback, daemon=True).start()
         else:

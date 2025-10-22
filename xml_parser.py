@@ -5,12 +5,14 @@ from config import CNPJ_MVA, CNPJ_EH
 def extrairDadosXML(caminhoXML):
     tree = ET.parse(caminhoXML)
     root = tree.getroot()
+    # Corrige se for um nfeProc (envolve a NFe dentro)
+    if root.tag.endswith("nfeProc"):
+        root = root.find(".//ns:NFe", {"ns": "http://www.portalfiscal.inf.br/nfe"})
     ns = {"ns": "http://www.portalfiscal.inf.br/nfe"}
 
     ide = root.find(".//ns:ide", ns)
     emit = root.find(".//ns:emit", ns)
     dest = root.find(".//ns:dest", ns)
-    fat = root.findall(".//ns:dup", ns)
     total = root.find(".//ns:ICMSTot", ns)
 
     dados = {
@@ -21,11 +23,12 @@ def extrairDadosXML(caminhoXML):
         "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns)),
         "parcelas": [],
     }
+
     nat_op = ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper()
-    
+
     # Ignora se o destinatário for nossa própria empresa (pelo CNPJ)
     cnpj_dest = dest.findtext("ns:CNPJ", default="", namespaces=ns)
-    cnpj_dest = re.sub(r"\D", "", cnpj_dest) 
+    cnpj_dest = re.sub(r"\D", "", cnpj_dest or "")  # 👈 ajuste: evita erro se None
 
     forma_pag = str(dados.get("formaPagamento", "")).strip()
     if (
@@ -40,27 +43,51 @@ def extrairDadosXML(caminhoXML):
         print(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {cnpj_dest})")
         return None
 
-    # Extrai parcelas (duplicatas/faturas)
-    for i, dup in enumerate(fat, start=1):
-        venc = dup.findtext("ns:dVenc", default="", namespaces=ns)
-        try:
-            venc = datetime.datetime.strptime(venc, "%Y-%m-%d").strftime("%d/%m/%Y")
-        except Exception:
-            venc = venc or ""
-        valor = float(dup.findtext("ns:vDup", default="0", namespaces=ns))
-        dados["parcelas"].append({
-            "numero": i,
-            "numParcela": f"{i}ª Parcela",
-            "vencimento": venc,
-            "valor": valor
-        })
+    fat = root.findall(".//ns:dup", ns)
+    fat_fatura = root.find(".//ns:fat", ns)
+
+    if fat:
+        # Caso normal — há duplicatas
+        for i, dup in enumerate(fat, start=1):
+            venc = dup.findtext("ns:dVenc", default="", namespaces=ns)
+            try:
+                venc = datetime.datetime.strptime(venc, "%Y-%m-%d").strftime("%d/%m/%Y")
+            except Exception:
+                venc = venc or ""
+            valor = float(dup.findtext("ns:vDup", default="0", namespaces=ns))
+            dados["parcelas"].append({
+                "numero": i,
+                "numParcela": f"{i}ª Parcela",
+                "vencimento": venc,
+                "valor": valor
+            })
+    else:
+        # ⚠️ Fallback: usa <fat> se não houver <dup>
+        if fat_fatura is not None:
+            valor = float(fat_fatura.findtext("ns:vLiq", default="0", namespaces=ns))
+            emissao = ide.findtext("ns:dhEmi", default="", namespaces=ns)
+            try:
+                data_emissao = datetime.datetime.fromisoformat(emissao.replace("Z", "+00:00"))
+                # Define vencimento como 30 dias após emissão
+                venc = (data_emissao + datetime.timedelta(days=30)).strftime("%d/%m/%Y")
+            except Exception:
+                venc = ""
+            dados["parcelas"].append({
+                "numero": 1,
+                "numParcela": "1ª Parcela",
+                "vencimento": venc,
+                "valor": valor
+            })
 
     # Quantidade total de parcelas
     dados["qtdParcelas"] = len(dados["parcelas"]) or 1
 
     # Ano de vencimento (para definir planilha)
     if dados["parcelas"]:
-        ano = datetime.datetime.strptime(dados["parcelas"][0]["vencimento"], "%d/%m/%Y").year
+        try:
+            ano = datetime.datetime.strptime(dados["parcelas"][0]["vencimento"], "%d/%m/%Y").year
+        except Exception:
+            ano = datetime.datetime.now().year  # 👈 ajuste: se vencimento vier vazio
     else:
         ano = datetime.datetime.now().year
     dados["anoVencimento"] = str(ano)
@@ -81,4 +108,5 @@ def extrairDadosXML(caminhoXML):
         dados["vencimento"] = ""
         dados["numParcela"] = "1ª Parcela"
         dados["valorParcela"] = dados["valorTotal"]
+
     return dados

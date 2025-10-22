@@ -1,13 +1,13 @@
-import os, re
-import time
-import gspread
-import threading
+import os, re, time, gspread, threading
 from tray_icon import *
+from datetime import datetime
 from google.oauth2.service_account import Credentials
 from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, GOOGLE_CREDENTIALS_SHEETS
 from gmail_service import getGmailService, buscarMessagesEnviados, baixar_anexos_de_mensagem
+from reporter import escreverRelatorio, registrarEvento, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
+from gmail_service import marcar_mensagem_com_label
 import colorlog, logging
 
 stop_event = threading.Event()  # usado para parar o loop com segurança
@@ -34,6 +34,9 @@ def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
         return PLANILHAS["EH"].get(ano)
     return None
 
+def _now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 def processar_emails_enviados():
     service = getGmailService()
     msgs = buscarMessagesEnviados(service, max_results=100)
@@ -42,9 +45,11 @@ def processar_emails_enviados():
         return
 
     total_processados = 0
+
     for m in msgs:
         msg_id = m.get("id")
         logger.info("📧 Abrindo mensagem ID: %s", msg_id)
+
         arquivos = baixar_anexos_de_mensagem(service, msg_id)
         if not arquivos:
             logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
@@ -53,84 +58,113 @@ def processar_emails_enviados():
         dados_xmls = []
         boletos = []
 
-        # 🔁 Processa todos os anexos
+        # 🔁 Processa todos os anexos baixados
         for arquivo in arquivos:
             nome_arquivo = os.path.basename(arquivo)
 
-            # XML → extrai dados e guarda
-            if arquivo.lower().endswith(".xml"):
-                try:
-                    dados = extrairDadosXML(arquivo)
-                    if not dados:
-                        motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
-                        logger.info(f"Ignorado XML (motivo: {motivo}).")
-                        os.remove(arquivo)
-                        continue
-
-                    # 🔍 Ignora vendas à vista
-                    forma_pag = dados.get("formaPagamento", "").strip().lower()
-                    if "vista" in forma_pag or "à vista" in forma_pag or "Venda a vista" in forma_pag:
-                        logger.info("💰 NF %s ignorada (venda à vista).", dados.get("nf"))
-                        os.remove(arquivo)
-                        continue
-
-                    dados_xmls.append(dados)
-                except Exception as e:
-                    logger.exception("Erro extraindo XML %s: %s", arquivo, e)
-                finally:
+            try:
+                # =============================
+                # 📄 XML → extrai dados
+                # =============================
+                if arquivo.lower().endswith(".xml"):
                     try:
-                        os.remove(arquivo)
-                    except OSError:
-                        pass
+                        dados = extrairDadosXML(arquivo)
+                        if not dados:
+                            motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
+                            logger.info(f"Ignorado XML (motivo: {motivo}).")
+                            escreverRelatorio(f"{_now()} - ⚠️ XML {nome_arquivo} ignorado (motivo: {motivo})")
+                            continue
 
-            # PDF → tenta identificar boleto
-            elif arquivo.lower().endswith(".pdf"):
-                nome_upper = nome_arquivo.upper()
+                        # 🔍 Ignora vendas à vista
+                        forma_pag = dados.get("formaPagamento", "").strip().lower()
+                        if "vista" in forma_pag or "à vista" in forma_pag or "venda a vista" in forma_pag:
+                            logger.info("💰 NF %s ignorada (venda à vista).", dados.get("nf"))
+                            escreverRelatorio(f"{_now()} - 💰 NF {dados.get('nf')} ignorada (venda à vista).")
+                            continue
 
-                # 🔍 Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
-                padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
+                        dados_xmls.append(dados)
 
-                if re.search(padrao_boleto, nome_upper):
-                    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
-                    if match:
-                        num_boleto = match[-1]
-                        boletos.append(num_boleto)
-                        logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-                    else:
-                        logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
+                    except Exception as e:
+                        escreverRelatorio(f"{_now()} - ❌ Erro extraindo XML {nome_arquivo}: {e}")
+                        logger.exception("Erro extraindo XML %s: %s", arquivo, e)
+
+                # =============================
+                # 📑 PDF → tenta identificar boleto
+                # =============================
+                elif arquivo.lower().endswith(".pdf"):
+                    nome_upper = nome_arquivo.upper()
+
+                    # 🔍 Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
+                    padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
+
+                    if re.search(padrao_boleto, nome_upper):
+                        match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
+                        if match:
+                            num_boleto = match[-1]
+                            boletos.append(num_boleto)
+                            logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
+                        else:
+                            logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
+                    elif arquivo.lower().endswith(".pdf"):
+                        nome_upper = nome_arquivo.upper()
+
+                        # 🔍 Palavras que indicam boleto (considera erros comuns)
+                        padrao_boleto = r"\b(BOLET[OA]?|BOLTO|BOLETOO|BOLETT?|BLT)\b"
+
+                        # Só tenta identificar número se o nome realmente tiver algo próximo de "boleto"
+                        if re.search(padrao_boleto, nome_upper):
+                            match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
+                            if match:
+                                num_boleto = match[-1]
+                                boletos.append(num_boleto)
+                                logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
+                            else:
+                                logger.info("📎 Possível boleto sem número identificado: %s", nome_arquivo)
+                        else:
+                            logger.info("📄 PDF ignorado (não parece boleto): %s", nome_arquivo)
+
                 else:
                     logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
 
-                    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_arquivo)
-                    if match:
-                        num_boleto = match[-1]
-                        boletos.append(num_boleto)
-                        logger.info("🔢 Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-                    else:
-                        logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
-            else:
-                logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
+            finally:
+                # 🧹 Remove sempre o anexo local (independente do tipo)
+                try:
+                    os.remove(arquivo)
+                    logger.debug(f"🧹 Anexo removido: {arquivo}")
+                except FileNotFoundError:
+                    pass
+                except Exception as e:
+                    logger.warning(f"⚠️ Falha ao remover {arquivo}: {e}")
 
-            try:
-                os.remove(arquivo)
-            except OSError:
-                pass
+        # =============================
+        # 🏷️ Marca o e-mail como processado
+        # =============================
+        try:
+            marcar_mensagem_com_label(service, msg_id)
+            logger.info("🏷️ E-mail %s marcado com 'XML Processado Botana'", msg_id)
+        except Exception as e:
+            logger.exception("Falha ao aplicar rótulo: %s", e)
+            
+            
 
-        # ⚠️ Nenhum XML → não processa
+        # ⚠️ Nenhum XML → pula este e-mail
         if not dados_xmls:
             logger.info("Nenhum XML válido encontrado neste e-mail.")
             continue
 
-        # 🔁 Para cada XML encontrado
+        # =============================
+        # 🧾 Atualiza planilhas
+        # =============================
         for dados_xml in dados_xmls:
             cnpj_emit = dados_xml.get("cnpjEmitente")
             ano = dados_xml.get("anoVencimento")
             planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
+
             if not planilha_id:
                 logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
                 continue
 
-            # 💡 Se houver vários boletos, cria uma linha para cada boleto
+            # 💡 Cria uma linha para cada boleto (ou uma só se não houver boleto)
             boletos_para_processar = boletos or [None]
 
             for num_boleto in boletos_para_processar:
@@ -142,7 +176,7 @@ def processar_emails_enviados():
                     else:
                         dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP CX (Bot)"
 
-                # 🧾 Atualiza planilha com tratamento de limite
+                # 🔁 Tenta atualizar com limite da API
                 for tentativa in range(5):
                     try:
                         creds = Credentials.from_service_account_file(
@@ -153,15 +187,17 @@ def processar_emails_enviados():
 
                         if not hasattr(processar_emails_enviados, "_cache"):
                             processar_emails_enviados._cache = {}
+
                         cache = processar_emails_enviados._cache
 
                         if planilha_id not in cache:
                             cache[planilha_id] = gc.open_by_key(planilha_id)
-                        planilha = cache[planilha_id]
 
+                        planilha = cache[planilha_id]
                         atualizarPlanilha(planilha, dados_xml)
                         total_processados += 1
                         break
+
                     except gspread.exceptions.APIError as e:
                         if "429" in str(e):
                             logger.warning("⚠️ Limite da API atingido (tentativa %d/5). Aguardando 30 segundos...", tentativa + 1)
@@ -175,11 +211,9 @@ def processar_emails_enviados():
                         logger.exception("Falha inesperada ao atualizar planilha: %s", e)
                         break
 
-
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
 
 def main():
-    logger.info("🚀 Inicializando bot de envios (monitorando 'Sent')...")
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
     while True:
@@ -197,7 +231,6 @@ def iniciar_verificacao():
         stop_event.clear()
         t = threading.Thread(target=main, daemon=True)
         t.start()
-        print("[Main] Loop principal iniciado.")
     else:
         print("[Main] Loop já está em execução.")
 
