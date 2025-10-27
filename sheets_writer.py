@@ -15,7 +15,7 @@ except locale.Error:
 logger = logging.getLogger("bot.sheets_writer")
 
 def apiCooldown():
-    print("⏳ Limite da API atingido, aguardando 30 segundos...")
+    logger.warning("⏳ Limite da API atingido, aguardando 30 segundos...")
     time.sleep(30)
 
 def atualizarPlanilha(planilha, dados):
@@ -26,13 +26,13 @@ def atualizarPlanilha(planilha, dados):
 
     vencimento = dados.get("vencimento")
     if not vencimento:
-        print("⚠️ XML sem data de vencimento — ignorado.")
+        logger.warning("⚠️ XML sem data de vencimento — ignorado.")
         return
 
     try:
         dataVenc = datetime.strptime(vencimento, "%Y-%m-%d")
     except ValueError:
-        print(f"⚠️ Data inválida no XML: {vencimento}")
+        logger.warning(f"⚠️ Data inválida no XML: {vencimento}")
         return
 
     # Exemplo: "Nov/2025"
@@ -42,7 +42,7 @@ def atualizarPlanilha(planilha, dados):
     try:
         aba = planilha.worksheet(nomeAba)
     except gspread.exceptions.WorksheetNotFound:
-        print(f"🆕 Criando nova aba: {nomeAba}")
+        logger.warning(f"🆕 Criando nova aba: {nomeAba}")
         aba = planilha.add_worksheet(title=nomeAba, rows="100", cols="9")
         aba.append_row([
             "Vencimento", "Descrição", "NF", "Valor Total", "Qtd Parcelas",
@@ -69,7 +69,7 @@ def atualizarPlanilha(planilha, dados):
     )
 
     if duplicado:
-        print(f"⚠️ NF {dados['nf']} ({vencimento}) já existe em {nomeAba}.")
+        logger.warning(f"⚠️ NF {dados['nf']} ({vencimento}) já existe em {nomeAba}.")
         return
 
     nome_planilha = planilha.title.upper()
