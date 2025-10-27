@@ -2,6 +2,31 @@ import xml.etree.ElementTree as ET
 import datetime, re
 from config import CNPJ_MVA, CNPJ_EH
 
+def _normalize_date_to_ddmmyyyy(date_raw):
+    """Tenta normalizar várias entradas de data para 'DD/MM/YYYY'. Retorna '' se falhar."""
+    if not date_raw:
+        return ""
+    # já no formato DD/MM/YYYY?
+    candidates = [
+        date_raw.strip(),
+        date_raw.strip().replace(".", "/"),
+        date_raw.strip().replace("-", "/")
+    ]
+    formats = ("%d/%m/%Y", "%Y-%m-%d", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S", "%d-%m-%Y", "%d.%m.%Y")
+    for cand in candidates:
+        for fmt in formats:
+            try:
+                dt = datetime.datetime.strptime(cand, fmt)
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                continue
+    # última tentativa com fromisoformat
+    try:
+        dt = datetime.datetime.fromisoformat(date_raw.replace("Z", "+00:00"))
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
 def extrairDadosXML(caminhoXML):
     tree = ET.parse(caminhoXML)
     root = tree.getroot()
@@ -18,9 +43,9 @@ def extrairDadosXML(caminhoXML):
     dados = {
         "nf": ide.findtext("ns:nNF", default="", namespaces=ns),
         "emitente": emit.findtext("ns:xNome", default="", namespaces=ns),
-        "cnpjEmitente": emit.findtext("ns:CNPJ", default="", namespaces=ns),
+        "cnpjEmitente": re.sub(r"\D", "", emit.findtext("ns:CNPJ", default="", namespaces=ns) or ""),
         "destinatario": dest.findtext("ns:xNome", default="", namespaces=ns),
-        "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns)),
+        "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns) or 0),
         "parcelas": [],
     }
 
@@ -49,29 +74,29 @@ def extrairDadosXML(caminhoXML):
     if fat:
         # Caso normal — há duplicatas
         for i, dup in enumerate(fat, start=1):
-            venc = dup.findtext("ns:dVenc", default="", namespaces=ns)
-            try:
-                venc = datetime.datetime.strptime(venc, "%Y-%m-%d").strftime("%d/%m/%Y")
-            except Exception:
-                venc = venc or ""
-            valor = float(dup.findtext("ns:vDup", default="0", namespaces=ns))
+            venc_raw = dup.findtext("ns:dVenc", default="", namespaces=ns)
+            venc = _normalize_date_to_ddmmyyyy(venc_raw)
+            valor = float(dup.findtext("ns:vDup", default="0", namespaces=ns) or 0)
             dados["parcelas"].append({
                 "numero": i,
                 "numParcela": f"{i}ª Parcela",
-                "vencimento": venc,
+                "vencimento": venc,   # agora em DD/MM/YYYY
                 "valor": valor
             })
     else:
         # ⚠️ Fallback: usa <fat> se não houver <dup>
         if fat_fatura is not None:
-            valor = float(fat_fatura.findtext("ns:vLiq", default="0", namespaces=ns))
+            valor = float(fat_fatura.findtext("ns:vLiq", default="0", namespaces=ns) or 0)
             emissao = ide.findtext("ns:dhEmi", default="", namespaces=ns)
+            venc = ""
             try:
                 data_emissao = datetime.datetime.fromisoformat(emissao.replace("Z", "+00:00"))
-                # Define vencimento como 30 dias após emissão
                 venc = (data_emissao + datetime.timedelta(days=30)).strftime("%d/%m/%Y")
             except Exception:
-                venc = ""
+                # tenta normalizar emissao mesmo que não tenha Z
+                venc = _normalize_date_to_ddmmyyyy(emissao)
+                if not venc:
+                    venc = ""
             dados["parcelas"].append({
                 "numero": 1,
                 "numParcela": "1ª Parcela",
@@ -82,26 +107,23 @@ def extrairDadosXML(caminhoXML):
     # Quantidade total de parcelas
     dados["qtdParcelas"] = len(dados["parcelas"]) or 1
 
-    # Ano de vencimento (para definir planilha)
+    # Ano de vencimento (para definir planilha) — pega o ano da primeira parcela quando possível
     if dados["parcelas"]:
         try:
             ano = datetime.datetime.strptime(dados["parcelas"][0]["vencimento"], "%d/%m/%Y").year
         except Exception:
-            ano = datetime.datetime.now().year  # 👈 ajuste: se vencimento vier vazio
+            ano = datetime.datetime.now().year
     else:
         ano = datetime.datetime.now().year
     dados["anoVencimento"] = str(ano)
 
-    # Descrição = nome do destinatário + número da NF
+    # Descrição default = nome do destinatário + número da NF
     dados["descricao"] = f"{dados['destinatario']} BLT {dados['nf']}"
 
-    # Campos simplificados para preenchimento na planilha
+    # Campos simplificados para preenchimento na planilha:
     if dados["parcelas"]:
         p = dados["parcelas"][0]
-        try:
-            dados["vencimento"] = datetime.datetime.strptime(p["vencimento"], "%d/%m/%Y").strftime("%Y-%m-%d")
-        except Exception:
-            dados["vencimento"] = ""
+        dados["vencimento"] = p["vencimento"]          # em DD/MM/YYYY
         dados["numParcela"] = p["numParcela"]
         dados["valorParcela"] = p["valor"]
     else:

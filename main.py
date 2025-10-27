@@ -149,7 +149,7 @@ def processar_emails_enviados():
 
         # ⚠️ Nenhum XML → pula este e-mail
         if not dados_xmls:
-            logger.info("Nenhum XML válido encontrado neste e-mail.")
+            logger.info("Nenhum XML válido encontrado neste e-mail.\n")
             continue
 
         # =============================
@@ -164,19 +164,44 @@ def processar_emails_enviados():
                 logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
                 continue
 
-            # 💡 Cria uma linha para cada boleto (ou uma só se não houver boleto)
-            boletos_para_processar = boletos or [None]
+                        # 🔁 Itera sobre todas as parcelas — MAPEAMENTO correto de boletos → parcelas
+            parcelas = dados_xml.get("parcelas", [])
+            n_parcelas = len(parcelas)
+            n_boletos = len(boletos)
 
-            for num_boleto in boletos_para_processar:
+            # monta lista de boletos por parcela (mesmo tamanho de parcelas)
+            if n_parcelas == 0:
+                continue  # nada a fazer
+
+            if n_boletos == 0:
+                boletos_map = [None] * n_parcelas
+            else:
+                # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa só os primeiros N
+                boletos_map = [boletos[i] if i < n_boletos else None for i in range(n_parcelas)]
+                if n_boletos > n_parcelas:
+                    logger.info("⚠️ Mais boletos (%d) que parcelas (%d). Sobraram: %s", n_boletos, n_parcelas, boletos[n_parcelas:])
+
+            # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
+            for idx, parcela in enumerate(parcelas):
+                num_boleto = boletos_map[idx]
+                dados_parcela = dados_xml.copy()
+                dados_parcela.update({
+                    "vencimento": parcela["vencimento"],
+                    "numParcela": parcela["numParcela"],
+                    "valorParcela": parcela["valor"],
+                    "boleto": num_boleto  # adiciona campo explícito (opcional)
+                })
+
+                # Ajusta descrição com o boleto mapeado (se houver)
                 if num_boleto:
-                    dados_xml["descricao"] = f"{dados_xml['destinatario']} BLT {num_boleto} (Bot)"
+                    dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
                 else:
                     if "18471209000107" in cnpj_emit.upper():
-                        dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP BR (Bot)"
+                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP BR (Bot)"
                     else:
-                        dados_xml["descricao"] = f"{dados_xml['destinatario']} DEP CX (Bot)"
+                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
 
-                # 🔁 Tenta atualizar com limite da API
+                # 🔁 Tenta atualizar planilha com retry (mantive seu loop de retry)
                 for tentativa in range(5):
                     try:
                         creds = Credentials.from_service_account_file(
@@ -194,7 +219,7 @@ def processar_emails_enviados():
                             cache[planilha_id] = gc.open_by_key(planilha_id)
 
                         planilha = cache[planilha_id]
-                        atualizarPlanilha(planilha, dados_xml)
+                        atualizarPlanilha(planilha, dados_parcela)
                         total_processados += 1
                         break
 

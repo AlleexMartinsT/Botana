@@ -18,25 +18,58 @@ def apiCooldown():
     logger.warning("⏳ Limite da API atingido, aguardando 30 segundos...")
     time.sleep(30)
 
+def _parse_date_any(date_str):
+    """Tenta vários formatos e retorna datetime ou None."""
+    if not date_str:
+        return None
+    formats = (
+        "%d/%m/%Y",
+        "%Y-%m-%d",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%dT%H:%M:%S",
+        "%d-%m-%Y",
+        "%d.%m.%Y"
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except Exception:
+            continue
+    # tentativa final com fromisoformat (aceita Z -> +00:00)
+    try:
+        return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
 def atualizarPlanilha(planilha, dados):
     """
     Atualiza a planilha Google Sheets com os dados extraídos do XML.
     Cria automaticamente a aba do mês/ano caso não exista.
+    Aceita datas em vários formatos; usa DD/MM/YYYY internamente.
     """
 
-    vencimento = dados.get("vencimento")
-    if not vencimento:
+    vencimento_raw = dados.get("vencimento")
+    if not vencimento_raw:
         logger.warning("⚠️ XML sem data de vencimento — ignorado.")
         return
 
-    try:
-        dataVenc = datetime.strptime(vencimento, "%Y-%m-%d")
-    except ValueError:
-        logger.warning(f"⚠️ Data inválida no XML: {vencimento}")
+    dataVenc = _parse_date_any(vencimento_raw)
+    if not dataVenc:
+        logger.warning(f"⚠️ Data inválida no XML: {vencimento_raw}")
         return
+
+    # padroniza para DD/MM/YYYY
+    venc_str = dataVenc.strftime("%d/%m/%Y")
 
     # Exemplo: "Nov/2025"
     nomeAba = dataVenc.strftime("%b/%Y").capitalize()
+
+    # prepara descrição cedo (usada na verificação de duplicado)
+    nome_planilha_upper = planilha.title.upper() if hasattr(planilha, "title") else ""
+    descricao = dados.get("descricao", "")
+    if "MVA" in nome_planilha_upper or "EH" in nome_planilha_upper:
+        if "(BOT)" not in descricao.upper():
+            descricao = f"{descricao} (Bot)"
 
     # Tenta acessar a aba, se não existir cria
     try:
@@ -61,27 +94,24 @@ def atualizarPlanilha(planilha, dados):
             else:
                 raise e
 
-    # Evita duplicados
+    # Evita duplicados — compara Vencimento + NF + Parcela + Descrição
     duplicado = any(
-        linha[0] == dataVenc.strftime("%d/%m/%Y")
-        and linha[2] == str(dados["nf"])
-        for linha in linhas if len(linha) >= 3
+        len(linha) >= 6 and
+        linha[0] == venc_str and
+        linha[2] == str(dados.get("nf", "")) and
+        linha[5] == dados.get("numParcela", "1ª Parcela") and
+        linha[1] == descricao
+        for linha in linhas
     )
 
     if duplicado:
-        logger.warning(f"⚠️ NF {dados['nf']} ({vencimento}) já existe em {nomeAba}.")
+        # reduz "spam" no log: usar INFO aqui; se preferir WARNING, troque.
+        logger.warning(f"⚠️ NF {dados.get('nf')} ({venc_str}) já existe em {nomeAba}. \n")
         return
 
-    nome_planilha = planilha.title.upper()
-    descricao = dados.get("descricao", "")
-
-    if "MVA" in nome_planilha or "EH" in nome_planilha:
-        if "(BOT)" not in descricao.upper():
-            descricao = f"{descricao} (Bot)"
-    
     # Nova linha com todos os campos
     novaLinha = [
-        dataVenc.strftime("%d/%m/%Y"),
+        venc_str,
         descricao,
         dados.get("nf", ""),
         f"R$ {float(dados.get('valorTotal', 0)):.2f}",
@@ -92,17 +122,15 @@ def atualizarPlanilha(planilha, dados):
         ""
     ]
 
-    # Insere no Google Sheets
+    # Insere no Google Sheets (retry simples)
     for _ in range(3):
         try:
             aba.append_row(novaLinha, value_input_option="USER_ENTERED")
 
-            # Nome da planilha completa e aba
             nome_planilha = planilha.title
-            empresa = "MVA" if "MVA" in nome_planilha.upper() else "EH"
             nome_aba = nomeAba
-            
-            logger.info(f"✅ NF {dados['nf']} registrada em '{nome_planilha}' / aba '{nome_aba}'\n")
+
+            logger.info(f"✅ NF {dados.get('nf')} registrada em '{nome_planilha}' / aba '{nome_aba}'")
             break
         except gspread.exceptions.APIError as e:
             if "429" in str(e):
