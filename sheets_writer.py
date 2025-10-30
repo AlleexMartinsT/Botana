@@ -106,7 +106,7 @@ def atualizarPlanilha(planilha, dados):
 
     if duplicado:
         # reduz "spam" no log: usar INFO aqui; se preferir WARNING, troque.
-        logger.warning(f"⚠️ NF {dados.get('nf')} ({venc_str}) já existe em {nomeAba}. \n")
+        logger.warning(f"⚠️ NF {dados.get('nf')} ({venc_str}) já existe em {nomeAba}.")
         return
 
     # Nova linha com todos os campos
@@ -137,4 +137,4 @@ def atualizarPlanilha(planilha, dados):
                 apiCooldown()
                 continue
             else:
-                raise e
+                raise e  

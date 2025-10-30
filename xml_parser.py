@@ -47,6 +47,7 @@ def extrairDadosXML(caminhoXML):
         "destinatario": dest.findtext("ns:xNome", default="", namespaces=ns),
         "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns) or 0),
         "parcelas": [],
+        "naturezaOperacao": ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper(),
     }
 
     nat_op = ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper()
@@ -56,17 +57,11 @@ def extrairDadosXML(caminhoXML):
     cnpj_dest = re.sub(r"\D", "", cnpj_dest or "")  # 👈 ajuste: evita erro se None
 
     forma_pag = str(dados.get("formaPagamento", "")).strip()
-    if (
-        "VISTA" in nat_op
-        or "VENDA A VISTA" in nat_op
-        or forma_pag in ["01", "03", "04"]
-    ):
-        print(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (venda à vista / cartão).")
-        return None
+    if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op or forma_pag in ["01", "03", "04"]):
+        return dados
 
     if cnpj_dest in (re.sub(r"\D", "", CNPJ_MVA), re.sub(r"\D", "", CNPJ_EH)):
-        print(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {cnpj_dest})")
-        return None
+        return dados
 
     fat = root.findall(".//ns:dup", ns)
     fat_fatura = root.find(".//ns:fat", ns)

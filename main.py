@@ -9,6 +9,7 @@ from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
 from gmail_service import marcar_mensagem_com_label
 import colorlog, logging
+from colorlog.escape_codes import escape_codes
 
 stop_event = threading.Event()  # usado para parar o loop com segurança
 running = False # indica se o loop principal está ativo
@@ -26,6 +27,10 @@ handler.setFormatter(colorlog.ColoredFormatter(
 
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger("bot.main")
+
+# Formatação de cor para terminal (Para linhas especificas)
+cor_ciano = escape_codes['cyan']   # ou 'purple', 'bold_red', etc.
+reset = escape_codes['reset']
 
 def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
     if cnpj == CNPJ_MVA:
@@ -46,7 +51,7 @@ def processar_emails_enviados():
 
     total_processados = 0
 
-    for m in msgs:
+    for m in msgs:   
         msg_id = m.get("id")
         logger.info("📧 Abrindo mensagem ID: %s", msg_id)
 
@@ -69,17 +74,25 @@ def processar_emails_enviados():
                 if arquivo.lower().endswith(".xml"):
                     try:
                         dados = extrairDadosXML(arquivo)
+                        # 🔍 Ignora vendas à vista
+                        nat_op = dados.get("naturezaOperacao", "").strip().upper()
+                        dest = dados.get("destinatario", "")
+                        if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
+                            # Checa se a mensagem ja foi processada no relatorio atual:
+                            if dados.get('nf') not in consolidarRelatorioTMP(): 
+                                escreverRelatorio(f"{_now()} - 💰 NF {dados.get('nf')} ignorada (venda à vista).")
+                                continue
+                            else: logger.info(f"{cor_ciano}NF {dados['nf']} já registrada no relatório, não duplicando a mensagem de ignorada.{reset}") 
+                            continue
+                        if ( CNPJ_MVA.replace(".", "").replace("/", "").replace("-", "") in dest or
+                             CNPJ_EH.replace(".", "").replace("/", "").replace("-", "") in dest ):
+                            logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {dest})")
+                            escreverRelatorio(f"{_now()} - 💰 NF {dados.get('nf')} ignorada (destinatário é o nosso).")
+                            continue
                         if not dados:
                             motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
                             logger.info(f"Ignorado XML (motivo: {motivo}).")
                             escreverRelatorio(f"{_now()} - ⚠️ XML {nome_arquivo} ignorado (motivo: {motivo})")
-                            continue
-
-                        # 🔍 Ignora vendas à vista
-                        forma_pag = dados.get("formaPagamento", "").strip().lower()
-                        if "vista" in forma_pag or "à vista" in forma_pag or "venda a vista" in forma_pag:
-                            logger.info("💰 NF %s ignorada (venda à vista).", dados.get("nf"))
-                            escreverRelatorio(f"{_now()} - 💰 NF {dados.get('nf')} ignorada (venda à vista).")
                             continue
 
                         dados_xmls.append(dados)
@@ -91,7 +104,7 @@ def processar_emails_enviados():
                 # =============================
                 # 📑 PDF → tenta identificar boleto
                 # =============================
-                elif arquivo.lower().endswith(".pdf"):
+                elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessário
                     nome_upper = nome_arquivo.upper()
 
                     # 🔍 Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
@@ -145,11 +158,9 @@ def processar_emails_enviados():
         except Exception as e:
             logger.exception("Falha ao aplicar rótulo: %s", e)
             
-            
-
         # ⚠️ Nenhum XML → pula este e-mail
         if not dados_xmls:
-            logger.info("Nenhum XML válido encontrado neste e-mail.\n")
+            logger.info("Nenhum XML válido encontrado neste e-mail.")
             continue
 
         # =============================
@@ -164,7 +175,7 @@ def processar_emails_enviados():
                 logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
                 continue
 
-                        # 🔁 Itera sobre todas as parcelas — MAPEAMENTO correto de boletos → parcelas
+            # Itera sobre todas as parcelas — MAPEAMENTO correto de boletos → parcelas
             parcelas = dados_xml.get("parcelas", [])
             n_parcelas = len(parcelas)
             n_boletos = len(boletos)
@@ -201,7 +212,7 @@ def processar_emails_enviados():
                     else:
                         dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
 
-                # 🔁 Tenta atualizar planilha com retry (mantive seu loop de retry)
+                # Tenta atualizar planilha com retry
                 for tentativa in range(5):
                     try:
                         creds = Credentials.from_service_account_file(
@@ -221,11 +232,9 @@ def processar_emails_enviados():
                         planilha = cache[planilha_id]
                         atualizarPlanilha(planilha, dados_parcela)
                         total_processados += 1
-                        break
-
+                        break         
                     except gspread.exceptions.APIError as e:
                         if "429" in str(e):
-                            logger.warning("⚠️ Limite da API atingido (tentativa %d/5). Aguardando 30 segundos...", tentativa + 1)
                             from sheets_writer import apiCooldown
                             apiCooldown()
                             continue
@@ -235,7 +244,6 @@ def processar_emails_enviados():
                     except Exception as e:
                         logger.exception("Falha inesperada ao atualizar planilha: %s", e)
                         break
-
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
 
 def main():

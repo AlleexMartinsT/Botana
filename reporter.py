@@ -1,6 +1,7 @@
 # reporter.py
 import os
 import time
+from pathlib import Path
 from datetime import datetime
 
 from config import RELATORIO_DIR as relatorioDir
@@ -51,14 +52,22 @@ def registrarEvento(tipo, fornecedor, conta):
         eventosIgnorados.append((fornecedor, conta))
 
 def consolidarRelatorioTMP():
-    """Move conteúdo do .tmp para o .txt quando possível."""
-    if os.path.exists(RELATORIO_TEMP):
-        try:
-            with open(RELATORIO_TEMP, "r", encoding="utf-8") as f_temp:
-                dados_temp = f_temp.read()
-            with open(RELATORIO_TXT, "a", encoding="utf-8") as f_rel:
-                f_rel.write(dados_temp)
-            os.remove(RELATORIO_TEMP)
-            print("Relatório temporário consolidado com sucesso.")
-        except PermissionError:
-            pass
+    """
+    Lê o relatório atual e retorna um conjunto de NFs já registradas.
+    """
+    relatorio_path = Path(relatorioDir) / f"relatorio_{datetime.now():%Y-%m-%d}.txt"
+
+    if not relatorio_path.exists():
+        return set()  # se não existe, ainda não há nada registrado
+
+    nfs_existentes = set()
+    with open(relatorio_path, "r", encoding="utf-8") as f:
+        for linha in f:
+            if "NF" in linha:
+                # extrai o número da NF (qualquer sequência numérica após 'NF')
+                partes = linha.split("NF")
+                if len(partes) > 1:
+                    nf_num = partes[1].split()[0]  # pega o que vem logo depois
+                    nfs_existentes.add(nf_num.strip())
+
+    return nfs_existentes
