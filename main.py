@@ -8,29 +8,11 @@ from reporter import escreverRelatorio, registrarEvento, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
 from gmail_service import marcar_mensagem_com_label
-import colorlog, logging
-from colorlog.escape_codes import escape_codes
+from logger_config import logger, cor_ciano, reset
+
 
 stop_event = threading.Event()  # usado para parar o loop com segurança
 running = False # indica se o loop principal está ativo
-
-handler = colorlog.StreamHandler()
-handler.setFormatter(colorlog.ColoredFormatter(
-    "%(log_color)s%(asctime)s [%(levelname)s] %(message)s",
-    log_colors={
-        "INFO": "green",
-        "WARNING": "yellow",
-        "ERROR": "red",
-        "DEBUG": "blue"
-    }
-))
-
-logging.basicConfig(level=logging.INFO, handlers=[handler])
-logger = logging.getLogger("bot.main")
-
-# Formatação de cor para terminal (Para linhas especificas)
-cor_ciano = escape_codes['cyan']   # ou 'purple', 'bold_red', etc.
-reset = escape_codes['reset']
 
 def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
     if cnpj == CNPJ_MVA:
@@ -230,7 +212,7 @@ def processar_emails_enviados():
                             cache[planilha_id] = gc.open_by_key(planilha_id)
 
                         planilha = cache[planilha_id]
-                        atualizarPlanilha(planilha, dados_parcela)
+                        atualizarPlanilha(planilha, dados_parcela, gc)
                         total_processados += 1
                         break         
                     except gspread.exceptions.APIError as e:

@@ -4,6 +4,8 @@ from datetime import datetime
 import locale, os
 import time
 from googleapiclient.errors import HttpError
+from config import PLANILHAS
+from logger_config import logger, cor_ciano, reset
 
 # Garante que os meses saiam em português (ex: Fev/2025)
 os.environ["LANG"] = "pt_BR.UTF-8"
@@ -41,11 +43,12 @@ def _parse_date_any(date_str):
     except Exception:
         return None
 
-def atualizarPlanilha(planilha, dados):
+
+def atualizarPlanilha(planilha, dados, gc):
     """
     Atualiza a planilha Google Sheets com os dados extraídos do XML.
     Cria automaticamente a aba do mês/ano caso não exista.
-    Aceita datas em vários formatos; usa DD/MM/YYYY internamente.
+    Se a data de vencimento for de outro ano (ex: 2026), muda para a planilha correspondente.
     """
 
     vencimento_raw = dados.get("vencimento")
@@ -60,14 +63,54 @@ def atualizarPlanilha(planilha, dados):
 
     # padroniza para DD/MM/YYYY
     venc_str = dataVenc.strftime("%d/%m/%Y")
-
-    # Exemplo: "Nov/2025"
     nomeAba = dataVenc.strftime("%b/%Y").capitalize()
+    ano = str(dataVenc.year)
 
-    # prepara descrição cedo (usada na verificação de duplicado)
+    # Detecta tipo de planilha (MVA ou EH)
     nome_planilha_upper = planilha.title.upper() if hasattr(planilha, "title") else ""
+    tipo = None
+
+    for t, anos in PLANILHAS.items():
+        for ano_cadastrado, sheet_id in anos.items():
+            if sheet_id and sheet_id in planilha.url:
+                tipo = t
+                break
+        if tipo:
+            break
+
+    # fallback por nome
+    if not tipo:
+        if "MVA" in nome_planilha_upper:
+            tipo = "MVA"
+        elif "HORIZONTE" in nome_planilha_upper or "EH" in nome_planilha_upper:
+            tipo = "EH"
+
+    if not tipo:
+        logger.error(f"❌ Tipo de planilha não identificado a partir do título: {nome_planilha_upper}")
+        return
+
+    # ================================
+    # 🔁 Redireciona automaticamente se o ano mudou
+    # ================================
+    id_correto = PLANILHAS.get(tipo, {}).get(ano)
+
+    if id_correto:
+        if id_correto not in planilha.url:
+            try:
+                planilha_nova = gc.open_by_key(id_correto)
+                logger.info(f"✅ Redirecionado para '{planilha_nova.title}' ({ano}) - Tipo {tipo}")
+                return atualizarPlanilha(planilha_nova, dados, gc)  # recursão segura
+            except Exception as e:
+                logger.error(f"❌ Erro ao abrir planilha de {ano} ({tipo}): {e}")
+                return
+    else:
+        logger.warning(f"⚠️ Nenhuma planilha configurada para {tipo} {ano}. Mantendo planilha atual.")
+
+    # ================================
+    # 📝 Insere linha na planilha atual
+    # ================================
     descricao = dados.get("descricao", "")
-    if "MVA" in nome_planilha_upper or "EH" in nome_planilha_upper:
+    if tipo in ("MVA", "EH"):
         if "(BOT)" not in descricao.upper():
             descricao = f"{descricao} (Bot)"
 
@@ -105,11 +148,9 @@ def atualizarPlanilha(planilha, dados):
     )
 
     if duplicado:
-        # reduz "spam" no log: usar INFO aqui; se preferir WARNING, troque.
         logger.warning(f"⚠️ NF {dados.get('nf')} ({venc_str}) já existe em {nomeAba}.")
         return
 
-    # Nova linha com todos os campos
     novaLinha = [
         venc_str,
         descricao,
@@ -122,19 +163,15 @@ def atualizarPlanilha(planilha, dados):
         ""
     ]
 
-    # Insere no Google Sheets (retry simples)
+    # Insere no Google Sheets
     for _ in range(3):
         try:
             aba.append_row(novaLinha, value_input_option="USER_ENTERED")
-
-            nome_planilha = planilha.title
-            nome_aba = nomeAba
-
-            logger.info(f"✅ NF {dados.get('nf')} registrada em '{nome_planilha}' / aba '{nome_aba}'")
+            logger.info(f"{cor_ciano}✅ NF {dados.get('nf')} registrada em '{planilha.title}' / aba '{nomeAba}'{reset}")
             break
         except gspread.exceptions.APIError as e:
             if "429" in str(e):
                 apiCooldown()
                 continue
             else:
-                raise e  
+                raise e

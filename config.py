@@ -35,4 +35,4 @@ CNPJ_MVA = os.getenv("CNPJ_MVA")
 CNPJ_EH = os.getenv("CNPJ_EH")
 
 # Intervalo
-INTERVALO = int(os.getenv("INTERVALO", "600"))
+INTERVALO = int(os.getenv("INTERVALO", "1800"))
