@@ -152,16 +152,16 @@ def atualizarPlanilha(planilha, dados, gc):
         return
 
     novaLinha = [
-        venc_str,
-        descricao,
-        dados.get("nf", ""),
-        f"R$ {float(dados.get('valorTotal', 0)):.2f}",
-        dados.get("qtdParcelas", 1),
-        dados.get("numParcela", "1ª Parcela"),
-        f"R$ {float(dados.get('valorParcela', 0)):.2f}",
-        "",
-        ""
-    ]
+    venc_str,
+    descricao,
+    dados.get("nf", ""),
+    float(dados.get("valorTotal", 0)),
+    int(dados.get("qtdParcelas", 1)),
+    dados.get("numParcela", "1ª Parcela"),
+    float(dados.get("valorParcela", 0)),
+    "",
+    ""
+]
 
     # Insere no Google Sheets
     for _ in range(3):
