@@ -86,9 +86,12 @@ def _save_settings(data: dict):
 
 
 def _password_hash(password: str, salt_hex: str) -> str:
-    salt = bytes.fromhex(salt_hex)
-    digest = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, 120000)
-    return digest.hex()
+    try:
+        salt = bytes.fromhex(str(salt_hex or ""))
+        digest = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, 120000)
+        return digest.hex()
+    except Exception:
+        return ""
 
 
 def _normalize_username(username: str) -> str:
@@ -123,13 +126,20 @@ def _load_auth():
 
 def _verify_login(username: str, password: str) -> bool:
     user = _normalize_username(username)
-    data = _load_auth()
-    for item in data.get("users", []):
-        if _normalize_username(item.get("username", "")) != user:
-            continue
-        calc = _password_hash(password or "", str(item.get("salt", "")))
-        return hmac.compare_digest(calc, str(item.get("password_hash", "")))
-    return False
+    try:
+        data = _load_auth()
+        for item in data.get("users", []):
+            if _normalize_username(item.get("username", "")) != user:
+                continue
+            calc = _password_hash(password or "", str(item.get("salt", "")))
+            saved = str(item.get("password_hash", "") or "")
+            if not calc or not saved:
+                return False
+            return hmac.compare_digest(calc, saved)
+        return False
+    except Exception as exc:
+        logger.exception("Falha ao validar login: %s", exc)
+        return False
 
 
 def _role_of(username: str) -> str:
