@@ -44,7 +44,7 @@ APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
 _SETTINGS_FILE = APPDATA_BASE / "panel_settings.json"
 _AUTH_FILE = APPDATA_BASE / "panel_auth.json"
-_SETTINGS_LOCK = threading.Lock()
+_SETTINGS_LOCK = threading.RLock()
 _AUTH_LOCK = threading.Lock()
 _SESSIONS = {}
 _SESSIONS_LOCK = threading.Lock()
@@ -56,8 +56,13 @@ _RUNTIME_SETTINGS = {"interval_seconds": int(INTERVALO), "max_messages": 100}
 def _load_settings():
     with _SETTINGS_LOCK:
         if not _SETTINGS_FILE.exists():
-            _save_settings(_RUNTIME_SETTINGS)
-            return dict(_RUNTIME_SETTINGS)
+            out = {
+                "interval_seconds": max(30, min(86400, int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)))),
+                "max_messages": max(1, min(1000, int(_RUNTIME_SETTINGS.get("max_messages", 100)))),
+            }
+            _RUNTIME_SETTINGS.update(out)
+            _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+            return dict(out)
         try:
             raw = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
         except Exception:
