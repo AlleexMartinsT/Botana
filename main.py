@@ -746,6 +746,10 @@ def parse_args():
 # EXECUÃ‡ÃƒO PRINCIPAL
 # =========================
 if __name__ == "__main__":
+    try:
+        os.system("cls" if os.name == "nt" else "clear")
+    except Exception:
+        pass
     args = parse_args()
     if args.server:
         start_server(args.host, args.port, no_loop=args.no_loop)
