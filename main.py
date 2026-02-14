@@ -1,7 +1,11 @@
 ﻿import argparse
+import hashlib
+import hmac
 import json
+import secrets
 import os, re, time, gspread, threading, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse
 from datetime import datetime
 from google.oauth2.service_account import Credentials
@@ -36,6 +40,135 @@ STOP_AFTER_NF = os.environ.get("STOP_AFTER_NF", "False").lower() in ("1", "true"
 stop_event = threading.Event()  # usado para parar o loop com seguranÃ§a
 running = False # indica se o loop principal estÃ¡ ativo
 last_status = {"ok": True, "message": "Aguardando", "at": None}
+APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
+APPDATA_BASE.mkdir(parents=True, exist_ok=True)
+_SETTINGS_FILE = APPDATA_BASE / "panel_settings.json"
+_AUTH_FILE = APPDATA_BASE / "panel_auth.json"
+_SETTINGS_LOCK = threading.Lock()
+_AUTH_LOCK = threading.Lock()
+_SESSIONS = {}
+_SESSIONS_LOCK = threading.Lock()
+_COOKIE_SESSION = "botana_session"
+_SESSION_TTL_SECONDS = 8 * 60 * 60
+_RUNTIME_SETTINGS = {"interval_seconds": int(INTERVALO), "max_messages": 100}
+
+
+def _load_settings():
+    with _SETTINGS_LOCK:
+        if not _SETTINGS_FILE.exists():
+            _save_settings(_RUNTIME_SETTINGS)
+            return dict(_RUNTIME_SETTINGS)
+        try:
+            raw = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        out = {
+            "interval_seconds": max(30, min(86400, int(raw.get("interval_seconds", INTERVALO)))),
+            "max_messages": max(1, min(1000, int(raw.get("max_messages", 100)))),
+        }
+        _RUNTIME_SETTINGS.update(out)
+        return out
+
+
+def _save_settings(data: dict):
+    with _SETTINGS_LOCK:
+        out = {
+            "interval_seconds": max(30, min(86400, int(data.get("interval_seconds", INTERVALO)))),
+            "max_messages": max(1, min(1000, int(data.get("max_messages", 100)))),
+        }
+        _RUNTIME_SETTINGS.update(out)
+        _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _password_hash(password: str, salt_hex: str) -> str:
+    salt = bytes.fromhex(salt_hex)
+    digest = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, 120000)
+    return digest.hex()
+
+
+def _normalize_username(username: str) -> str:
+    return str(username or "").strip().lower()
+
+
+def _load_auth():
+    with _AUTH_LOCK:
+        if _AUTH_FILE.exists():
+            try:
+                data = json.loads(_AUTH_FILE.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("users"), list) and data["users"]:
+                    return data
+            except Exception:
+                pass
+        salt_hex = secrets.token_hex(16)
+        data = {
+            "users": [
+                {
+                    "username": "dev",
+                    "role": "dev",
+                    "salt": salt_hex,
+                    "password_hash": _password_hash("dev", salt_hex),
+                    "created_at": datetime.now().isoformat(),
+                }
+            ]
+        }
+        _AUTH_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        print("[Botana] Login inicial: usuario=dev senha=dev")
+        return data
+
+
+def _verify_login(username: str, password: str) -> bool:
+    user = _normalize_username(username)
+    data = _load_auth()
+    for item in data.get("users", []):
+        if _normalize_username(item.get("username", "")) != user:
+            continue
+        calc = _password_hash(password or "", str(item.get("salt", "")))
+        return hmac.compare_digest(calc, str(item.get("password_hash", "")))
+    return False
+
+
+def _role_of(username: str) -> str:
+    user = _normalize_username(username)
+    data = _load_auth()
+    for item in data.get("users", []):
+        if _normalize_username(item.get("username", "")) == user:
+            role = str(item.get("role", "user")).lower()
+            return role if role in {"dev", "admin", "user"} else "user"
+    return "user"
+
+
+def _can_operate(username: str) -> bool:
+    return _role_of(username) in {"dev", "admin"}
+
+
+def _create_session(username: str) -> str:
+    token = secrets.token_urlsafe(32)
+    with _SESSIONS_LOCK:
+        _SESSIONS[token] = {"user": _normalize_username(username), "exp": time.time() + _SESSION_TTL_SECONDS}
+    return token
+
+
+def _read_cookie_session(handler: BaseHTTPRequestHandler) -> str:
+    raw = str(handler.headers.get("Cookie", "") or "")
+    for part in raw.split(";"):
+        p = part.strip()
+        if p.startswith(f"{_COOKIE_SESSION}="):
+            return p.split("=", 1)[1].strip()
+    return ""
+
+
+def _current_session_user(handler: BaseHTTPRequestHandler) -> str | None:
+    token = _read_cookie_session(handler)
+    if not token:
+        return None
+    with _SESSIONS_LOCK:
+        item = _SESSIONS.get(token)
+        if not item:
+            return None
+        if float(item.get("exp", 0)) < time.time():
+            _SESSIONS.pop(token, None)
+            return None
+        return str(item.get("user", "")).strip() or None
 
 def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
     if cnpj == CNPJ_MVA:
@@ -49,7 +182,7 @@ def _now():
 
 def processar_emails_enviados():
     service = getGmailService()
-    msgs = buscarMessagesEnviados(service, max_results=100)
+    msgs = buscarMessagesEnviados(service, max_results=int(_RUNTIME_SETTINGS.get("max_messages", 100)))
     if not msgs:
         logger.info("Nenhuma mensagem enviada com XML encontrada.")
         return
@@ -297,7 +430,7 @@ def main_loop():
         except Exception as e:
             logger.exception("Erro no ciclo principal: %s", e)
             last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
-        if stop_event.wait(INTERVALO):
+        if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
             break
     running = False
     logger.info("[Botana] Loop finalizado")
@@ -343,11 +476,14 @@ def on_quit():
     sys.exit(0)
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict):
+def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict, extra_headers: dict | None = None):
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(raw)))
+    if extra_headers:
+        for k, v in extra_headers.items():
+            handler.send_header(k, v)
     handler.end_headers()
     handler.wfile.write(raw)
 
@@ -361,6 +497,52 @@ def _html_response(handler: BaseHTTPRequestHandler, status: int, html: str):
     handler.wfile.write(raw)
 
 
+
+def _render_login_html() -> str:
+    return """<!doctype html>
+<html lang="pt-br"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Botana - Login</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--b2:#6b4128}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72));display:flex;justify-content:center;align-items:center;padding:12px;color:#2a1b12}
+.card{width:min(420px,96vw);border-radius:16px;border:1px solid rgba(231,200,168,.9);background:linear-gradient(180deg,rgba(255,250,246,.96),rgba(255,245,235,.92));box-shadow:0 24px 60px rgba(21,11,6,.35);padding:16px}
+h1{margin:0 0 6px;color:var(--b);font-size:1.2rem}
+p{margin:0 0 12px;color:#6b4128}
+label{display:block;margin-top:8px;font-weight:600;color:#5c341c}
+input{width:100%;padding:10px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
+button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer}
+.msg{margin-top:10px;font-size:.9rem;color:#9c2c1d;min-height:20px}
+</style></head><body>
+<section class="card">
+<h1>Acesso ao Botana</h1>
+<p>Entre com usuário e senha para continuar</p>
+<label>Usuário</label><input id="u" type="text" autocomplete="username"/>
+<label>Senha</label><input id="p" type="password" autocomplete="current-password"/>
+<button id="b" onclick="login()">Entrar</button>
+<div id="m" class="msg"></div>
+</section>
+<script>
+async function login(){
+  const u=document.getElementById('u').value||'';
+  const p=document.getElementById('p').value||'';
+  const m=document.getElementById('m');
+  const b=document.getElementById('b');
+  b.disabled=true;
+  m.textContent='Validando acesso';
+  try{
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const j=await r.json();
+    if(r.ok&&j.ok){window.location.href='/';return;}
+    m.textContent=j.message||'Usuário ou senha inválidos';
+  }catch(_){
+    m.textContent='Falha ao conectar com o servidor';
+  }finally{b.disabled=false;}
+}
+['u','p'].forEach(id=>{document.getElementById(id).addEventListener('keydown',(e)=>{if(e.key==='Enter')login();});});
+</script></body></html>"""
 def _render_server_html() -> str:
     return """<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -394,7 +576,7 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
 </style></head><body>
 <main class="app">
   <section class="top">
-    <div class="brand">Botana - Painel de Controle</div>
+    <div class="brand">Botana - Painel de Controle</div><div><span id="who" style="margin-right:10px">Usuário: -</span><button class="sec" style="padding:6px 10px" onclick="logout()">Sair</button></div>
     <div id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></div>
   </section>
   <section class="grid">
@@ -410,8 +592,17 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
     <article class="card">
       <h2>Resumo</h2>
       <div class="kpi">
+        <div class="k"><div id="maxMsgs" class="n">-</div><div class="t">Máx. mensagens</div></div>
         <div class="k"><div id="interval" class="n">-</div><div class="t">Intervalo (s)</div></div>
         <div class="k"><div id="stateTxt" class="n">-</div><div class="t">Estado</div></div>
+      </div>
+      <div style="margin-top:10px">
+        <h3 style="margin:0 0 6px">Configuração</h3>
+        <div class="btns">
+          <input id="cfgInterval" type="number" min="30" max="86400" placeholder="Intervalo (s)" style="padding:8px;border:1px solid #d6b18f;border-radius:8px">
+          <input id="cfgMax" type="number" min="1" max="1000" placeholder="Máx. mensagens" style="padding:8px;border:1px solid #d6b18f;border-radius:8px">
+          <button onclick="saveSettings()">Salvar configuração</button>
+        </div>
       </div>
     </article>
   </section>
@@ -421,22 +612,46 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
   </section>
 </main>
 <script>
-async function api(path,opts){const r=await fetch(path,opts);return r.json();}
+async function api(path,opts){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href='/login';throw new Error('nao autenticado');}return j;}
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execucao</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);setPill(ok,running);}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);setPill(ok,running);}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
+async function saveSettings(){const interval_seconds=Number(document.getElementById('cfgInterval').value||0);const max_messages=Number(document.getElementById('cfgMax').value||0);await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds,max_messages})});refresh();}
+async function logout(){await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href='/login';}
 refresh();setInterval(refresh,3000);
 </script></body></html>"""
 
 def start_server(host: str, port: int, no_loop: bool = False):
+    _load_auth()
+    _load_settings()
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             return
 
+        def _require_auth(self, parsed_path: str) -> str | None:
+            user = _current_session_user(self)
+            if user:
+                return user
+            if parsed_path.startswith("/api/"):
+                _json_response(self, 401, {"ok": False, "message": "Não autenticado"})
+            else:
+                _html_response(self, 200, _render_login_html())
+            return None
+
         def do_GET(self):
             parsed = urlparse(self.path)
+            if parsed.path == "/login":
+                if _current_session_user(self):
+                    return _html_response(self, 200, _render_server_html())
+                return _html_response(self, 200, _render_login_html())
+
+            user = self._require_auth(parsed.path)
+            if not user:
+                return
+
             if parsed.path == "/":
                 return _html_response(self, 200, _render_server_html())
             if parsed.path == "/api/state":
@@ -446,14 +661,43 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     {
                         "ok": True,
                         "running": bool(running),
-                        "interval_seconds": int(INTERVALO),
+                        "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                        "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
                         "last_status": dict(last_status),
+                        "auth": {"user": user, "role": _role_of(user)},
                     },
                 )
-            return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
+            return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
 
         def do_POST(self):
             parsed = urlparse(self.path)
+            data = _read_json(self)
+
+            if parsed.path == "/api/login":
+                username = str(data.get("username", "")).strip()
+                password = str(data.get("password", ""))
+                if not _verify_login(username, password):
+                    return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
+                token = _create_session(username)
+                cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
+                return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
+
+            if parsed.path == "/api/logout":
+                token = _read_cookie_session(self)
+                if token:
+                    with _SESSIONS_LOCK:
+                        _SESSIONS.pop(token, None)
+                return _json_response(
+                    self,
+                    200,
+                    {"ok": True},
+                    {"Set-Cookie": f"{_COOKIE_SESSION}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"},
+                )
+
+            user = self._require_auth(parsed.path)
+            if not user:
+                return
+
             if parsed.path == "/api/start":
                 started = iniciar_verificacao()
                 return _json_response(self, 200, {"ok": True, "started": bool(started)})
@@ -463,7 +707,17 @@ def start_server(host: str, port: int, no_loop: bool = False):
             if parsed.path == "/api/run-now":
                 ok, msg = executar_um_ciclo()
                 return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
-            return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
+            if parsed.path == "/api/settings":
+                if not _can_operate(user):
+                    return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                _save_settings(
+                    {
+                        "interval_seconds": data.get("interval_seconds", _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                        "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
+                    }
+                )
+                return _json_response(self, 200, {"ok": True, "message": "Configuração salva"})
+            return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
 
     if not no_loop:
         iniciar_verificacao()
@@ -501,4 +755,15 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
+
+
+
+
+
+
+
+
+
+
+
 
