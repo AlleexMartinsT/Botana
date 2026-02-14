@@ -364,7 +364,7 @@ def _html_response(handler: BaseHTTPRequestHandler, status: int, html: str):
 def _render_server_html() -> str:
     return """<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AnaBot - Painel</title>
+<title>Botana - Painel</title>
 <style>
 body{font-family:Arial,sans-serif;background:#f2f2f2;margin:0;padding:16px}
 .card{max-width:760px;margin:0 auto;background:#fff;padding:16px;border-radius:10px;border:1px solid #ddd}
@@ -374,7 +374,7 @@ button.sec{background:#6b4128}
 .muted{color:#666}
 pre{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;white-space:pre-wrap}
 </style></head><body>
-<section class="card"><h2>AnaBot - Painel de execução</h2>
+<section class="card"><h2>Botana - Painel de execução</h2>
 <div id="status" class="muted">Carregando status...</div>
 <div class="row">
 <button onclick="startLoop()">Iniciar loop</button>
@@ -432,7 +432,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
     if not no_loop:
         iniciar_verificacao()
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"[AnaBot] Painel online em http://{host}:{port}")
+    print(f"[Botana] Painel online em http://{host}:{port}")
     print("Ctrl+C para encerrar")
     try:
         server.serve_forever()
@@ -444,7 +444,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="AnaBot")
+    p = argparse.ArgumentParser(description="Botana")
     p.add_argument("--server", action="store_true", help="Executa em modo servidor HTTP")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8865)
