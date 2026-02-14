@@ -1,4 +1,4 @@
-# === Google APIs ===
+﻿# === Google APIs ===
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
 google-auth-httplib2==0.2.0
@@ -17,7 +17,8 @@ plyer==2.1.0
 
 # === XML, PDF e parsing ===
 lxml==5.3.0
-numpy==2.3.4
+# OpenCV 4.12 requer numpy < 2.3.0 em Python 3.12
+numpy==2.2.6
 opencv-python==4.12.0.88
 
 # === Sistema e logs ===
