@@ -894,9 +894,14 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
 .reproc-grid > div{display:flex;flex-direction:column}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
+.ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
+.ov.show{display:flex}
+.ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
+.cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
 </style></head><body>
+<div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
   <section class="top">
     <span>Botana - Painel de Controle MVA</span>
@@ -985,7 +990,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <article class="card auth-card">
         <h3>Autenticação</h3>
         <div class="btns">
-          <button class="sec" onclick="reauth('principal')">Principal</button>
+          <button id="reauthBtn" class="sec" onclick="reauth('principal')">Principal</button>
         </div>
       </article>
       <article class="card reproc-card">
@@ -1121,7 +1126,18 @@ async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){const account=(document.getElementById('account').value||'principal');await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account})});refresh();}
 async function saveSettings(){const payload={gmail_filter_mode:document.getElementById('mode').value,gmail_max_pages:Number(document.getElementById('maxPages').value||3),gmail_page_size:Number(document.getElementById('pageSize').value||50),loop_interval_minutes:Number(document.getElementById('intervalMin').value||30)};await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
-async function reauth(_account){await api('/api/reauth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
+async function countdown(sec){const ov=document.getElementById('ov');const c=document.getElementById('cnt');let n=Number(sec||5);if(c)c.textContent=String(n);if(ov)ov.classList.add('show');await new Promise((res)=>{const t=setInterval(()=>{n-=1;if(c)c.textContent=String(Math.max(n,0));if(n<=0){clearInterval(t);res();}},1000);});if(ov)ov.classList.remove('show');}
+async function reauth(account){
+  const btn=document.getElementById('reauthBtn');
+  if(btn){btn.disabled=true;btn.textContent='Autenticando...';}
+  try{
+    await countdown(5);
+    await api('/api/reauth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:account||'principal'})});
+    await refresh();
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Principal';}
+  }
+}
 async function reprocess(){const payload={account:document.getElementById('account').value||'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 async function loadHistory(){
   const q=(document.getElementById('hQuery').value||'').trim();
@@ -1300,8 +1316,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 if parsed.path == "/api/reauth":
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    account = str(data.get("account", "principal")).strip().lower()
+                    if account != "principal":
+                        account = "principal"
                     info = _reauthenticate_gmail()
-                    return _json_response(self, 200, {"ok": True, "message": info.get("message", "Reautenticação concluída"), "friendly": "Reautenticação concluída"})
+                    return _json_response(self, 200, {"ok": True, "account": account, "message": info.get("message", "Reautenticação concluída"), "friendly": "Reautenticação concluída"})
                 return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
