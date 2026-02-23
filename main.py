@@ -7,10 +7,10 @@ import os, re, time, gspread, threading, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
-from datetime import datetime
+from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
-from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, GOOGLE_CREDENTIALS_SHEETS
-from gmail_service import getGmailService, buscarMessagesEnviados, baixar_anexos_de_mensagem
+from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
+from gmail_service import getGmailService, buscarMessagesEnviados, baixar_anexos_de_mensagem, ensure_label, LABEL_NAME
 from reporter import escreverRelatorio, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
@@ -50,7 +50,14 @@ _SESSIONS = {}
 _SESSIONS_LOCK = threading.Lock()
 _COOKIE_SESSION = "botana_session"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
-_RUNTIME_SETTINGS = {"interval_seconds": int(INTERVALO), "max_messages": 100}
+_RUNTIME_SETTINGS = {
+    "gmail_filter_mode": "last_30_days",
+    "gmail_max_pages": 3,
+    "gmail_page_size": 50,
+    "loop_interval_minutes": max(1, int(INTERVALO // 60) if int(INTERVALO) > 0 else 30),
+    "interval_seconds": int(INTERVALO),
+    "max_messages": 100,
+}
 _EMAIL_CACHE = {"email": "", "error": "", "at": 0.0}
 _NEXT_RUN_AT = 0.0
 
@@ -58,8 +65,13 @@ _NEXT_RUN_AT = 0.0
 def _load_settings():
     with _SETTINGS_LOCK:
         if not _SETTINGS_FILE.exists():
+            loop_min = max(1, min(720, int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30))))
             out = {
-                "interval_seconds": max(30, min(86400, int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)))),
+                "gmail_filter_mode": str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
+                "gmail_max_pages": max(1, min(20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3)))),
+                "gmail_page_size": max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))),
+                "loop_interval_minutes": loop_min,
+                "interval_seconds": max(30, min(86400, loop_min * 60)),
                 "max_messages": max(1, min(1000, int(_RUNTIME_SETTINGS.get("max_messages", 100)))),
             }
             _RUNTIME_SETTINGS.update(out)
@@ -69,9 +81,27 @@ def _load_settings():
             raw = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
         except Exception:
             raw = {}
+        mode = str(raw.get("gmail_filter_mode", "last_30_days")).strip()
+        if mode not in {
+            "last_15_days",
+            "last_30_days",
+            "last_45_days",
+            "last_60_days",
+            "current_week",
+            "previous_month",
+            "current_and_previous_month",
+        }:
+            mode = "last_30_days"
+        loop_min = max(1, min(720, int(raw.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
+        max_pages = max(1, min(20, int(raw.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
+        page_size = max(1, min(500, int(raw.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
         out = {
-            "interval_seconds": max(30, min(86400, int(raw.get("interval_seconds", INTERVALO)))),
-            "max_messages": max(1, min(1000, int(raw.get("max_messages", 100)))),
+            "gmail_filter_mode": mode,
+            "gmail_max_pages": max_pages,
+            "gmail_page_size": page_size,
+            "loop_interval_minutes": loop_min,
+            "interval_seconds": max(30, min(86400, loop_min * 60)),
+            "max_messages": max(1, min(1000, int(raw.get("max_messages", max_pages * page_size)))),
         }
         _RUNTIME_SETTINGS.update(out)
         global _NEXT_RUN_AT
@@ -82,9 +112,27 @@ def _load_settings():
 
 def _save_settings(data: dict):
     with _SETTINGS_LOCK:
+        mode = str(data.get("gmail_filter_mode", _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days"))).strip()
+        if mode not in {
+            "last_15_days",
+            "last_30_days",
+            "last_45_days",
+            "last_60_days",
+            "current_week",
+            "previous_month",
+            "current_and_previous_month",
+        }:
+            mode = "last_30_days"
+        max_pages = max(1, min(20, int(data.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
+        page_size = max(1, min(500, int(data.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
+        loop_min = max(1, min(720, int(data.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
         out = {
-            "interval_seconds": max(30, min(86400, int(data.get("interval_seconds", INTERVALO)))),
-            "max_messages": max(1, min(1000, int(data.get("max_messages", 100)))),
+            "gmail_filter_mode": mode,
+            "gmail_max_pages": max_pages,
+            "gmail_page_size": page_size,
+            "loop_interval_minutes": loop_min,
+            "interval_seconds": max(30, min(86400, loop_min * 60)),
+            "max_messages": max(1, min(1000, int(data.get("max_messages", max_pages * page_size)))),
         }
         _RUNTIME_SETTINGS.update(out)
         _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -697,6 +745,46 @@ def _connected_email(force: bool = False) -> dict:
     return dict(_EMAIL_CACHE)
 
 
+def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
+    service = getGmailService()
+    label_id = ensure_label(service, LABEL_NAME)
+    after = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y/%m/%d")
+    query = f'after:{after} label:"{LABEL_NAME}"'
+    resp = service.users().messages().list(userId="me", q=query, maxResults=max(1, min(1000, int(max_messages)))).execute()
+    messages = resp.get("messages", []) or []
+    changed = 0
+    failed = 0
+    for item in messages:
+        msg_id = str(item.get("id", "")).strip()
+        if not msg_id:
+            continue
+        body = {"removeLabelIds": [label_id], "addLabelIds": ["UNREAD"] if mark_unread else []}
+        try:
+            service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
+            changed += 1
+        except Exception:
+            failed += 1
+    return {
+        "ok": True,
+        "matched": len(messages),
+        "changed": changed,
+        "failed": failed,
+        "mark_unread": bool(mark_unread),
+    }
+
+
+def _reauthenticate_gmail() -> dict:
+    token_path = str(GOOGLE_CREDENTIALS_GMAIL).replace(".json", "_token.json")
+    try:
+        if os.path.exists(token_path):
+            os.remove(token_path)
+    except Exception:
+        pass
+    getGmailService()
+    _connected_email(force=True)
+    return {"ok": True, "message": "Reautenticação concluída"}
+
+
 
 def _render_login_html() -> str:
     return """<!doctype html>
@@ -771,6 +859,7 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .grid{display:grid;grid-template-columns:1.1fr .9fr;gap:8px;margin-top:10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
 h3{margin:0 0 8px;color:var(--b);font-size:.98rem}
+label{display:block;font-weight:600;color:#5c341c;font-size:.9rem}
 .muted{color:#6c4a35;font-size:.84rem}
 .btns{display:flex;gap:8px;flex-wrap:wrap}
 button{padding:9px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer;font-size:.9rem}
@@ -793,7 +882,19 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}.lists{grid-template-columns:1fr}}
+input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
+.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,240px);gap:10px;align-items:start}
+.cfg-main{display:grid;gap:8px}
+.cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end}
+.cfg-fields > div{display:flex;flex-direction:column}
+.cfg-fields > div input,.cfg-fields > div select{width:100%}
+.cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap}
+.auth-card .btns{flex-direction:column}
+.auth-card .btns button{width:100%}
+.reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
+.reproc-grid > div{display:flex;flex-direction:column}
+.cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
 </style></head><body>
 <main class="app">
@@ -865,12 +966,73 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
       </article>
     </div>
 
-    <section class="card" style="margin-top:10px">
-      <h3>Configuração do Botana</h3>
+    <section class="cfg-grid">
+      <article class="card">
+        <h3>Configuração do Gmail</h3>
+        <div class="cfg-main">
+          <div class="cfg-fields">
+            <div>
+              <label>Período</label>
+              <select id="mode">
+                <option value="last_15_days">Últimos 15 dias</option>
+                <option value="last_30_days">Últimos 30 dias</option>
+                <option value="last_45_days">Últimos 45 dias</option>
+                <option value="last_60_days">Últimos 60 dias</option>
+                <option value="current_week">Semana atual</option>
+                <option value="previous_month">Mês anterior</option>
+                <option value="current_and_previous_month">Mês atual + mês anterior</option>
+              </select>
+            </div>
+            <div>
+              <label>Máx páginas</label>
+              <input id="maxPages" type="number" min="1" max="20"/>
+            </div>
+            <div>
+              <label>Tamanho da página</label>
+              <input id="pageSize" type="number" min="1" max="500"/>
+            </div>
+            <div>
+              <label>Intervalo de leitura</label>
+              <input id="intervalMin" type="number" min="1" max="720"/>
+            </div>
+          </div>
+          <div class="cfg-actions">
+            <button onclick="saveSettings()">Salvar configuração</button>
+            <input id="last" type="text" readonly value="-" style="min-width:260px"/>
+          </div>
+        </div>
+      </article>
+      <article class="card auth-card">
+        <h3>Autenticação</h3>
+        <div class="btns">
+          <button class="sec" onclick="reauth('principal')">Principal</button>
+        </div>
+      </article>
+    </section>
+
+    <section class="card">
+      <h3>Reprocessar e-mails</h3>
+      <div class="reproc-grid">
+        <div>
+          <label>Conta</label>
+          <select id="account">
+            <option value="all">Todos</option>
+            <option value="principal">E-mail Principal</option>
+          </select>
+        </div>
+        <div>
+          <label>Dias para trás</label>
+          <input id="days" type="number" value="30" min="1" max="365"/>
+        </div>
+        <div>
+          <label>Limite de mensagens</label>
+          <input id="limit" type="number" value="100" min="1" max="1000"/>
+        </div>
+      </div>
+      <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
       <div class="btns">
-        <input id="cfgInterval" class="inp" type="number" min="30" max="86400" placeholder="Intervalo (s)">
-        <input id="cfgMax" class="inp" type="number" min="1" max="1000" placeholder="Máx. mensagens">
-        <button onclick="saveSettings()">Salvar configuração</button>
+        <button onclick="reprocess()">Remover labels para reprocessar</button>
+        <button class="sec" onclick="runNow()">Executar agora</button>
       </div>
     </section>
   </section>
@@ -975,11 +1137,13 @@ function updDaily(rep){
   setList('li',(rep&&rep.ignorados)||[]);
   setList('la',(rep&&rep.avisos)||[]);
 }
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
-async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
-async function saveSettings(){const interval_seconds=Number(document.getElementById('cfgInterval').value||0);const max_messages=Number(document.getElementById('cfgMax').value||0);await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds,max_messages})});refresh();}
+async function runNow(){const account=(document.getElementById('account').value||'principal');await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account})});refresh();}
+async function saveSettings(){const payload={gmail_filter_mode:document.getElementById('mode').value,gmail_max_pages:Number(document.getElementById('maxPages').value||3),gmail_page_size:Number(document.getElementById('pageSize').value||50),loop_interval_minutes:Number(document.getElementById('intervalMin').value||30)};await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
+async function reauth(_account){await api('/api/reauth',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
+async function reprocess(){const payload={account:document.getElementById('account').value||'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 async function loadHistory(){
   const q=(document.getElementById('hQuery').value||'').trim();
   const l=Number(document.getElementById('hLimit').value||300);
@@ -992,6 +1156,8 @@ async function loadHistory(){
   document.getElementById('historyList').textContent=lines.length?lines.join('\\n'):'Sem itens.';
 }
 async function logout(){await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href='/login';}
+['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
+['account','days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);
 </script></body></html>"""
 
@@ -1052,6 +1218,12 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "running": bool(running),
                         "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
+                        "settings": {
+                            "gmail_filter_mode": str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
+                            "gmail_max_pages": int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3)),
+                            "gmail_page_size": int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)),
+                            "loop_interval_minutes": int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30)),
+                        },
                         "last_status": dict(last_status),
                         "account": {
                             "email": str(email_info.get("email", "")),
@@ -1115,6 +1287,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     stopped = parar_verificacao()
                     return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
                 if parsed.path == "/api/run-now":
+                    _ = str(data.get("account", "principal"))
                     ok, msg = executar_um_ciclo()
                     return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
                 if parsed.path == "/api/settings":
@@ -1122,11 +1295,34 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
                     _save_settings(
                         {
-                            "interval_seconds": data.get("interval_seconds", _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                            "gmail_filter_mode": data.get("gmail_filter_mode", _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
+                            "gmail_max_pages": data.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)),
+                            "gmail_page_size": data.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)),
+                            "loop_interval_minutes": data.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)),
                             "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
                         }
                     )
                     return _json_response(self, 200, {"ok": True, "message": "Configuração salva"})
+                if parsed.path == "/api/reprocess":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    try:
+                        days = max(1, min(365, int(data.get("days", 30))))
+                    except Exception:
+                        days = 30
+                    try:
+                        max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
+                    except Exception:
+                        max_messages = 100
+                    mark_unread = bool(data.get("mark_unread", True))
+                    result = _reprocess_recent(days=days, max_messages=max_messages, mark_unread=mark_unread)
+                    friendly = f"Reprocessamento concluído: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas"
+                    return _json_response(self, 200, {"ok": True, "result": result, "friendly": friendly})
+                if parsed.path == "/api/reauth":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    info = _reauthenticate_gmail()
+                    return _json_response(self, 200, {"ok": True, "message": info.get("message", "Reautenticação concluída"), "friendly": "Reautenticação concluída"})
                 return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
