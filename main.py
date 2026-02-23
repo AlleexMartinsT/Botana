@@ -538,15 +538,35 @@ def _html_response(handler: BaseHTTPRequestHandler, status: int, html: str):
 
 
 def _find_store_image_path() -> Path | None:
-    candidates = [
-        Path(__file__).resolve().parent / "assets" / "branding" / "Arte MVA logo Metalico (1).png",
-        Path(__file__).resolve().parent / "assets" / "branding" / "arte mva logo metalico (1).png",
-        Path(__file__).resolve().parent / "Arte MVA logo Metalico (1).png",
-        Path(__file__).resolve().parent / "arte mva logo metalico (1).png",
-        Path.home() / "Desktop" / "Arte MVA logo Metalico (1).png",
+    names = [
+        "Arte MVA logo Metalico (1).png",
+        "arte mva logo metalico (1).png",
     ]
+    local_rel = Path("assets") / "branding"
+    candidates = []
+
+    for n in names:
+        candidates.append(Path.cwd() / local_rel / n)
+        candidates.append(Path.cwd() / n)
+        candidates.append(Path(__file__).resolve().parent / local_rel / n)
+        candidates.append(Path(__file__).resolve().parent / n)
+        candidates.append(Path(sys.executable).resolve().parent / local_rel / n)
+        candidates.append(Path(sys.executable).resolve().parent / n)
+        candidates.append(Path.home() / "Desktop" / n)
+
+    # Fallback para a imagem do FinanceBot, se não houver imagem local do Botana.
+    for n in names:
+        candidates.append(Path("C:/FinanceBot/assets/branding") / n)
+        candidates.append(Path("C:/FinanceBot") / n)
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        for n in names:
+            candidates.append(Path(meipass) / local_rel / n)
+            candidates.append(Path(meipass) / n)
+
     for p in candidates:
-        if p.exists():
+        if p.exists() and p.is_file():
             return p
     return None
 
@@ -670,9 +690,12 @@ def _render_server_html() -> str:
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;color:#2c1b12;padding:12px}
-.app{width:min(1150px,100%);margin:0 auto}
-.top{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(90deg,var(--b),var(--o));color:#fff9f3;border-radius:14px;padding:14px 20px;border:1px solid rgba(255,235,214,.3)}
-.brand{font-weight:800;letter-spacing:.2px}
+.app{width:min(1150px,100%);border-radius:18px;overflow:hidden;border:1px solid rgba(231,200,168,.9);background:linear-gradient(180deg,rgba(255,250,246,.96),rgba(255,245,235,.92));box-shadow:0 24px 60px rgba(21,11,6,.35)}
+.top{padding:14px 20px;background:linear-gradient(90deg,var(--b),var(--o));color:#fff9f3;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.top-right{display:flex;align-items:center;gap:8px}
+.whoami{font-size:.82rem;opacity:.95}
+.logout-btn{padding:7px 10px;border:1px solid rgba(255,244,234,.5);border-radius:8px;background:rgba(255,244,234,.12);color:#fff9f3;font-weight:700;cursor:pointer}
+.logout-btn:hover{background:rgba(255,244,234,.2)}
 .status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:.76rem;font-weight:700;border:1px solid}
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
@@ -700,13 +723,14 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 @media(max-width:900px){.grid{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
 </style></head><body>
 <main class="app">
   <section class="top">
-    <div class="brand">Botana - Painel de Controle</div>
-    <div style="display:flex;align-items:center;gap:10px">
-      <span id="who">Usuário: -</span>
-      <button class="sec" style="padding:6px 10px" onclick="logout()">Sair</button>
+    <span>Botana - Painel de Controle MVA</span>
+    <div class="top-right">
+      <span id="who" class="whoami">Usuário: -</span>
+      <button class="logout-btn" onclick="logout()">Sair</button>
       <span id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></span>
     </div>
   </section>
