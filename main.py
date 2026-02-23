@@ -51,6 +51,7 @@ _SESSIONS_LOCK = threading.Lock()
 _COOKIE_SESSION = "botana_session"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
 _RUNTIME_SETTINGS = {"interval_seconds": int(INTERVALO), "max_messages": 100}
+_EMAIL_CACHE = {"email": "", "error": "", "at": 0.0}
 
 
 def _load_settings():
@@ -586,6 +587,25 @@ def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
     return out
 
 
+def _connected_email(force: bool = False) -> dict:
+    now = time.time()
+    if not force and _EMAIL_CACHE.get("at", 0.0) and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120):
+        return dict(_EMAIL_CACHE)
+    try:
+        service = getGmailService()
+        profile = service.users().getProfile(userId="me").execute()
+        _EMAIL_CACHE.update(
+            {
+                "email": str(profile.get("emailAddress", "")).strip(),
+                "error": "",
+                "at": now,
+            }
+        )
+    except Exception as exc:
+        _EMAIL_CACHE.update({"error": str(exc), "at": now})
+    return dict(_EMAIL_CACHE)
+
+
 
 def _render_login_html() -> str:
     return """<!doctype html>
@@ -666,6 +686,10 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
 .k{border:1px solid #e8c9aa;border-radius:10px;padding:10px;background:#fffdfb}
 .k .n{font-size:1.1rem;font-weight:800;color:#6b4128}
 .k .t{font-size:.84rem;color:#7c5034}
+.status-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
+.h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
+.problem{color:#862818;font-size:.82rem;margin-top:4px}
 @media(max-width:900px){.grid{grid-template-columns:1fr}}
 </style></head><body>
 <main class="app">
@@ -685,6 +709,22 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
   </div>
 
   <section id="tabMain">
+    <section class="card">
+      <h3>Status das contas de e-mail</h3>
+      <div class="status-grid">
+        <div class="s">
+          <div class="h">
+            <span>Conta Botana</span>
+            <span id="accBadge" class="status-pill off"><span>●</span><span>Aguardando</span></span>
+          </div>
+          <div id="accEmail" class="muted">E-mail conectado: -</div>
+          <div id="accDetail" class="muted">Aguardando leitura</div>
+          <div id="accProblem" class="problem hidden">-</div>
+        </div>
+      </div>
+      <div id="cool" class="muted" style="margin-top:8px">Próxima verificação automática: -</div>
+    </section>
+
     <div class="grid">
       <article class="card">
         <h3>Status da execução</h3>
@@ -748,7 +788,31 @@ function switchTab(tab){
   document.getElementById('tabBtnDiag').classList.toggle('active',d);
 }
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);setPill(ok,running);}
+function setAccBadge(kind,label){
+  const b=document.getElementById('accBadge');
+  b.className='status-pill '+kind;
+  b.innerHTML='<span>●</span><span>'+label+'</span>';
+}
+function updAccount(state){
+  const e=document.getElementById('accEmail');
+  const d=document.getElementById('accDetail');
+  const p=document.getElementById('accProblem');
+  e.textContent='E-mail conectado: '+String(state.email||'-');
+  d.textContent=String(state.friendly||'Aguardando leitura');
+  const raw=String(state.error||'').trim();
+  if(raw){
+    p.textContent=raw;
+    p.classList.remove('hidden');
+  }else{
+    p.textContent='-';
+    p.classList.add('hidden');
+  }
+  const st=String(state.status||'waiting');
+  if(st==='running'){setAccBadge('ok','Funcionando');return;}
+  if(st==='error'){setAccBadge('err','Com problema');return;}
+  setAccBadge('off','Aguardando');
+}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);const left=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);document.getElementById('cool').textContent=left>0?('Próxima verificação automática em '+left+'s'):'Próxima verificação automática: sem contagem no momento';updAccount(j.account||{});setPill(ok,running);}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
@@ -806,6 +870,17 @@ def start_server(host: str, port: int, no_loop: bool = False):
             if parsed.path == "/":
                 return _html_response(self, 200, _render_server_html())
             if parsed.path == "/api/state":
+                email_info = _connected_email()
+                last_msg = str((last_status or {}).get("message", "") or "")
+                if running:
+                    acc_status = "running"
+                    friendly = "Lendo os e-mails agora"
+                elif (last_status or {}).get("ok", True):
+                    acc_status = "waiting"
+                    friendly = "Aguardando a próxima verificação automática"
+                else:
+                    acc_status = "error"
+                    friendly = "Falha na comunicação com a API. Veja os detalhes técnicos para identificar a causa."
                 return _json_response(
                     self,
                     200,
@@ -815,6 +890,16 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
                         "last_status": dict(last_status),
+                        "account": {
+                            "email": str(email_info.get("email", "")),
+                            "status": acc_status,
+                            "friendly": friendly,
+                            "error": "" if not email_info.get("error") else str(email_info.get("error")),
+                            "detail": last_msg,
+                        },
+                        "scheduler": {
+                            "next_in_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                        },
                         "auth": {"user": user, "role": _role_of(user)},
                     },
                 )
