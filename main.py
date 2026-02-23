@@ -828,6 +828,10 @@ button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;b
 <div id="m" class="msg"></div>
 </section>
 <script>
+const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store-image','favicon.ico']);
+function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
+const _BASE_PREFIX=_basePrefix();
+function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
 async function login(){
   const u=document.getElementById('u').value||'';
   const p=document.getElementById('p').value||'';
@@ -836,9 +840,9 @@ async function login(){
   b.disabled=true;
   m.textContent='Validando acesso';
   try{
-    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
+    const r=await fetch(_url('/api/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     const j=await r.json();
-    if(r.ok&&j.ok){window.location.href='/';return;}
+    if(r.ok&&j.ok){window.location.href=_url('/');return;}
     m.textContent=j.message||'Usuário ou senha inválidos';
   }catch(_){
     m.textContent='Falha ao conectar com o servidor';
@@ -1056,7 +1060,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
   </section>
 </main>
 <script>
-async function api(path,opts){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href='/login';throw new Error('nao autenticado');}return j;}
+const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store-image','favicon.ico']);
+function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
+const _BASE_PREFIX=_basePrefix();
+function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
+async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('nao autenticado');}return j;}
 let _nextRemain=0;
 function _fmtSec(total){
   const t=Math.max(0, Number(total||0));
@@ -1165,7 +1173,7 @@ async function loadHistory(){
   const lines=items.map(i=>`${i.at||''} - ${i.message||''}`.trim());
   document.getElementById('historyList').textContent=lines.length?lines.join('\\n'):'Sem itens.';
 }
-async function logout(){await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href='/login';}
+async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['account','days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);
