@@ -581,7 +581,7 @@ def _render_server_html() -> str:
 @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap');
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
 *{box-sizing:border-box}
-body{margin:0;font-family:'Lexend',Arial,sans-serif;background:radial-gradient(1200px 500px at 15% -20%,rgba(255,215,170,.45),transparent),radial-gradient(900px 420px at 95% 0%,rgba(211,140,74,.2),transparent),var(--bg);color:#2c1b12;padding:14px}
+body{margin:0;font-family:'Lexend',Arial,sans-serif;background:radial-gradient(1200px 500px at 15% -20%,rgba(255,215,170,.45),transparent),radial-gradient(900px 420px at 95% 0%,rgba(211,140,74,.2),transparent),var(--bg);color:#2c1b12;padding:12px}
 .app{max-width:1120px;margin:0 auto}
 .top{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(100deg,var(--b),#7a4d30);color:#fff9f3;border-radius:14px;padding:12px 14px;border:1px solid rgba(255,235,214,.3)}
 .brand{font-weight:800;letter-spacing:.2px}
@@ -589,61 +589,89 @@ body{margin:0;font-family:'Lexend',Arial,sans-serif;background:radial-gradient(1
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
 .err{background:#fdecec;color:#b42b2b;border-color:#f1bbbb}
-.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:12px;margin-top:12px}
-.card{background:rgba(255,250,245,.86);border:1px solid var(--br);border-radius:14px;padding:14px;box-shadow:0 8px 24px rgba(21,11,6,.06)}
-h2,h3{margin:0 0 10px;color:#5a311b}
+.tabs{display:flex;gap:8px;padding:10px 2px 0}
+.tab-btn{background:#f2e5d6;color:#55321c;border:1px solid #d9b690;border-radius:10px;padding:6px 12px;font-weight:700;cursor:pointer}
+.tab-btn.active{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
+.hidden{display:none}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:10px;margin-top:10px}
+.card{background:rgba(255,250,245,.9);border:1px solid var(--br);border-radius:14px;padding:12px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
+h3{margin:0 0 10px;color:#5a311b}
 .muted{color:#6d4a35}
 .btns{display:flex;gap:8px;flex-wrap:wrap}
 button{padding:9px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer}
 button.sec{background:linear-gradient(90deg,#7a4d30,#5b341f);color:#fff9f3}
 button.warn{background:linear-gradient(90deg,#bc2d2d,#8f2020);color:#fff}
+.inp{padding:8px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;width:145px}
 pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-radius:10px;overflow:auto;max-height:340px;white-space:pre-wrap}
-.kpi{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.kpi{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
 .k{border:1px solid #e8c9aa;border-radius:10px;padding:10px;background:#fffdfb}
-.k .n{font-size:1.28rem;font-weight:800;color:#6b4128;line-height:1}
+.k .n{font-size:1.1rem;font-weight:800;color:#6b4128}
 .k .t{font-size:.84rem;color:#7c5034}
-@media(max-width:860px){.grid{grid-template-columns:1fr}}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
 </style></head><body>
 <main class="app">
   <section class="top">
-    <div class="brand">Botana - Painel de Controle</div><div><span id="who" style="margin-right:10px">Usuário: -</span><button class="sec" style="padding:6px 10px" onclick="logout()">Sair</button></div>
-    <div id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></div>
+    <div class="brand">Botana - Painel de Controle</div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <span id="who">Usuário: -</span>
+      <button class="sec" style="padding:6px 10px" onclick="logout()">Sair</button>
+      <span id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></span>
+    </div>
   </section>
-  <section class="grid">
-    <article class="card">
-      <h2>Status da Execucao</h2>
-      <div id="status" class="muted">Carregando status...</div>
-      <div class="btns" style="margin-top:10px">
-        <button onclick="startLoop()">Iniciar loop</button>
-        <button class="sec" onclick="runNow()">Executar agora</button>
-        <button class="warn" onclick="stopLoop()">Parar loop</button>
-      </div>
-    </article>
-    <article class="card">
-      <h2>Resumo</h2>
-      <div class="kpi">
-        <div class="k"><div id="maxMsgs" class="n">-</div><div class="t">Máx. mensagens</div></div>
-        <div class="k"><div id="interval" class="n">-</div><div class="t">Intervalo (s)</div></div>
-        <div class="k"><div id="stateTxt" class="n">-</div><div class="t">Estado</div></div>
-      </div>
-      <div style="margin-top:10px">
-        <h3 style="margin:0 0 6px">Configuração</h3>
-        <div class="btns">
-          <input id="cfgInterval" type="number" min="30" max="86400" placeholder="Intervalo (s)" style="padding:8px;border:1px solid #d6b18f;border-radius:8px">
-          <input id="cfgMax" type="number" min="1" max="1000" placeholder="Máx. mensagens" style="padding:8px;border:1px solid #d6b18f;border-radius:8px">
-          <button onclick="saveSettings()">Salvar configuração</button>
+
+  <div class="tabs">
+    <button id="tabBtnMain" class="tab-btn active" onclick="switchTab('main')">Painel</button>
+    <button id="tabBtnDiag" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
+  </div>
+
+  <section id="tabMain">
+    <div class="grid">
+      <article class="card">
+        <h3>Status da execução</h3>
+        <div id="status" class="muted">Carregando status...</div>
+        <div class="btns" style="margin-top:10px">
+          <button onclick="startLoop()">Iniciar loop</button>
+          <button class="sec" onclick="runNow()">Executar agora</button>
+          <button class="warn" onclick="stopLoop()">Parar loop</button>
         </div>
+      </article>
+      <article class="card">
+        <h3>Resumo</h3>
+        <div class="kpi">
+          <div class="k"><div id="maxMsgs" class="n">-</div><div class="t">Máx. mensagens</div></div>
+          <div class="k"><div id="interval" class="n">-</div><div class="t">Intervalo (s)</div></div>
+          <div class="k"><div id="stateTxt" class="n">-</div><div class="t">Estado</div></div>
+        </div>
+      </article>
+    </div>
+
+    <section class="card" style="margin-top:10px">
+      <h3>Configuração do Botana</h3>
+      <div class="btns">
+        <input id="cfgInterval" class="inp" type="number" min="30" max="86400" placeholder="Intervalo (s)">
+        <input id="cfgMax" class="inp" type="number" min="1" max="1000" placeholder="Máx. mensagens">
+        <button onclick="saveSettings()">Salvar configuração</button>
       </div>
-    </article>
+    </section>
   </section>
-  <section class="card" style="margin-top:12px">
-    <h3>Ultimo status tecnico</h3>
-    <pre id="details">-</pre>
+
+  <section id="tabDiag" class="hidden">
+    <section class="card" style="margin-top:10px">
+      <h3>Diagnóstico</h3>
+      <pre id="details">-</pre>
+    </section>
   </section>
 </main>
 <script>
 async function api(path,opts){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href='/login';throw new Error('nao autenticado');}return j;}
-function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execucao</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
+function switchTab(tab){
+  const m=tab==='main';
+  document.getElementById('tabMain').classList.toggle('hidden',!m);
+  document.getElementById('tabDiag').classList.toggle('hidden',m);
+  document.getElementById('tabBtnMain').classList.toggle('active',m);
+  document.getElementById('tabBtnDiag').classList.toggle('active',!m);
+}
+function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
 async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);setPill(ok,running);}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
