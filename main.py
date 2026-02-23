@@ -491,6 +491,21 @@ def on_quit():
     sys.exit(0)
 
 
+def _read_json(handler: BaseHTTPRequestHandler) -> dict:
+    try:
+        raw_len = handler.headers.get("Content-Length", "0")
+        size = int(raw_len) if str(raw_len).strip().isdigit() else 0
+        if size <= 0:
+            return {}
+        raw = handler.rfile.read(size)
+        if not raw:
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict, extra_headers: dict | None = None):
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
@@ -685,54 +700,58 @@ def start_server(host: str, port: int, no_loop: bool = False):
             return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
 
         def do_POST(self):
-            parsed = urlparse(self.path)
-            data = _read_json(self)
+            try:
+                parsed = urlparse(self.path)
+                data = _read_json(self)
 
-            if parsed.path == "/api/login":
-                username = str(data.get("username", "")).strip()
-                password = str(data.get("password", ""))
-                if not _verify_login(username, password):
-                    return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
-                token = _create_session(username)
-                cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
-                return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
+                if parsed.path == "/api/login":
+                    username = str(data.get("username", "")).strip()
+                    password = str(data.get("password", ""))
+                    if not _verify_login(username, password):
+                        return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
+                    token = _create_session(username)
+                    cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
+                    return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
 
-            if parsed.path == "/api/logout":
-                token = _read_cookie_session(self)
-                if token:
-                    with _SESSIONS_LOCK:
-                        _SESSIONS.pop(token, None)
-                return _json_response(
-                    self,
-                    200,
-                    {"ok": True},
-                    {"Set-Cookie": f"{_COOKIE_SESSION}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"},
-                )
+                if parsed.path == "/api/logout":
+                    token = _read_cookie_session(self)
+                    if token:
+                        with _SESSIONS_LOCK:
+                            _SESSIONS.pop(token, None)
+                    return _json_response(
+                        self,
+                        200,
+                        {"ok": True},
+                        {"Set-Cookie": f"{_COOKIE_SESSION}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"},
+                    )
 
-            user = self._require_auth(parsed.path)
-            if not user:
-                return
+                user = self._require_auth(parsed.path)
+                if not user:
+                    return
 
-            if parsed.path == "/api/start":
-                started = iniciar_verificacao()
-                return _json_response(self, 200, {"ok": True, "started": bool(started)})
-            if parsed.path == "/api/stop":
-                stopped = parar_verificacao()
-                return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
-            if parsed.path == "/api/run-now":
-                ok, msg = executar_um_ciclo()
-                return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
-            if parsed.path == "/api/settings":
-                if not _can_operate(user):
-                    return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
-                _save_settings(
-                    {
-                        "interval_seconds": data.get("interval_seconds", _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
-                        "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
-                    }
-                )
-                return _json_response(self, 200, {"ok": True, "message": "Configuração salva"})
-            return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
+                if parsed.path == "/api/start":
+                    started = iniciar_verificacao()
+                    return _json_response(self, 200, {"ok": True, "started": bool(started)})
+                if parsed.path == "/api/stop":
+                    stopped = parar_verificacao()
+                    return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
+                if parsed.path == "/api/run-now":
+                    ok, msg = executar_um_ciclo()
+                    return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
+                if parsed.path == "/api/settings":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    _save_settings(
+                        {
+                            "interval_seconds": data.get("interval_seconds", _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                            "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
+                        }
+                    )
+                    return _json_response(self, 200, {"ok": True, "message": "Configuração salva"})
+                return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
+            except Exception as exc:
+                logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
+                return _json_response(self, 500, {"ok": False, "message": "Erro interno no servidor"})
 
     if not no_loop:
         iniciar_verificacao()
