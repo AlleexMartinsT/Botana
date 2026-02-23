@@ -1,10 +1,9 @@
 import os
 from dotenv import load_dotenv
 
-# Carregar variáveis de ambiente do arquivo .env dentro de secrets/
+# Carrega variaveis de ambiente do arquivo .env dentro de secrets/
 dotenv_path = os.path.join(os.path.dirname(__file__), "secrets", ".env")
 load_dotenv(dotenv_path)
-
 
 # Caminhos
 BASE_DIR = os.path.dirname(__file__)
@@ -14,20 +13,35 @@ RELATORIO_DIR = os.path.join(BASE_DIR, "relatorios")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 os.makedirs(RELATORIO_DIR, exist_ok=True)
 
+
+def _env_or_default(key: str, default_value: str) -> str:
+    value = os.getenv(key)
+    if value is None:
+        return default_value
+    value = str(value).strip()
+    return value if value else default_value
+
+
 # Credenciais
-GOOGLE_CREDENTIALS_GMAIL = os.path.join(SECRETS_DIR, os.getenv("GOOGLE_CREDENTIALS_GMAIL"))
-GOOGLE_CREDENTIALS_SHEETS = os.path.join(SECRETS_DIR, os.getenv("GOOGLE_CREDENTIALS_SHEETS"))
+GOOGLE_CREDENTIALS_GMAIL = os.path.join(
+    SECRETS_DIR,
+    _env_or_default("GOOGLE_CREDENTIALS_GMAIL", "credentials_gmail.json"),
+)
+GOOGLE_CREDENTIALS_SHEETS = os.path.join(
+    SECRETS_DIR,
+    _env_or_default("GOOGLE_CREDENTIALS_SHEETS", "credentials_sheets.json"),
+)
 
 # Planilhas
 PLANILHAS = {
     "MVA": {
         "2025": os.getenv("SHEET_MVA_2025"),
-        "2026": os.getenv("SHEET_MVA_2026")
+        "2026": os.getenv("SHEET_MVA_2026"),
     },
     "EH": {
         "2025": os.getenv("SHEET_EH_2025"),
-        "2026": os.getenv("SHEET_EH_2026")
-    }
+        "2026": os.getenv("SHEET_EH_2026"),
+    },
 }
 
 # CNPJs
