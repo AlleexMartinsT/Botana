@@ -52,6 +52,7 @@ _COOKIE_SESSION = "botana_session"
 _SESSION_TTL_SECONDS = 8 * 60 * 60
 _RUNTIME_SETTINGS = {"interval_seconds": int(INTERVALO), "max_messages": 100}
 _EMAIL_CACHE = {"email": "", "error": "", "at": 0.0}
+_NEXT_RUN_AT = 0.0
 
 
 def _load_settings():
@@ -73,6 +74,9 @@ def _load_settings():
             "max_messages": max(1, min(1000, int(raw.get("max_messages", 100)))),
         }
         _RUNTIME_SETTINGS.update(out)
+        global _NEXT_RUN_AT
+        if _NEXT_RUN_AT <= 0:
+            _NEXT_RUN_AT = time.time() + int(out.get("interval_seconds", INTERVALO))
         return out
 
 
@@ -84,6 +88,8 @@ def _save_settings(data: dict):
         }
         _RUNTIME_SETTINGS.update(out)
         _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        global _NEXT_RUN_AT
+        _NEXT_RUN_AT = time.time() + int(out.get("interval_seconds", INTERVALO))
 
 
 def _password_hash(password: str, salt_hex: str) -> str:
@@ -435,11 +441,12 @@ def processar_emails_enviados():
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
 
 def main_loop():
-    global running, last_status
+    global running, last_status, _NEXT_RUN_AT
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     running = True
     logger.info("[Botana] Loop iniciado")
     while not stop_event.is_set():
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         try:
             processar_emails_enviados()
             last_status = {"ok": True, "message": "Ciclo executado com sucesso", "at": datetime.now().isoformat()}
@@ -453,14 +460,16 @@ def main_loop():
 
 
 def executar_um_ciclo():
-    global last_status
+    global last_status, _NEXT_RUN_AT
     try:
         processar_emails_enviados()
         last_status = {"ok": True, "message": "ExecuÃ§Ã£o manual concluÃ­da", "at": datetime.now().isoformat()}
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return True, "ExecuÃ§Ã£o manual concluÃ­da"
     except Exception as exc:
         logger.exception("Erro na execuÃ§Ã£o manual: %s", exc)
         last_status = {"ok": False, "message": f"Erro na execuÃ§Ã£o manual: {exc}", "at": datetime.now().isoformat()}
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return False, str(exc)
 
 
@@ -776,6 +785,26 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
 </main>
 <script>
 async function api(path,opts){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href='/login';throw new Error('nao autenticado');}return j;}
+let _nextRemain=0;
+function _fmtSec(total){
+  const t=Math.max(0, Number(total||0));
+  const h=Math.floor(t/3600);
+  const m=Math.floor((t%3600)/60);
+  const s=Math.floor(t%60);
+  if(h>0) return `${h}h ${m}min ${s}s`;
+  if(m>0) return `${m}min ${s}s`;
+  return `${s}s`;
+}
+function _tickNext(){
+  const el=document.getElementById('cool');
+  if(!el) return;
+  if(_nextRemain>0){
+    el.textContent='Próxima verificação automática em '+_fmtSec(_nextRemain);
+    _nextRemain=Math.max(0,_nextRemain-1);
+  }else{
+    el.textContent='Próxima verificação automática: sem contagem no momento';
+  }
+}
 function switchTab(tab){
   const m=tab==='main';
   const h=tab==='hist';
@@ -812,7 +841,7 @@ function updAccount(state){
   if(st==='error'){setAccBadge('err','Com problema');return;}
   setAccBadge('off','Aguardando');
 }
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);const left=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);document.getElementById('cool').textContent=left>0?('Próxima verificação automática em '+left+'s'):'Próxima verificação automática: sem contagem no momento';updAccount(j.account||{});setPill(ok,running);}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
@@ -829,7 +858,7 @@ async function loadHistory(){
   document.getElementById('historyList').textContent=lines.length?lines.join('\\n'):'Sem itens.';
 }
 async function logout(){await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href='/login';}
-refresh();loadHistory();setInterval(refresh,3000);
+refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);
 </script></body></html>"""
 
 def start_server(host: str, port: int, no_loop: bool = False):
@@ -898,7 +927,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "detail": last_msg,
                         },
                         "scheduler": {
-                            "next_in_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                            "next_in_seconds": max(0, int(_NEXT_RUN_AT - time.time())) if _NEXT_RUN_AT > 0 else int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         },
                         "auth": {"user": user, "role": _role_of(user)},
                     },
