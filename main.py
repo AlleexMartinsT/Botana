@@ -6,7 +6,7 @@ import secrets
 import os, re, time, gspread, threading, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 from google.oauth2.service_account import Credentials
 from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, GOOGLE_CREDENTIALS_SHEETS
@@ -527,6 +527,65 @@ def _html_response(handler: BaseHTTPRequestHandler, status: int, html: str):
     handler.wfile.write(raw)
 
 
+def _find_store_image_path() -> Path | None:
+    candidates = [
+        Path(__file__).resolve().parent / "assets" / "branding" / "Arte MVA logo Metalico (1).png",
+        Path(__file__).resolve().parent / "assets" / "branding" / "arte mva logo metalico (1).png",
+        Path(__file__).resolve().parent / "Arte MVA logo Metalico (1).png",
+        Path(__file__).resolve().parent / "arte mva logo metalico (1).png",
+        Path.home() / "Desktop" / "Arte MVA logo Metalico (1).png",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def _send_store_image(handler: BaseHTTPRequestHandler) -> bool:
+    img = _find_store_image_path()
+    if not img:
+        return False
+    try:
+        raw = img.read_bytes()
+        handler.send_response(200)
+        handler.send_header("Content-Type", "image/png")
+        handler.send_header("Cache-Control", "no-cache")
+        handler.send_header("Content-Length", str(len(raw)))
+        handler.end_headers()
+        handler.wfile.write(raw)
+        return True
+    except Exception:
+        return False
+
+
+def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
+    out = []
+    q = str(query or "").strip().lower()
+    rel_dir = Path(RELATORIO_DIR)
+    if not rel_dir.exists():
+        return out
+    files = sorted(rel_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for fp in files:
+        try:
+            for line in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if q and q not in line.lower():
+                    continue
+                # formato típico: "YYYY-MM-DD HH:MM:SS - mensagem"
+                if " - " in line:
+                    dt, msg = line.split(" - ", 1)
+                else:
+                    dt, msg = "", line
+                out.append({"at": dt.strip(), "message": msg.strip(), "raw": line})
+                if len(out) >= limit:
+                    return out
+        except Exception:
+            continue
+    return out
+
+
 
 def _render_login_html() -> str:
     return """<!doctype html>
@@ -537,7 +596,7 @@ def _render_login_html() -> str:
 <style>
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--b2:#6b4128}
 *{box-sizing:border-box}
-body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72));display:flex;justify-content:center;align-items:center;padding:12px;color:#2a1b12}
+body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;display:flex;justify-content:center;align-items:center;padding:12px;color:#2a1b12}
 .card{width:min(420px,96vw);border-radius:16px;border:1px solid rgba(231,200,168,.9);background:linear-gradient(180deg,rgba(255,250,246,.96),rgba(255,245,235,.92));box-shadow:0 24px 60px rgba(21,11,6,.35);padding:16px}
 h1{margin:0 0 6px;color:var(--b);font-size:1.2rem}
 p{margin:0 0 12px;color:#6b4128}
@@ -581,7 +640,7 @@ def _render_server_html() -> str:
 @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap');
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
 *{box-sizing:border-box}
-body{margin:0;font-family:'Lexend',Arial,sans-serif;background:radial-gradient(1200px 500px at 15% -20%,rgba(255,215,170,.45),transparent),radial-gradient(900px 420px at 95% 0%,rgba(211,140,74,.2),transparent),var(--bg);color:#2c1b12;padding:12px}
+body{margin:0;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;color:#2c1b12;padding:12px}
 .app{max-width:1120px;margin:0 auto}
 .top{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(100deg,var(--b),#7a4d30);color:#fff9f3;border-radius:14px;padding:12px 14px;border:1px solid rgba(255,235,214,.3)}
 .brand{font-weight:800;letter-spacing:.2px}
@@ -621,6 +680,7 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
 
   <div class="tabs">
     <button id="tabBtnMain" class="tab-btn active" onclick="switchTab('main')">Painel</button>
+    <button id="tabBtnHist" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
     <button id="tabBtnDiag" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
   </div>
 
@@ -655,6 +715,18 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
     </section>
   </section>
 
+  <section id="tabHist" class="hidden">
+    <section class="card" style="margin-top:10px">
+      <h3>Histórico</h3>
+      <div class="btns">
+        <input id="hQuery" class="inp" type="text" placeholder="Buscar no histórico">
+        <input id="hLimit" class="inp" type="number" min="10" max="2000" value="300" placeholder="Limite">
+        <button onclick="loadHistory()">Aplicar filtros</button>
+      </div>
+      <pre id="historyList" style="margin-top:8px">Carregando...</pre>
+    </section>
+  </section>
+
   <section id="tabDiag" class="hidden">
     <section class="card" style="margin-top:10px">
       <h3>Diagnóstico</h3>
@@ -666,10 +738,14 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-ra
 async function api(path,opts){const r=await fetch(path,opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href='/login';throw new Error('nao autenticado');}return j;}
 function switchTab(tab){
   const m=tab==='main';
+  const h=tab==='hist';
+  const d=tab==='diag';
   document.getElementById('tabMain').classList.toggle('hidden',!m);
-  document.getElementById('tabDiag').classList.toggle('hidden',m);
+  document.getElementById('tabHist').classList.toggle('hidden',!h);
+  document.getElementById('tabDiag').classList.toggle('hidden',!d);
   document.getElementById('tabBtnMain').classList.toggle('active',m);
-  document.getElementById('tabBtnDiag').classList.toggle('active',!m);
+  document.getElementById('tabBtnHist').classList.toggle('active',h);
+  document.getElementById('tabBtnDiag').classList.toggle('active',d);
 }
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
 async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);setPill(ok,running);}
@@ -677,8 +753,19 @@ async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
 async function saveSettings(){const interval_seconds=Number(document.getElementById('cfgInterval').value||0);const max_messages=Number(document.getElementById('cfgMax').value||0);await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval_seconds,max_messages})});refresh();}
+async function loadHistory(){
+  const q=(document.getElementById('hQuery').value||'').trim();
+  const l=Number(document.getElementById('hLimit').value||300);
+  const p=new URLSearchParams();
+  if(q)p.set('q',q);
+  p.set('limit',String(Math.max(10,Math.min(2000,l||300))));
+  const j=await api('/api/history?'+p.toString());
+  const items=j.items||[];
+  const lines=items.map(i=>`${i.at||''} - ${i.message||''}`.trim());
+  document.getElementById('historyList').textContent=lines.length?lines.join('\\n'):'Sem itens.';
+}
 async function logout(){await fetch('/api/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href='/login';}
-refresh();setInterval(refresh,3000);
+refresh();loadHistory();setInterval(refresh,3000);
 </script></body></html>"""
 
 def start_server(host: str, port: int, no_loop: bool = False):
@@ -701,6 +788,12 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
         def do_GET(self):
             parsed = urlparse(self.path)
+            if parsed.path == "/assets/store-bg":
+                if _send_store_image(self):
+                    return
+                self.send_response(404)
+                self.end_headers()
+                return
             if parsed.path == "/login":
                 if _current_session_user(self):
                     return _html_response(self, 200, _render_server_html())
@@ -725,6 +818,15 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "auth": {"user": user, "role": _role_of(user)},
                     },
                 )
+            if parsed.path == "/api/history":
+                qs = parse_qs(parsed.query or "")
+                query = (qs.get("q", [""])[0] or "").strip()
+                try:
+                    limit = int((qs.get("limit", ["300"])[0] or "300").strip())
+                except Exception:
+                    limit = 300
+                items = _history_from_reports(limit=max(10, min(limit, 2000)), query=query)
+                return _json_response(self, 200, {"items": items})
             return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
 
         def do_POST(self):
