@@ -720,8 +720,7 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .k{border:1px solid #deb999;border-radius:10px;padding:9px;background:#fff9f3}
 .k .n{font-size:1.2rem;font-weight:800;color:#6b4128}
 .k .t{font-size:.78rem;color:#6b4128}
-.account-status-card{max-width:980px;margin:0 auto}
-.status-grid{display:grid;grid-template-columns:1fr;gap:8px;max-width:760px;margin:0 auto}
+.status-grid{display:grid;grid-template-columns:1fr;gap:8px}
 .s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
@@ -745,7 +744,7 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
   </div>
 
   <section id="tabMain">
-    <section class="card account-status-card">
+    <section class="card">
       <h3>Status da conta de e-mail</h3>
       <div class="status-grid">
         <div class="s">
