@@ -751,6 +751,15 @@ def _connected_email(force: bool = False) -> dict:
     return dict(_EMAIL_CACHE)
 
 
+def _scheduler_next_seconds() -> int:
+    global _NEXT_RUN_AT
+    interval = max(30, int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)))
+    now = time.time()
+    if _NEXT_RUN_AT <= 0 or _NEXT_RUN_AT <= now:
+        _NEXT_RUN_AT = now + interval
+    return max(0, int(_NEXT_RUN_AT - now))
+
+
 def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
     service = _get_gmail_service_locked()
     label_id = ensure_label(service, LABEL_NAME)
@@ -1201,6 +1210,8 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return _html_response(self, 200, _render_server_html())
             if parsed.path == "/api/state":
                 email_info = _connected_email()
+                if not str(email_info.get("email", "")).strip() and not str(email_info.get("error", "")).strip():
+                    email_info = _connected_email(force=True)
                 last_msg = str((last_status or {}).get("message", "") or "")
                 if running:
                     acc_status = "running"
@@ -1234,7 +1245,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "detail": last_msg,
                         },
                         "scheduler": {
-                            "next_in_seconds": max(0, int(_NEXT_RUN_AT - time.time())) if _NEXT_RUN_AT > 0 else int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                            "next_in_seconds": _scheduler_next_seconds(),
                         },
                         "daily_report": _daily_report_data(),
                         "auth": {"user": user, "role": _role_of(user)},
