@@ -616,6 +616,68 @@ def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
     return out
 
 
+def _latest_report_file() -> Path | None:
+    rel_dir = Path(RELATORIO_DIR)
+    if not rel_dir.exists():
+        return None
+    files = sorted(rel_dir.glob("relatorio_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return files[0] if files else None
+
+
+def _daily_report_data() -> dict:
+    report_file = _latest_report_file()
+    if not report_file:
+        return {
+            "exists": False,
+            "path": "",
+            "updated_at": "",
+            "totals": {"processados": 0, "ignorados": 0, "avisos_ciclo": 0, "avisos_dia": 0},
+            "processados": [],
+            "ignorados": [],
+            "avisos": [],
+        }
+
+    try:
+        lines = report_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        lines = []
+
+    processados: list[str] = []
+    ignorados: list[str] = []
+    avisos: list[str] = []
+
+    for raw in lines:
+        line = str(raw or "").strip()
+        if not line:
+            continue
+        text = line.split(" - ", 1)[1].strip() if " - " in line else line
+        low = text.lower()
+        if "erro" in low or "falha" in low:
+            avisos.append(text)
+            continue
+        if "ignorada" in low or "ignorado" in low:
+            ignorados.append(text)
+            continue
+        processados.append(text)
+
+    totals = {
+        "processados": len(processados),
+        "ignorados": len(ignorados),
+        "avisos_ciclo": len(avisos),
+        "avisos_dia": len(avisos),
+    }
+    updated_at = datetime.fromtimestamp(report_file.stat().st_mtime).strftime("%d/%m/%Y, %H:%M:%S")
+    return {
+        "exists": True,
+        "path": str(report_file),
+        "updated_at": updated_at,
+        "totals": totals,
+        "processados": processados[-8:],
+        "ignorados": ignorados[-8:],
+        "avisos": avisos[-8:],
+    }
+
+
 def _connected_email(force: bool = False) -> dict:
     now = time.time()
     if not force and _EMAIL_CACHE.get("at", 0.0) and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120):
@@ -720,11 +782,18 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .k{border:1px solid #deb999;border-radius:10px;padding:9px;background:#fff9f3}
 .k .n{font-size:1.2rem;font-weight:800;color:#6b4128}
 .k .t{font-size:.78rem;color:#6b4128}
+.kpi.daily{grid-template-columns:repeat(4,minmax(0,1fr))}
+.rmeta{margin-top:6px}
+.lists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
+.box{border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb;padding:8px}
+.box h4{margin:0 0 6px;font-size:.85rem;color:#58311b}
+.box ul{margin:0;padding-left:16px;max-height:160px;overflow:auto}
+.box li{margin:3px 0;font-size:.8rem}
 .status-grid{display:grid;grid-template-columns:1fr;gap:8px}
 .s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}}
+@media(max-width:900px){.grid{grid-template-columns:1fr}.lists{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
 </style></head><body>
 <main class="app">
@@ -758,6 +827,22 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
         </div>
       </div>
       <div id="cool" class="muted" style="margin-top:8px">Próxima verificação automática: -</div>
+    </section>
+
+    <section class="card">
+      <h3>Relatórios diários</h3>
+      <div class="kpi daily">
+        <div class="k"><div id="kp1" class="n">0</div><div class="t">Processados</div></div>
+        <div class="k"><div id="kp2" class="n">0</div><div class="t">Ignorados</div></div>
+        <div class="k"><div id="kp3" class="n">0</div><div class="t">Avisos no ciclo</div></div>
+        <div class="k"><div id="kp4" class="n">0</div><div class="t">Avisos no dia</div></div>
+      </div>
+      <div id="rmeta" class="muted rmeta">Sem relatório encontrado ainda</div>
+      <div class="lists">
+        <div class="box"><h4>Últimos processados</h4><ul id="lp"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Últimos ignorados</h4><ul id="li"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Avisos recentes</h4><ul id="la"><li>Sem itens</li></ul></div>
+      </div>
     </section>
 
     <div class="grid">
@@ -867,7 +952,30 @@ function updAccount(state){
   if(st==='error'){setAccBadge('err','Com problema');return;}
   setAccBadge('off','Aguardando');
 }
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);}
+function setList(id,items){
+  const el=document.getElementById(id);
+  if(!el) return;
+  const arr=Array.isArray(items)?items:[];
+  if(!arr.length){el.innerHTML='<li>Sem itens</li>';return;}
+  el.innerHTML=arr.map(v=>`<li>${String(v||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>`).join('');
+}
+function updDaily(rep){
+  const t=(rep&&rep.totals)||{};
+  document.getElementById('kp1').textContent=String(t.processados||0);
+  document.getElementById('kp2').textContent=String(t.ignorados||0);
+  document.getElementById('kp3').textContent=String(t.avisos_ciclo||0);
+  document.getElementById('kp4').textContent=String(t.avisos_dia||0);
+  const meta=document.getElementById('rmeta');
+  if(rep&&rep.exists){
+    meta.textContent='Atualizado em: '+String(rep.updated_at||'-')+' | Arquivo: '+String(rep.path||'-');
+  }else{
+    meta.textContent='Sem relatório encontrado ainda';
+  }
+  setList('lp',(rep&&rep.processados)||[]);
+  setList('li',(rep&&rep.ignorados)||[]);
+  setList('la',(rep&&rep.avisos)||[]);
+}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('cfgInterval').value=String(j.interval_seconds||'');document.getElementById('cfgMax').value=String(j.max_messages||'');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST'});refresh();}
@@ -955,6 +1063,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "scheduler": {
                             "next_in_seconds": max(0, int(_NEXT_RUN_AT - time.time())) if _NEXT_RUN_AT > 0 else int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         },
+                        "daily_report": _daily_report_data(),
                         "auth": {"user": user, "role": _role_of(user)},
                     },
                 )
