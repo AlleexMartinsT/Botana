@@ -60,6 +60,12 @@ _RUNTIME_SETTINGS = {
 }
 _EMAIL_CACHE = {"email": "", "error": "", "at": 0.0}
 _NEXT_RUN_AT = 0.0
+_GMAIL_SERVICE_LOCK = threading.Lock()
+
+
+def _get_gmail_service_locked():
+    with _GMAIL_SERVICE_LOCK:
+        return getGmailService()
 
 
 def _load_settings():
@@ -251,7 +257,7 @@ def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def processar_emails_enviados():
-    service = getGmailService()
+    service = _get_gmail_service_locked()
     msgs = buscarMessagesEnviados(service, max_results=int(_RUNTIME_SETTINGS.get("max_messages", 100)))
     if not msgs:
         logger.info("Nenhuma mensagem enviada com XML encontrada.")
@@ -731,7 +737,7 @@ def _connected_email(force: bool = False) -> dict:
     if not force and _EMAIL_CACHE.get("at", 0.0) and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120):
         return dict(_EMAIL_CACHE)
     try:
-        service = getGmailService()
+        service = _get_gmail_service_locked()
         profile = service.users().getProfile(userId="me").execute()
         _EMAIL_CACHE.update(
             {
@@ -746,7 +752,7 @@ def _connected_email(force: bool = False) -> dict:
 
 
 def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
-    service = getGmailService()
+    service = _get_gmail_service_locked()
     label_id = ensure_label(service, LABEL_NAME)
     after = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y/%m/%d")
     query = f'after:{after} label:"{LABEL_NAME}"'
@@ -780,7 +786,7 @@ def _reauthenticate_gmail() -> dict:
             os.remove(token_path)
     except Exception:
         pass
-    getGmailService()
+    _get_gmail_service_locked()
     _connected_email(force=True)
     return {"ok": True, "message": "Reautenticação concluída"}
 
