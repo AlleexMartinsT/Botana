@@ -669,32 +669,32 @@ def _render_server_html() -> str:
 @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap');
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
 *{box-sizing:border-box}
-body{margin:0;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;color:#2c1b12;padding:12px}
-.app{max-width:1120px;margin:0 auto}
-.top{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(100deg,var(--b),#7a4d30);color:#fff9f3;border-radius:14px;padding:12px 14px;border:1px solid rgba(255,235,214,.3)}
+body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;color:#2c1b12;padding:12px}
+.app{width:min(1150px,100%);margin:0 auto}
+.top{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(90deg,var(--b),var(--o));color:#fff9f3;border-radius:14px;padding:14px 20px;border:1px solid rgba(255,235,214,.3)}
 .brand{font-weight:800;letter-spacing:.2px}
-.status-pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;font-size:.82rem;font-weight:700;border:1px solid}
+.status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:.76rem;font-weight:700;border:1px solid}
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
 .err{background:#fdecec;color:#b42b2b;border-color:#f1bbbb}
-.tabs{display:flex;gap:8px;padding:10px 2px 0}
-.tab-btn{background:#f2e5d6;color:#55321c;border:1px solid #d9b690;border-radius:10px;padding:6px 12px;font-weight:700;cursor:pointer}
+.tabs{display:flex;gap:8px;padding:10px 10px 0}
+.tab-btn{background:#fff5ea;color:#5a311b;border:1px solid #d7b393;border-radius:9px;padding:8px 12px;font-weight:700;cursor:pointer}
 .tab-btn.active{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
 .hidden{display:none}
-.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:10px;margin-top:10px}
-.card{background:rgba(255,250,245,.9);border:1px solid var(--br);border-radius:14px;padding:12px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
-h3{margin:0 0 10px;color:#5a311b}
-.muted{color:#6d4a35}
+.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:8px;margin-top:10px}
+.card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
+h3{margin:0 0 8px;color:var(--b);font-size:.98rem}
+.muted{color:#6c4a35;font-size:.84rem}
 .btns{display:flex;gap:8px;flex-wrap:wrap}
-button{padding:9px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer}
+button{padding:9px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer;font-size:.9rem}
 button.sec{background:linear-gradient(90deg,#7a4d30,#5b341f);color:#fff9f3}
 button.warn{background:linear-gradient(90deg,#bc2d2d,#8f2020);color:#fff}
-.inp{padding:8px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;width:145px}
-pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:10px;border-radius:10px;overflow:auto;max-height:340px;white-space:pre-wrap}
+.inp{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit;width:145px}
+pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-radius:10px;overflow:auto;max-height:340px;white-space:pre-wrap}
 .kpi{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.k{border:1px solid #e8c9aa;border-radius:10px;padding:10px;background:#fffdfb}
-.k .n{font-size:1.1rem;font-weight:800;color:#6b4128}
-.k .t{font-size:.84rem;color:#7c5034}
+.k{border:1px solid #deb999;border-radius:10px;padding:9px;background:#fff9f3}
+.k .n{font-size:1.2rem;font-weight:800;color:#6b4128}
+.k .t{font-size:.78rem;color:#6b4128}
 .status-grid{display:grid;grid-template-columns:1fr;gap:8px}
 .s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
