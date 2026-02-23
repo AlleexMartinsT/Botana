@@ -856,7 +856,6 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .hidden{display:none}
 #tabMain{padding:0 10px 10px;display:grid;gap:9px}
 #tabHist,#tabDiag{padding:0 10px 10px}
-.grid{display:grid;grid-template-columns:1.1fr .9fr;gap:8px;margin-top:10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
 h3{margin:0 0 8px;color:var(--b);font-size:.98rem}
 label{display:block;font-weight:600;color:#5c341c;font-size:.9rem}
@@ -883,7 +882,7 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
-.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(190px,240px);gap:10px;align-items:start}
+.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px) minmax(260px,320px);gap:10px;align-items:start}
 .cfg-main{display:grid;gap:8px}
 .cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end}
 .cfg-fields > div{display:flex;flex-direction:column}
@@ -891,10 +890,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap}
 .auth-card .btns{flex-direction:column}
 .auth-card .btns button{width:100%}
+.reproc-card .btns{margin-top:8px}
 .reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
 .reproc-grid > div{display:flex;flex-direction:column}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
-@media(max-width:900px){.grid{grid-template-columns:1fr}.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
+@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
 </style></head><body>
 <main class="app">
@@ -946,26 +946,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       </div>
     </section>
 
-    <div class="grid">
-      <article class="card">
-        <h3>Status da execução</h3>
-        <div id="status" class="muted">Carregando status...</div>
-        <div class="btns" style="margin-top:10px">
-          <button onclick="startLoop()">Iniciar loop</button>
-          <button class="sec" onclick="runNow()">Executar agora</button>
-          <button class="warn" onclick="stopLoop()">Parar loop</button>
-        </div>
-      </article>
-      <article class="card">
-        <h3>Resumo</h3>
-        <div class="kpi">
-          <div class="k"><div id="maxMsgs" class="n">-</div><div class="t">Máx. mensagens</div></div>
-          <div class="k"><div id="interval" class="n">-</div><div class="t">Intervalo (s)</div></div>
-          <div class="k"><div id="stateTxt" class="n">-</div><div class="t">Estado</div></div>
-        </div>
-      </article>
-    </div>
-
     <section class="cfg-grid">
       <article class="card">
         <h3>Configuração do Gmail</h3>
@@ -1008,32 +988,31 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <button class="sec" onclick="reauth('principal')">Principal</button>
         </div>
       </article>
-    </section>
-
-    <section class="card">
-      <h3>Reprocessar e-mails</h3>
-      <div class="reproc-grid">
-        <div>
-          <label>Conta</label>
-          <select id="account">
-            <option value="all">Todos</option>
-            <option value="principal">E-mail Principal</option>
-          </select>
+      <article class="card reproc-card">
+        <h3>Reprocessar e-mails</h3>
+        <div class="reproc-grid">
+          <div>
+            <label>Conta</label>
+            <select id="account">
+              <option value="all">Todos</option>
+              <option value="principal">E-mail Principal</option>
+            </select>
+          </div>
+          <div>
+            <label>Dias para trás</label>
+            <input id="days" type="number" value="30" min="1" max="365"/>
+          </div>
+          <div>
+            <label>Limite de mensagens</label>
+            <input id="limit" type="number" value="100" min="1" max="1000"/>
+          </div>
         </div>
-        <div>
-          <label>Dias para trás</label>
-          <input id="days" type="number" value="30" min="1" max="365"/>
+        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
+        <div class="btns">
+          <button onclick="reprocess()">Remover labels para reprocessar</button>
+          <button class="sec" onclick="runNow()">Executar agora</button>
         </div>
-        <div>
-          <label>Limite de mensagens</label>
-          <input id="limit" type="number" value="100" min="1" max="1000"/>
-        </div>
-      </div>
-      <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
-      <div class="btns">
-        <button onclick="reprocess()">Remover labels para reprocessar</button>
-        <button class="sec" onclick="runNow()">Executar agora</button>
-      </div>
+      </article>
     </section>
   </section>
 
@@ -1137,7 +1116,7 @@ function updDaily(rep){
   setList('li',(rep&&rep.ignorados)||[]);
   setList('la',(rep&&rep.avisos)||[]);
 }
-async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('status').textContent='Loop: '+(running?'ativo':'parado')+' | Intervalo: '+j.interval_seconds+' segundos';document.getElementById('interval').textContent=String(j.interval_seconds||'-');document.getElementById('maxMsgs').textContent=String(j.max_messages||'-');document.getElementById('stateTxt').textContent=running?'Ativo':'Parado';document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}
+async function refresh(){const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){const account=(document.getElementById('account').value||'principal');await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account})});refresh();}
