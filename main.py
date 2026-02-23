@@ -700,10 +700,12 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
 .err{background:#fdecec;color:#b42b2b;border-color:#f1bbbb}
-.tabs{display:flex;gap:8px;padding:10px 10px 0}
+.tabs{display:flex;gap:8px;padding:10px;margin-bottom:6px}
 .tab-btn{background:#fff5ea;color:#5a311b;border:1px solid #d7b393;border-radius:9px;padding:8px 12px;font-weight:700;cursor:pointer}
 .tab-btn.active{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
 .hidden{display:none}
+#tabMain{padding:0 10px 10px;display:grid;gap:9px}
+#tabHist,#tabDiag{padding:0 10px 10px}
 .grid{display:grid;grid-template-columns:1.1fr .9fr;gap:8px;margin-top:10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
 h3{margin:0 0 8px;color:var(--b);font-size:.98rem}
@@ -718,7 +720,8 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .k{border:1px solid #deb999;border-radius:10px;padding:9px;background:#fff9f3}
 .k .n{font-size:1.2rem;font-weight:800;color:#6b4128}
 .k .t{font-size:.78rem;color:#6b4128}
-.status-grid{display:grid;grid-template-columns:1fr;gap:8px}
+.account-status-card{max-width:980px;margin:0 auto}
+.status-grid{display:grid;grid-template-columns:1fr;gap:8px;max-width:760px;margin:0 auto}
 .s{border:1px solid #d5b08f;background:#fffaf6;border-radius:11px;padding:10px}
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
@@ -742,8 +745,8 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
   </div>
 
   <section id="tabMain">
-    <section class="card">
-      <h3>Status das contas de e-mail</h3>
+    <section class="card account-status-card">
+      <h3>Status da conta de e-mail</h3>
       <div class="status-grid">
         <div class="s">
           <div class="h">
