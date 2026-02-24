@@ -901,13 +901,14 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
-.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px) minmax(260px,320px);gap:10px;align-items:start}
-.cfg-main{display:grid;gap:8px}
+.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px) minmax(260px,320px);gap:10px;align-items:stretch}
+.cfg-grid > .card{height:100%;display:flex;flex-direction:column}
+.cfg-main{display:grid;gap:8px;flex:1}
 .cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end}
 .cfg-fields > div{display:flex;flex-direction:column}
 .cfg-fields > div input,.cfg-fields > div select{width:100%}
-.cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap}
-.auth-card .btns{flex-direction:column}
+.cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto}
+.auth-card .btns{flex-direction:column;justify-content:center;flex:1}
 .auth-card .btns button{width:100%}
 .reproc-card .btns{margin-top:8px}
 .reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
