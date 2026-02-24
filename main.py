@@ -1258,6 +1258,13 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 else:
                     acc_status = "error"
                     friendly = "Falha na comunicação com a API. Veja os detalhes técnicos para identificar a causa."
+                status_view = {
+                    "ok": acc_status != "error",
+                    "message": (email_err or friendly or last_msg or "Aguardando"),
+                    "at": (last_status or {}).get("at"),
+                }
+                if not status_view["at"] and (email_value or running):
+                    status_view["at"] = datetime.now().isoformat()
                 return _json_response(
                     self,
                     200,
@@ -1272,7 +1279,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "gmail_page_size": int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)),
                             "loop_interval_minutes": int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30)),
                         },
-                        "last_status": dict(last_status),
+                        "last_status": status_view,
                         "account": {
                             "email": email_value,
                             "status": acc_status,
