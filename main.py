@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
-from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
+from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, RELATORIO_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
 from gmail_service import getGmailService, buscarMessagesEnviados, baixar_anexos_de_mensagem, ensure_label, LABEL_NAME
 from reporter import escreverRelatorio, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
