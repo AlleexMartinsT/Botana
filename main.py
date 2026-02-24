@@ -747,8 +747,18 @@ def _connected_email(force: bool = False) -> dict:
             }
         )
     except Exception as exc:
-        _EMAIL_CACHE.update({"error": str(exc), "at": now})
+        msg = str(exc).strip() or getattr(exc, "__class__", type(exc)).__name__ or "Falha ao obter perfil do e-mail"
+        _EMAIL_CACHE.update({"error": msg, "at": now})
     return dict(_EMAIL_CACHE)
+
+
+def _warm_connected_email_async():
+    def _run():
+        try:
+            _connected_email(force=True)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def _scheduler_next_seconds() -> int:
@@ -1222,7 +1232,15 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 if not str(email_info.get("email", "")).strip() and not str(email_info.get("error", "")).strip():
                     email_info = _connected_email(force=True)
                 last_msg = str((last_status or {}).get("message", "") or "")
-                if running:
+                email_value = str(email_info.get("email", "")).strip()
+                email_err = str(email_info.get("error", "")).strip()
+                if email_err:
+                    acc_status = "error"
+                    friendly = "Falha ao validar o e-mail conectado"
+                elif not email_value:
+                    acc_status = "waiting"
+                    friendly = "Autenticação pendente. Clique em Autenticação > Principal"
+                elif running:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
                 elif (last_status or {}).get("ok", True):
@@ -1247,10 +1265,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         },
                         "last_status": dict(last_status),
                         "account": {
-                            "email": str(email_info.get("email", "")),
+                            "email": email_value,
                             "status": acc_status,
                             "friendly": friendly,
-                            "error": "" if not email_info.get("error") else str(email_info.get("error")),
+                            "error": email_err,
                             "detail": last_msg,
                         },
                         "scheduler": {
@@ -1282,6 +1300,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if not _verify_login(username, password):
                         return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
                     token = _create_session(username)
+                    _warm_connected_email_async()
                     cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
                     return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
 
