@@ -913,16 +913,16 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
-.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(145px,175px) minmax(260px,320px);gap:10px;align-items:stretch}
+.cfg-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(120px,145px) minmax(230px,280px);gap:10px;align-items:stretch}
 .cfg-grid > .card{height:100%;display:flex;flex-direction:column}
 .cfg-main{display:grid;gap:8px;flex:1}
 .cfg-main-card h3{text-align:center}
 .cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
 .cfg-fields > div{display:flex;flex-direction:column;align-items:center}
 .cfg-fields > div label{text-align:center}
-.cfg-fields > div input,.cfg-fields > div select{width:min(170px,100%);text-align:center}
+.cfg-fields > div input,.cfg-fields > div select{width:min(160px,100%);text-align:center}
 .cfg-fields > div input.num-sm{width:min(78px,100%)}
-.cfg-fields > div select.mode-wide{width:min(210px,100%)}
+.cfg-fields > div select.mode-wide{width:min(190px,100%)}
 .cfg-save{display:flex;justify-content:center;align-items:center}
 .cfg-save button{min-width:0;width:auto}
 .cfg-status{display:flex;flex-direction:column;align-items:center}
