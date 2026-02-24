@@ -61,6 +61,7 @@ _RUNTIME_SETTINGS = {
 _EMAIL_CACHE = {"email": "", "error": "", "pending": False, "at": 0.0}
 _NEXT_RUN_AT = 0.0
 _GMAIL_SERVICE_LOCK = threading.Lock()
+_IS_READING = False
 
 
 def _get_gmail_service_locked(timeout: float | None = None):
@@ -265,10 +266,15 @@ def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 def processar_emails_enviados():
+    global _IS_READING
     service = _get_gmail_service_locked()
     msgs = buscarMessagesEnviados(service, max_results=int(_RUNTIME_SETTINGS.get("max_messages", 100)))
+    total_msgs = len(msgs or [])
+    anexos_lidos = 0
+    xmls_lidos = 0
     if not msgs:
         logger.info("Nenhuma mensagem enviada com XML encontrada.")
+        escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lançamentos.")
         return
 
     total_processados = 0
@@ -281,6 +287,7 @@ def processar_emails_enviados():
         if not arquivos:
             logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
             continue
+        anexos_lidos += len(arquivos)
 
         dados_xmls = []
         boletos = []
@@ -294,6 +301,7 @@ def processar_emails_enviados():
                 # ðŸ“„ XML â†’ extrai dados
                 # =============================
                 if arquivo.lower().endswith(".xml"):
+                    xmls_lidos += 1
                     try:
                         dados = extrairDadosXML(arquivo)
                         # ðŸ” Ignora vendas Ã  vista
@@ -501,20 +509,26 @@ def processar_emails_enviados():
                         logger.exception("Falha inesperada ao atualizar planilha: %s", e)
                         break
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
+    escreverRelatorio(
+        f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lançamentos."
+    )
 
 def main_loop():
-    global running, last_status, _NEXT_RUN_AT
+    global running, last_status, _NEXT_RUN_AT, _IS_READING
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     running = True
     logger.info("[Botana] Loop iniciado")
     while not stop_event.is_set():
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         try:
+            _IS_READING = True
             processar_emails_enviados()
             last_status = {"ok": True, "message": "Ciclo executado com sucesso", "at": datetime.now().isoformat()}
         except Exception as e:
             logger.exception("Erro no ciclo principal: %s", e)
             last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
+        finally:
+            _IS_READING = False
         if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
             break
     running = False
@@ -1160,7 +1174,7 @@ function updDaily(rep){
   setList('li',(rep&&rep.ignorados)||[]);
   setList('la',(rep&&rep.avisos)||[]);
 }
-async function refresh(){try{const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
+async function refresh(){try{const j=await api('/api/state');const reading=!!j.reading;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,reading);updDaily(j.daily_report||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
@@ -1192,7 +1206,7 @@ async function loadHistory(){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);
+refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
 </script></body></html>"""
 
 def start_server(host: str, port: int, no_loop: bool = False):
@@ -1249,7 +1263,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 elif not email_value:
                     acc_status = "waiting"
                     friendly = "Autenticação pendente. Clique em Autenticação > Principal"
-                elif running:
+                elif _IS_READING:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
                 elif (last_status or {}).get("ok", True):
@@ -1263,7 +1277,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     "message": (email_err or friendly or last_msg or "Aguardando"),
                     "at": (last_status or {}).get("at"),
                 }
-                if not status_view["at"] and (email_value or running):
+                if not status_view["at"] and (email_value or _IS_READING):
                     status_view["at"] = datetime.now().isoformat()
                 return _json_response(
                     self,
@@ -1271,6 +1285,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     {
                         "ok": True,
                         "running": bool(running),
+                        "reading": bool(_IS_READING),
                         "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
                         "settings": {
