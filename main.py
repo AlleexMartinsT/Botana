@@ -923,10 +923,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cfg-fields > div input,.cfg-fields > div select{width:min(190px,100%);text-align:center}
 .cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto}
 .auth-card .btns{flex-direction:column;justify-content:center;flex:1}
+.auth-card h3{text-align:center}
 .auth-card .btns button{width:100%}
 .reproc-card .btns{margin-top:8px}
 .reproc-card h3{text-align:center}
-.reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
+.reproc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
 .reproc-grid > div{display:flex;flex-direction:column;align-items:center}
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{text-align:center}
@@ -1033,13 +1034,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <article class="card reproc-card">
         <h3>Reprocessar e-mails</h3>
         <div class="reproc-grid">
-          <div>
-            <label>Conta</label>
-            <select id="account">
-              <option value="all">Todos</option>
-              <option value="principal">E-mail Principal</option>
-            </select>
-          </div>
           <div>
             <label>Dias para trás</label>
             <input id="days" type="number" value="30" min="1" max="365"/>
@@ -1165,7 +1159,7 @@ function updDaily(rep){
 async function refresh(){try{const j=await api('/api/state');const running=!!j.running;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,running);updDaily(j.daily_report||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
-async function runNow(){const account=(document.getElementById('account').value||'principal');await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account})});refresh();}
+async function runNow(){await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
 async function saveSettings(){const payload={gmail_filter_mode:document.getElementById('mode').value,gmail_max_pages:Number(document.getElementById('maxPages').value||3),gmail_page_size:Number(document.getElementById('pageSize').value||50),loop_interval_minutes:Number(document.getElementById('intervalMin').value||30)};await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 async function countdown(sec){const ov=document.getElementById('ov');const c=document.getElementById('cnt');let n=Number(sec||5);if(c)c.textContent=String(n);if(ov)ov.classList.add('show');await new Promise((res)=>{const t=setInterval(()=>{n-=1;if(c)c.textContent=String(Math.max(n,0));if(n<=0){clearInterval(t);res();}},1000);});if(ov)ov.classList.remove('show');}
 async function reauth(account){
@@ -1179,7 +1173,7 @@ async function reauth(account){
     if(btn){btn.disabled=false;btn.textContent='Principal';}
   }
 }
-async function reprocess(){const payload={account:document.getElementById('account').value||'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
+async function reprocess(){const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 async function loadHistory(){
   const q=(document.getElementById('hQuery').value||'').trim();
   const l=Number(document.getElementById('hLimit').value||300);
@@ -1193,7 +1187,7 @@ async function loadHistory(){
 }
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
-['account','days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
+['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);
 </script></body></html>"""
 
