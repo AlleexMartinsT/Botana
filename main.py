@@ -58,14 +58,22 @@ _RUNTIME_SETTINGS = {
     "interval_seconds": int(INTERVALO),
     "max_messages": 100,
 }
-_EMAIL_CACHE = {"email": "", "error": "", "at": 0.0}
+_EMAIL_CACHE = {"email": "", "error": "", "pending": False, "at": 0.0}
 _NEXT_RUN_AT = 0.0
 _GMAIL_SERVICE_LOCK = threading.Lock()
 
 
-def _get_gmail_service_locked():
-    with _GMAIL_SERVICE_LOCK:
+def _get_gmail_service_locked(timeout: float | None = None):
+    if timeout is None:
+        with _GMAIL_SERVICE_LOCK:
+            return getGmailService()
+    acquired = _GMAIL_SERVICE_LOCK.acquire(timeout=max(0.01, float(timeout)))
+    if not acquired:
+        raise TimeoutError("AUTH_IN_PROGRESS")
+    try:
         return getGmailService()
+    finally:
+        _GMAIL_SERVICE_LOCK.release()
 
 
 def _load_settings():
@@ -737,28 +745,22 @@ def _connected_email(force: bool = False) -> dict:
     if not force and _EMAIL_CACHE.get("at", 0.0) and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120):
         return dict(_EMAIL_CACHE)
     try:
-        service = _get_gmail_service_locked()
+        service = _get_gmail_service_locked(timeout=0.3 if not force else 1.0)
         profile = service.users().getProfile(userId="me").execute()
         _EMAIL_CACHE.update(
             {
                 "email": str(profile.get("emailAddress", "")).strip(),
                 "error": "",
+                "pending": False,
                 "at": now,
             }
         )
+    except TimeoutError:
+        _EMAIL_CACHE.update({"error": "", "pending": True, "at": now})
     except Exception as exc:
         msg = str(exc).strip() or getattr(exc, "__class__", type(exc)).__name__ or "Falha ao obter perfil do e-mail"
-        _EMAIL_CACHE.update({"error": msg, "at": now})
+        _EMAIL_CACHE.update({"error": msg, "pending": False, "at": now})
     return dict(_EMAIL_CACHE)
-
-
-def _warm_connected_email_async():
-    def _run():
-        try:
-            _connected_email(force=True)
-        except Exception:
-            pass
-    threading.Thread(target=_run, daemon=True).start()
 
 
 def _scheduler_next_seconds() -> int:
@@ -1234,9 +1236,13 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 last_msg = str((last_status or {}).get("message", "") or "")
                 email_value = str(email_info.get("email", "")).strip()
                 email_err = str(email_info.get("error", "")).strip()
+                email_pending = bool(email_info.get("pending", False))
                 if email_err:
                     acc_status = "error"
                     friendly = "Falha ao validar o e-mail conectado"
+                elif email_pending:
+                    acc_status = "waiting"
+                    friendly = "Autenticação em andamento. Aguarde a confirmação no navegador"
                 elif not email_value:
                     acc_status = "waiting"
                     friendly = "Autenticação pendente. Clique em Autenticação > Principal"
@@ -1300,7 +1306,6 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if not _verify_login(username, password):
                         return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
                     token = _create_session(username)
-                    _warm_connected_email_async()
                     cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
                     return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
 
