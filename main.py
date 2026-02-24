@@ -916,15 +916,20 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px) minmax(260px,320px);gap:10px;align-items:stretch}
 .cfg-grid > .card{height:100%;display:flex;flex-direction:column}
 .cfg-main{display:grid;gap:8px;flex:1}
-.cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end}
-.cfg-fields > div{display:flex;flex-direction:column}
-.cfg-fields > div input,.cfg-fields > div select{width:100%}
+.cfg-main-card h3{text-align:center}
+.cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
+.cfg-fields > div{display:flex;flex-direction:column;align-items:center}
+.cfg-fields > div label{text-align:center}
+.cfg-fields > div input,.cfg-fields > div select{width:min(190px,100%);text-align:center}
 .cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto}
 .auth-card .btns{flex-direction:column;justify-content:center;flex:1}
 .auth-card .btns button{width:100%}
 .reproc-card .btns{margin-top:8px}
-.reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
-.reproc-grid > div{display:flex;flex-direction:column}
+.reproc-card h3{text-align:center}
+.reproc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
+.reproc-grid > div{display:flex;flex-direction:column;align-items:center}
+.reproc-grid > div label{text-align:center}
+.reproc-grid > div input,.reproc-grid > div select{text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
 .ov.show{display:flex}
@@ -984,7 +989,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
 
     <section class="cfg-grid">
-      <article class="card">
+      <article class="card cfg-main-card">
         <h3>Configuração do Gmail</h3>
         <div class="cfg-main">
           <div class="cfg-fields">
