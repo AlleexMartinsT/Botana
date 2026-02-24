@@ -913,19 +913,25 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
-.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(170px,210px) minmax(260px,320px);gap:10px;align-items:stretch}
+.cfg-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(145px,175px) minmax(260px,320px);gap:10px;align-items:stretch}
 .cfg-grid > .card{height:100%;display:flex;flex-direction:column}
 .cfg-main{display:grid;gap:8px;flex:1}
 .cfg-main-card h3{text-align:center}
 .cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
 .cfg-fields > div{display:flex;flex-direction:column;align-items:center}
 .cfg-fields > div label{text-align:center}
-.cfg-fields > div input,.cfg-fields > div select{width:min(190px,100%);text-align:center}
-.cfg-actions{display:flex;justify-content:flex-start;align-items:center;gap:8px;flex-wrap:wrap;margin-top:auto}
+.cfg-fields > div input,.cfg-fields > div select{width:min(170px,100%);text-align:center}
+.cfg-fields > div input.num-sm{width:min(78px,100%)}
+.cfg-fields > div select.mode-wide{width:min(210px,100%)}
+.cfg-save{display:flex;justify-content:center;align-items:center}
+.cfg-save button{min-width:0;width:auto}
+.cfg-status{display:flex;flex-direction:column;align-items:center}
+.cfg-status label{text-align:center}
+.cfg-status input{width:min(240px,100%);text-align:center}
 .auth-card .btns{flex-direction:column;justify-content:center;flex:1}
 .auth-card h3{text-align:center}
 .auth-card .btns button{width:100%}
-.reproc-card .btns{margin-top:8px}
+.reproc-card .btns{margin-top:8px;justify-content:center}
 .reproc-card h3{text-align:center}
 .reproc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
 .reproc-grid > div{display:flex;flex-direction:column;align-items:center}
@@ -996,7 +1002,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <div class="cfg-fields">
             <div>
               <label>Período</label>
-              <select id="mode">
+              <select id="mode" class="mode-wide">
                 <option value="last_15_days">Últimos 15 dias</option>
                 <option value="last_30_days">Últimos 30 dias</option>
                 <option value="last_45_days">Últimos 45 dias</option>
@@ -1008,21 +1014,19 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             </div>
             <div>
               <label>Máx páginas</label>
-              <input id="maxPages" type="number" min="1" max="20"/>
+              <input id="maxPages" class="num-sm" type="number" min="1" max="20"/>
             </div>
             <div>
               <label>Tamanho da página</label>
-              <input id="pageSize" type="number" min="1" max="500"/>
+              <input id="pageSize" class="num-sm" type="number" min="1" max="500"/>
             </div>
             <div>
               <label>Intervalo de leitura</label>
-              <input id="intervalMin" type="number" min="1" max="720"/>
+              <input id="intervalMin" class="num-sm" type="number" min="1" max="720"/>
             </div>
           </div>
-          <div class="cfg-actions">
-            <button onclick="saveSettings()">Salvar configuração</button>
-            <input id="last" type="text" readonly value="-" style="min-width:260px"/>
-          </div>
+          <div class="cfg-save"><button onclick="saveSettings()">Salvar configuração</button></div>
+          <div class="cfg-status"><label>Status da última execução</label><input id="last" type="text" readonly value="-"/></div>
         </div>
       </article>
       <article class="card auth-card">
