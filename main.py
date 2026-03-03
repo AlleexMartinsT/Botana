@@ -997,8 +997,8 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .tabs{display:flex;gap:8px;padding:10px;margin-bottom:6px}
 .tab-btn{background:#fff5ea;color:#5a311b;border:1px solid #d7b393;border-radius:9px;padding:8px 12px;font-weight:700;cursor:pointer}
 .tab-btn.active{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
-.hidden{display:none}
-.tab-panel.hidden{display:none}
+.hidden{display:none!important}
+.tab-panel.hidden{display:none!important}
 #tabMain{padding:0 10px 10px;display:grid;gap:9px}
 #tabHist,#tabDiag{padding:0 10px 10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
@@ -1239,6 +1239,7 @@ function _tabFromLocation(){
 }
 function switchTab(tab){
   const next=(tab==='hist'||tab==='diag')?tab:'main';
+  const changed=_activeTab!==next;
   const m=next==='main';
   const h=next==='hist';
   const d=next==='diag';
@@ -1255,6 +1256,9 @@ function switchTab(tab){
   const nextHash='#'+next;
   if(window.location.hash!==nextHash){
     try{history.replaceState(null,'',nextHash);}catch(_){}
+  }
+  if(changed){
+    try{window.scrollTo({top:0,behavior:'auto'});}catch(_){window.scrollTo(0,0);}
   }
 }
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
@@ -1574,7 +1578,6 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
 
 
 
