@@ -302,6 +302,14 @@ def _normalize_report_text(text: str) -> str:
     }
     for src, dst in replacements.items():
         out = out.replace(src, dst)
+    # Remove emojis/symbols pictograficos para manter o painel textual limpo.
+    out = re.sub(r"[\u200d\ufe0f]", "", out)
+    out = re.sub(
+        r"[\U0001F1E6-\U0001F1FF\U0001F300-\U0001FAFF\U00002700-\U000027BF\U00002600-\U000026FF]",
+        "",
+        out,
+    )
+    out = re.sub(r"\s{2,}", " ", out)
     return out.strip()
 
 def processar_emails_enviados():
@@ -1546,7 +1554,6 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
 
 
 
