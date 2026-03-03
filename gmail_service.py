@@ -3,7 +3,7 @@ import os
 import base64
 import time
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
@@ -99,6 +99,54 @@ def buscarMessagesEnviados(service, max_results: int = 15) -> List[Dict[str, Any
     except Exception as e:
         logger.exception("Erro ao listar threads: %s", e)
         return []
+
+
+def buscarMessagesEnviadosPagina(
+    service, max_results: int = 100, page_token: str | None = None
+) -> Tuple[List[Dict[str, Any]], str | None]:
+    """
+    Busca uma página de threads com mensagens enviadas contendo XML.
+    Retorna (mensagens, next_page_token).
+    """
+    q = "in:sent has:attachment filename:xml"
+    try:
+        req = service.users().threads().list(
+            userId="me",
+            q=q,
+            maxResults=max_results,
+            pageToken=page_token,
+        )
+        resp = req.execute()
+        threads = resp.get("threads", []) or []
+        next_token = resp.get("nextPageToken")
+        results: List[Dict[str, Any]] = []
+
+        logger.info("Buscar página: %d threads encontradas", len(threads))
+
+        for t in threads:
+            thread_id = t.get("id")
+            try:
+                thread = service.users().threads().get(userId="me", id=thread_id).execute()
+                msgs = thread.get("messages", [])
+
+                for msg in msgs:
+                    results.append(
+                        {
+                            "id": msg["id"],
+                            "threadId": msg["threadId"],
+                            "labelIds": msg.get("labelIds", []),
+                            "snippet": msg.get("snippet", ""),
+                        }
+                    )
+            except Exception as e:
+                logger.warning("Falha ao obter thread %s: %s", thread_id, e)
+                continue
+
+        return results, next_token
+
+    except Exception as e:
+        logger.exception("Erro ao listar threads (página): %s", e)
+        return [], None
 
 def _flatten_parts(parts):
     """

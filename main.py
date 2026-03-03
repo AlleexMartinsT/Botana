@@ -10,7 +10,7 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, RELATORIO_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
-from gmail_service import getGmailService, buscarMessagesEnviados, baixar_anexos_de_mensagem, ensure_label, LABEL_NAME
+from gmail_service import getGmailService, buscarMessagesEnviadosPagina, baixar_anexos_de_mensagem, ensure_label, LABEL_NAME
 from reporter import escreverRelatorio, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
@@ -22,23 +22,24 @@ except Exception:
     run_tray = None
 
 # -----------------------
-# FILTROS PARA DEBUG / ANÃLISE ISOLADA
+# FILTROS PARA DEBUG / ANÁLISE ISOLADA
 # -----------------------
-# Defina manualmente aqui (string) ou via variÃ¡vel de ambiente:
+# Defina manualmente aqui (string) ou via variável de ambiente:
 # Ex.: set SKIP_UNTIL_NF=12345       (Windows CMD)
 
-# Se quiser que o script ignore tudo atÃ© achar a NF X, defina SKIP_UNTIL_NF
+# Se quiser que o script ignore tudo até achar a NF X, defina SKIP_UNTIL_NF
 SKIP_UNTIL_NF = os.environ.get("SKIP_UNTIL_NF") or None  # ex: "12345"
+SKIP_UNTIL_NF = "19843"
 
-# Se quiser processar somente uma NF especÃ­fica (ignorar todas as outras), defina NF_ALVO
+# Se quiser processar somente uma NF específica (ignorar todas as outras), defina NF_ALVO
 NF_ALVO = os.environ.get("NF_ALVO") or None  # ex: "12345"
 
-# Se NF_ALVO for usado e quiser que o script pare apÃ³s processar essa NF, coloque True
+# Se NF_ALVO for usado e quiser que o script pare após processar essa NF, coloque True
 STOP_AFTER_NF = os.environ.get("STOP_AFTER_NF", "False").lower() in ("1", "true", "yes")
 # -----------------------
 
-stop_event = threading.Event()  # usado para parar o loop com seguranÃ§a
-running = False # indica se o loop principal estÃ¡ ativo
+stop_event = threading.Event()  # usado para parar o loop com segurança
+running = False # indica se o loop principal está ativo
 last_status = {"ok": True, "message": "Aguardando", "at": None}
 APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
@@ -268,246 +269,278 @@ def _now():
 def processar_emails_enviados():
     global _IS_READING
     service = _get_gmail_service_locked()
-    msgs = buscarMessagesEnviados(service, max_results=int(_RUNTIME_SETTINGS.get("max_messages", 100)))
-    total_msgs = len(msgs or [])
+    batch_size = int(_RUNTIME_SETTINGS.get("max_messages", 100))
+    total_msgs = 0
     anexos_lidos = 0
     xmls_lidos = 0
-    if not msgs:
-        logger.info("Nenhuma mensagem enviada com XML encontrada.")
-        escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lançamentos.")
-        return
-
     total_processados = 0
+    page_token = None
+    primeira_pagina = True
+    interativo_cmd = bool(sys.stdin and sys.stdin.isatty())
 
-    for m in msgs:   
-        msg_id = m.get("id")
-        logger.info("ðŸ“§ Abrindo mensagem ID: %s", msg_id)
+    while True:
+        msgs, next_page_token = buscarMessagesEnviadosPagina(
+            service,
+            max_results=batch_size,
+            page_token=page_token,
+        )
 
-        arquivos = baixar_anexos_de_mensagem(service, msg_id)
-        if not arquivos:
-            logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
-            continue
-        anexos_lidos += len(arquivos)
+        if primeira_pagina and not msgs:
+            logger.info("Nenhuma mensagem enviada com XML encontrada.")
+            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lançamentos.")
+            return
 
-        dados_xmls = []
-        boletos = []
+        primeira_pagina = False
+        total_msgs += len(msgs or [])
 
-        # ðŸ” Processa todos os anexos baixados
-        for arquivo in arquivos:
-            nome_arquivo = os.path.basename(arquivo)
+        for m in msgs:
+            msg_id = m.get("id")
+            logger.info("Abrindo mensagem ID: %s", msg_id)
 
-            try:
-                # =============================
-                # ðŸ“„ XML â†’ extrai dados
-                # =============================
-                if arquivo.lower().endswith(".xml"):
-                    xmls_lidos += 1
-                    try:
-                        dados = extrairDadosXML(arquivo)
-                        # ðŸ” Ignora vendas Ã  vista
-                        nat_op = dados.get("naturezaOperacao", "").strip().upper()
-                        dest = dados.get("destinatario", "")
-                        if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
-                            # Checa se a mensagem ja foi processada no relatorio atual:
-                            if dados.get('nf') not in consolidarRelatorioTMP(): 
-                                escreverRelatorio(f"{_now()} - ðŸ’° NF {dados.get('nf')} ignorada (venda Ã  vista).")
+            arquivos = baixar_anexos_de_mensagem(service, msg_id)
+            if not arquivos:
+                logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
+                continue
+            anexos_lidos += len(arquivos)
+
+            dados_xmls = []
+            boletos = []
+
+            # Processa todos os anexos baixados
+            for arquivo in arquivos:
+                nome_arquivo = os.path.basename(arquivo)
+
+                try:
+                    # =============================
+                    # XML -> extrai dados
+                    # =============================
+                    if arquivo.lower().endswith(".xml"):
+                        xmls_lidos += 1
+                        try:
+                            dados = extrairDadosXML(arquivo)
+                            # Ignora vendas à vista
+                            nat_op = dados.get("naturezaOperacao", "").strip().upper()
+                            dest = dados.get("destinatario", "")
+                            if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
+                                # Checa se a mensagem já foi processada no relatório atual:
+                                if dados.get('nf') not in consolidarRelatorioTMP():
+                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda à vista).")
+                                    continue
+                                else: logger.info(f"{cor_ciano}NF {dados['nf']} já registrada no relatório, não duplicando a mensagem de ignorada.{reset}")
                                 continue
-                            else: logger.info(f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}") 
-                            continue
-                        if ( CNPJ_MVA.replace(".", "").replace("/", "").replace("-", "") in dest or
-                             CNPJ_EH.replace(".", "").replace("/", "").replace("-", "") in dest ):
-                            logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatÃ¡rio Ã© o nosso: {dest})")
-                            escreverRelatorio(f"{_now()} - ðŸ’° NF {dados.get('nf')} ignorada (destinatÃ¡rio Ã© o nosso).")
-                            continue
-                        if not dados:
-                            motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
-                            logger.info(f"Ignorado XML (motivo: {motivo}).")
-                            escreverRelatorio(f"{_now()} - âš ï¸ XML {nome_arquivo} ignorado (motivo: {motivo})")
-                            continue
+                            if ( CNPJ_MVA.replace(".", "").replace("/", "").replace("-", "") in dest or
+                                 CNPJ_EH.replace(".", "").replace("/", "").replace("-", "") in dest ):
+                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {dest})")
+                                escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (destinatário é o nosso).")
+                                continue
+                            if not dados:
+                                motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
+                                logger.info(f"Ignorado XML (motivo: {motivo}).")
+                                escreverRelatorio(f"{_now()} - XML {nome_arquivo} ignorado (motivo: {motivo})")
+                                continue
 
-                        dados_xmls.append(dados)
+                            dados_xmls.append(dados)
 
-                    except Exception as e:
-                        escreverRelatorio(f"{_now()} - âŒ Erro extraindo XML {nome_arquivo}: {e}")
-                        logger.exception("Erro extraindo XML %s: %s", arquivo, e)
+                        except Exception as e:
+                            escreverRelatorio(f"{_now()} - Erro extraindo XML {nome_arquivo}: {e}")
+                            logger.exception("Erro extraindo XML %s: %s", arquivo, e)
 
-                # =============================
-                # ðŸ“‘ PDF â†’ tenta identificar boleto
-                # =============================
-                elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessÃ¡rio
-                    nome_upper = nome_arquivo.upper()
-
-                    # ðŸ” Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
-                    padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
-
-                    if re.search(padrao_boleto, nome_upper):
-                        match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
-                        if match:
-                            num_boleto = match[-1]
-                            boletos.append(num_boleto)
-                            logger.info("ðŸ”¢ Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-                        else:
-                            logger.info("Nenhum nÃºmero de boleto encontrado no nome: %s", nome_arquivo)
-                    elif arquivo.lower().endswith(".pdf"):
+                    # =============================
+                    # PDF -> tenta identificar boleto
+                    # =============================
+                    elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessário
                         nome_upper = nome_arquivo.upper()
 
-                        # ðŸ” Palavras que indicam boleto (considera erros comuns)
-                        padrao_boleto = r"\b(BOLET[OA]?|BOLTO|BOLETOO|BOLETT?|BLT)\b"
+                        # Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
+                        padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
 
-                        # SÃ³ tenta identificar nÃºmero se o nome realmente tiver algo prÃ³ximo de "boleto"
                         if re.search(padrao_boleto, nome_upper):
                             match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
                             if match:
                                 num_boleto = match[-1]
                                 boletos.append(num_boleto)
-                                logger.info("ðŸ”¢ Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
+                                logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                             else:
-                                logger.info("ðŸ“Ž PossÃ­vel boleto sem nÃºmero identificado: %s", nome_arquivo)
-                        else:
-                            logger.info("ðŸ“„ PDF ignorado (nÃ£o parece boleto): %s", nome_arquivo)
+                                logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
+                        elif arquivo.lower().endswith(".pdf"):
+                            nome_upper = nome_arquivo.upper()
 
-                else:
-                    logger.info("Arquivo nÃ£o identificado como boleto: %s", nome_arquivo)
+                            # Palavras que indicam boleto (considera erros comuns)
+                            padrao_boleto = r"\b(BOLET[OA]?|BOLTO|BOLETOO|BOLETT?|BLT)\b"
 
-            finally:
-                # ðŸ§¹ Remove sempre o anexo local (independente do tipo)
-                try:
-                    os.remove(arquivo)
-                    logger.debug(f"ðŸ§¹ Anexo removido: {arquivo}")
-                except FileNotFoundError:
-                    pass
-                except Exception as e:
-                    logger.warning(f"âš ï¸ Falha ao remover {arquivo}: {e}")
+                            # Só tenta identificar número se o nome realmente tiver algo próximo de "boleto"
+                            if re.search(padrao_boleto, nome_upper):
+                                match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
+                                if match:
+                                    num_boleto = match[-1]
+                                    boletos.append(num_boleto)
+                                    logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
+                                else:
+                                    logger.info("Possível boleto sem número identificado: %s", nome_arquivo)
+                            else:
+                                logger.info("PDF ignorado (não parece boleto): %s", nome_arquivo)
 
-        # =============================
-        # ðŸ·ï¸ Marca o e-mail como processado
-        # =============================
-        try:
-            marcar_mensagem_com_label(service, msg_id)
-            logger.info("ðŸ·ï¸ E-mail %s marcado com 'XML Processado Botana'", msg_id)
-        except Exception as e:
-            logger.exception("Falha ao aplicar rÃ³tulo: %s", e)
-            
-        # âš ï¸ Nenhum XML â†’ pula este e-mail
-        if not dados_xmls:
-            logger.info("Nenhum XML vÃ¡lido encontrado neste e-mail.")
-            continue
-
-        # =============================
-        # ðŸ§¾ Atualiza planilhas
-        # =============================
-        for dados_xml in dados_xmls:
-            # --- FILTRAGEM POR NF (para debug/anÃ¡lise isolada) ---
-            nf_num = str(dados_xml.get("nf", "")).strip()
-
-            # NF_ALVO: processa somente essa NF (ignora as outras)
-            if NF_ALVO:
-                if nf_num != str(NF_ALVO):
-                    logger.info(f"ðŸ”Ž Pulando NF {nf_num} (NF_ALVO ativo: {NF_ALVO})")
-                    continue
-                else:
-                    logger.info(f"âœ… NF_ALVO encontrada: {nf_num}")
-
-            # SKIP_UNTIL_NF: ignora tudo atÃ© encontrar essa NF; quando encontrada, passa a processar normalmente
-            if SKIP_UNTIL_NF:
-                # usa atributo da funÃ§Ã£o para manter estado entre ciclos enquanto o processo estÃ¡ vivo
-                if not hasattr(processar_emails_enviados, "_skip_reached"):
-                    processar_emails_enviados._skip_reached = False
-
-                if not processar_emails_enviados._skip_reached:
-                    if nf_num == str(SKIP_UNTIL_NF):
-                        processar_emails_enviados._skip_reached = True
-                        logger.info(f"ðŸŽ¯ SKIP_UNTIL_NF: NF {nf_num} encontrada â€” a partir daqui serÃ¡ processada.")
                     else:
-                        logger.info(f"â­ SKIP_UNTIL_NF ativo, pulando NF {nf_num}")
-                        continue
+                        logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
 
-            # Se chegou atÃ© aqui, a NF serÃ¡ processada normalmente.
-            # Se NF_ALVO + STOP_AFTER_NF: apÃ³s processar, se encerra o loop/principal para anÃ¡lise isolada.
+                finally:
+                    # Remove sempre o anexo local (independente do tipo)
+                    try:
+                        os.remove(arquivo)
+                        logger.debug(f"Anexo removido: {arquivo}")
+                    except FileNotFoundError:
+                        pass
+                    except Exception as e:
+                        logger.warning(f"Falha ao remover {arquivo}: {e}")
 
-            cnpj_emit = dados_xml.get("cnpjEmitente")
-            ano = dados_xml.get("anoVencimento")
-            planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
+            # =============================
+            # Marca o e-mail como processado
+            # =============================
+            try:
+                marcar_mensagem_com_label(service, msg_id)
+                logger.info("E-mail %s marcado com 'XML Processado Botana'", msg_id)
+            except Exception as e:
+                logger.exception("Falha ao aplicar rótulo: %s", e)
 
-            if not planilha_id:
-                logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
+            # Nenhum XML -> pula este e-mail
+            if not dados_xmls:
+                logger.info("Nenhum XML válido encontrado neste e-mail.")
                 continue
 
-            # Itera sobre todas as parcelas â€” MAPEAMENTO correto de boletos â†’ parcelas
-            parcelas = dados_xml.get("parcelas", [])
-            n_parcelas = len(parcelas)
-            n_boletos = len(boletos)
+            # =============================
+            # Atualiza planilhas
+            # =============================
+            for dados_xml in dados_xmls:
+                # --- FILTRAGEM POR NF (para debug/análise isolada) ---
+                nf_num = str(dados_xml.get("nf", "")).strip()
 
-            # monta lista de boletos por parcela (mesmo tamanho de parcelas)
-            if n_parcelas == 0:
-                continue  # nada a fazer
-
-            if n_boletos == 0:
-                boletos_map = [None] * n_parcelas
-            else:
-                # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa sÃ³ os primeiros N
-                boletos_map = [boletos[i] if i < n_boletos else None for i in range(n_parcelas)]
-                if n_boletos > n_parcelas:
-                    logger.info("âš ï¸ Mais boletos (%d) que parcelas (%d). Sobraram: %s", n_boletos, n_parcelas, boletos[n_parcelas:])
-
-            # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
-            for idx, parcela in enumerate(parcelas):
-                num_boleto = boletos_map[idx]
-                dados_parcela = dados_xml.copy()
-                dados_parcela.update({
-                    "vencimento": parcela["vencimento"],
-                    "numParcela": parcela["numParcela"],
-                    "valorParcela": parcela["valor"],
-                    "boleto": num_boleto  # adiciona campo explÃ­cito (opcional)
-                })
-
-                # Ajusta descriÃ§Ã£o com o boleto mapeado (se houver)
-                if num_boleto:
-                    dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
-                else:
-                    if "18471209000107" in cnpj_emit.upper():
-                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP BR (Bot)"
+                # NF_ALVO: processa somente essa NF (ignora as outras)
+                if NF_ALVO:
+                    if nf_num != str(NF_ALVO):
+                        logger.info(f"Pulando NF {nf_num} (NF_ALVO ativo: {NF_ALVO})")
+                        continue
                     else:
-                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
+                        logger.info(f"NF_ALVO encontrada: {nf_num}")
 
-                # Tenta atualizar planilha com retry
-                for tentativa in range(5):
-                    try:
-                        creds = Credentials.from_service_account_file(
-                            GOOGLE_CREDENTIALS_SHEETS,
-                            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-                        )
-                        gc = gspread.authorize(creds)
+                # SKIP_UNTIL_NF: ignora tudo até encontrar essa NF; quando encontrada, passa a processar normalmente
+                if SKIP_UNTIL_NF:
+                    # usa atributo da função para manter estado entre ciclos enquanto o processo está vivo
+                    if not hasattr(processar_emails_enviados, "_skip_reached"):
+                        processar_emails_enviados._skip_reached = False
 
-                        if not hasattr(processar_emails_enviados, "_cache"):
-                            processar_emails_enviados._cache = {}
-
-                        cache = processar_emails_enviados._cache
-
-                        if planilha_id not in cache:
-                            cache[planilha_id] = gc.open_by_key(planilha_id)
-
-                        planilha = cache[planilha_id]
-                        atualizarPlanilha(planilha, dados_parcela, gc)
-                        total_processados += 1
-                        # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para anÃ¡lise isolada.
-                        if NF_ALVO and STOP_AFTER_NF:
-                            logger.info(f"ðŸ NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execuÃ§Ã£o.")
-                            # forÃ§a saÃ­da limpa do loop principal retornando da funÃ§Ã£o
-                            return
-                        break
-       
-                    except gspread.exceptions.APIError as e:
-                        if "429" in str(e):
-                            from sheets_writer import apiCooldown
-                            apiCooldown()
-                            continue
+                    if not processar_emails_enviados._skip_reached:
+                        if nf_num == str(SKIP_UNTIL_NF):
+                            processar_emails_enviados._skip_reached = True
+                            logger.info(f"SKIP_UNTIL_NF: NF {nf_num} encontrada - a partir daqui será processada.")
                         else:
-                            logger.exception("Erro ao atualizar planilha: %s", e)
+                            logger.info(f"SKIP_UNTIL_NF ativo, pulando NF {nf_num}")
+                            continue
+
+                # Se chegou até aqui, a NF será processada normalmente.
+                # Se NF_ALVO + STOP_AFTER_NF: após processar, se encerra o loop/principal para análise isolada.
+
+                cnpj_emit = dados_xml.get("cnpjEmitente")
+                ano = dados_xml.get("anoVencimento")
+                planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
+
+                if not planilha_id:
+                    logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
+                    continue
+
+                # Itera sobre todas as parcelas - mapeamento correto de boletos -> parcelas
+                parcelas = dados_xml.get("parcelas", [])
+                n_parcelas = len(parcelas)
+                n_boletos = len(boletos)
+
+                # monta lista de boletos por parcela (mesmo tamanho de parcelas)
+                if n_parcelas == 0:
+                    continue  # nada a fazer
+
+                if n_boletos == 0:
+                    boletos_map = [None] * n_parcelas
+                else:
+                    # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa só os primeiros N
+                    boletos_map = [boletos[i] if i < n_boletos else None for i in range(n_parcelas)]
+                    if n_boletos > n_parcelas:
+                        logger.info("Mais boletos (%d) que parcelas (%d). Sobraram: %s", n_boletos, n_parcelas, boletos[n_parcelas:])
+
+                # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
+                for idx, parcela in enumerate(parcelas):
+                    num_boleto = boletos_map[idx]
+                    dados_parcela = dados_xml.copy()
+                    dados_parcela.update({
+                        "vencimento": parcela["vencimento"],
+                        "numParcela": parcela["numParcela"],
+                        "valorParcela": parcela["valor"],
+                        "boleto": num_boleto  # adiciona campo explícito (opcional)
+                    })
+
+                    # Ajusta descrição com o boleto mapeado (se houver)
+                    if num_boleto:
+                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
+                    else:
+                        if "18471209000107" in cnpj_emit.upper():
+                            dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP BR (Bot)"
+                        else:
+                            dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
+
+                    # Tenta atualizar planilha com retry
+                    for tentativa in range(5):
+                        try:
+                            creds = Credentials.from_service_account_file(
+                                GOOGLE_CREDENTIALS_SHEETS,
+                                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                            )
+                            gc = gspread.authorize(creds)
+
+                            if not hasattr(processar_emails_enviados, "_cache"):
+                                processar_emails_enviados._cache = {}
+
+                            cache = processar_emails_enviados._cache
+
+                            if planilha_id not in cache:
+                                cache[planilha_id] = gc.open_by_key(planilha_id)
+
+                            planilha = cache[planilha_id]
+                            atualizarPlanilha(planilha, dados_parcela, gc)
+                            total_processados += 1
+                            # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para análise isolada.
+                            if NF_ALVO and STOP_AFTER_NF:
+                                logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execução.")
+                                # força saída limpa do loop principal retornando da função
+                                return
                             break
-                    except Exception as e:
-                        logger.exception("Falha inesperada ao atualizar planilha: %s", e)
-                        break
+
+                        except gspread.exceptions.APIError as e:
+                            if "429" in str(e):
+                                from sheets_writer import apiCooldown
+                                apiCooldown()
+                                continue
+                            else:
+                                logger.exception("Erro ao atualizar planilha: %s", e)
+                                break
+                        except Exception as e:
+                            logger.exception("Falha inesperada ao atualizar planilha: %s", e)
+                            break
+
+        skip_reached = bool(getattr(processar_emails_enviados, "_skip_reached", False))
+        if SKIP_UNTIL_NF and not skip_reached and next_page_token:
+            if interativo_cmd:
+                resposta = input(
+                    f"\nNF {SKIP_UNTIL_NF} não encontrada neste lote de {batch_size}. "
+                    f"Deseja continuar com mais {batch_size}? [s/N]: "
+                ).strip().lower()
+                if resposta in ("s", "sim", "y", "yes"):
+                    page_token = next_page_token
+                    continue
+                logger.info("Busca interrompida pelo usuário antes de encontrar a NF %s.", SKIP_UNTIL_NF)
+            else:
+                logger.info(
+                    "NF %s não encontrada no lote atual e execução não interativa. "
+                    "Encerrando sem carregar próximas páginas.",
+                    SKIP_UNTIL_NF,
+                )
+        break
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
     escreverRelatorio(
         f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lançamentos."
@@ -539,12 +572,12 @@ def executar_um_ciclo():
     global last_status, _NEXT_RUN_AT
     try:
         processar_emails_enviados()
-        last_status = {"ok": True, "message": "ExecuÃ§Ã£o manual concluÃ­da", "at": datetime.now().isoformat()}
+        last_status = {"ok": True, "message": "Execução manual concluída", "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
-        return True, "ExecuÃ§Ã£o manual concluÃ­da"
+        return True, "Execução manual concluída"
     except Exception as exc:
-        logger.exception("Erro na execuÃ§Ã£o manual: %s", exc)
-        last_status = {"ok": False, "message": f"Erro na execuÃ§Ã£o manual: {exc}", "at": datetime.now().isoformat()}
+        logger.exception("Erro na execução manual: %s", exc)
+        last_status = {"ok": False, "message": f"Erro na execução manual: {exc}", "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return False, str(exc)
 
@@ -571,7 +604,7 @@ def parar_verificacao():
 
 
 def on_quit():
-    """Chamado quando o usuÃ¡rio clica em 'Sair' no tray."""
+    """Chamado quando o usuário clica em 'Sair' no tray."""
     parar_verificacao()
     time.sleep(1)
     sys.exit(0)
@@ -843,6 +876,8 @@ p{margin:0 0 12px;color:#6b4128}
 label{display:block;margin-top:8px;font-weight:600;color:#5c341c}
 input{width:100%;padding:10px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
 button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer}
+.btn-sec{background:linear-gradient(90deg,#6b4128,#4a2b18);color:#fff9f3}
+.hidden{display:none!important}
 .msg{margin-top:10px;font-size:.9rem;color:#9c2c1d;min-height:20px}
 </style></head><body>
 <section class="card">
@@ -851,6 +886,7 @@ button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;b
 <label>Usuário</label><input id="u" type="text" autocomplete="username"/>
 <label>Senha</label><input id="p" type="password" autocomplete="current-password"/>
 <button id="b" onclick="login()">Entrar</button>
+<button id="hubBackLogin" class="btn-sec hidden" type="button" onclick="backToHub()">Voltar ao HUB</button>
 <div id="m" class="msg"></div>
 </section>
 <script>
@@ -858,6 +894,14 @@ const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store
 function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
 const _BASE_PREFIX=_basePrefix();
 function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
+function backToHub(){
+  try{
+    const ref=document.referrer?new URL(document.referrer):null;
+    if(ref&&ref.origin){window.location.assign(ref.origin+'/');return;}
+  }catch(_){}
+  window.location.assign(new URL('/',window.location.origin).toString());
+}
+function initHubBackLogin(){const b=document.getElementById('hubBackLogin');if(!b)return;if(_BASE_PREFIX)b.classList.remove('hidden');}
 async function login(){
   const u=document.getElementById('u').value||'';
   const p=document.getElementById('p').value||'';
@@ -875,6 +919,7 @@ async function login(){
   }finally{b.disabled=false;}
 }
 ['u','p'].forEach(id=>{document.getElementById(id).addEventListener('keydown',(e)=>{if(e.key==='Enter')login();});});
+initHubBackLogin();
 </script></body></html>"""
 def _render_server_html() -> str:
     return """<!doctype html>
@@ -891,6 +936,7 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .whoami{font-size:.82rem;opacity:.95}
 .logout-btn{padding:7px 10px;border:1px solid rgba(255,244,234,.5);border-radius:8px;background:rgba(255,244,234,.12);color:#fff9f3;font-weight:700;cursor:pointer}
 .logout-btn:hover{background:rgba(255,244,234,.2)}
+.hub-back-btn{margin-right:8px}
 .status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:.76rem;font-weight:700;border:1px solid}
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
@@ -965,6 +1011,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     <span>Botana - Painel de Controle MVA</span>
     <div class="top-right">
       <span id="who" class="whoami">Usuário: -</span>
+      <button id="backHubBtn" class="logout-btn hub-back-btn hidden" onclick="goHub()">Voltar ao HUB</button>
       <button class="logout-btn" onclick="logout()">Sair</button>
       <span id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></span>
     </div>
@@ -1094,7 +1141,19 @@ const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store
 function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
 const _BASE_PREFIX=_basePrefix();
 function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
-async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('nao autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
+function goHub(){
+  try{
+    const ref=document.referrer?new URL(document.referrer):null;
+    if(ref&&ref.origin&&ref.origin!==window.location.origin){
+      window.location.assign(ref.origin+'/');
+      return;
+    }
+  }catch(_){}
+  const target=new URL('/',window.location.origin).toString();
+  window.location.assign(target);
+}
+function initHubBackButton(){const b=document.getElementById('backHubBtn');if(!b)return;if(_BASE_PREFIX)b.classList.remove('hidden');else b.classList.add('hidden');}
+async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('não autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
 let _nextRemain=0;
 function _fmtSec(total){
   const t=Math.max(0, Number(total||0));
@@ -1207,6 +1266,7 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
+initHubBackButton();
 </script></body></html>"""
 
 def start_server(host: str, port: int, no_loop: bool = False):
@@ -1420,12 +1480,12 @@ def parse_args():
     p.add_argument("--server", action="store_true", help="Executa em modo servidor HTTP")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8865)
-    p.add_argument("--no-loop", action="store_true", help="NÃ£o inicia o loop automaticamente no modo servidor")
+    p.add_argument("--no-loop", action="store_true", help="Não inicia o loop automaticamente no modo servidor")
     return p.parse_args()
 
 
 # =========================
-# EXECUÃ‡ÃƒO PRINCIPAL
+# EXECUÇÃO PRINCIPAL
 # =========================
 if __name__ == "__main__":
     try:
@@ -1441,10 +1501,6 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
-
-
-
 
 
 
