@@ -266,6 +266,44 @@ def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+
+def _normalize_report_text(text: str) -> str:
+    out = str(text or "")
+    markers = ("Ã", "Â", "â", "ðŸ", "�", "рџ")
+    if any(m in out for m in markers):
+        for enc in ("latin-1", "cp1252", "cp1251"):
+            try:
+                fixed = out.encode(enc).decode("utf-8")
+                if fixed:
+                    out = fixed
+                    break
+            except Exception:
+                continue
+    replacements = {
+        "Ã¡": "á",
+        "Ã¢": "â",
+        "Ã£": "ã",
+        "Ã ": "à",
+        "Ã©": "é",
+        "Ãª": "ê",
+        "Ã­": "í",
+        "Ã³": "ó",
+        "Ã´": "ô",
+        "Ãµ": "õ",
+        "Ãº": "ú",
+        "Ã§": "ç",
+        "Â ": "",
+        "â€“": "–",
+        "â€”": "—",
+        "â€œ": "“",
+        "â€": "”",
+        "â€˜": "‘",
+        "â€™": "’",
+    }
+    for src, dst in replacements.items():
+        out = out.replace(src, dst)
+    return out.strip()
+
 def processar_emails_enviados():
     global _IS_READING
     service = _get_gmail_service_locked()
@@ -717,7 +755,13 @@ def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
                     dt, msg = line.split(" - ", 1)
                 else:
                     dt, msg = "", line
-                out.append({"at": dt.strip(), "message": msg.strip(), "raw": line})
+                out.append(
+                    {
+                        "at": dt.strip(),
+                        "message": _normalize_report_text(msg),
+                        "raw": _normalize_report_text(line),
+                    }
+                )
                 if len(out) >= limit:
                     return out
         except Exception:
@@ -760,6 +804,7 @@ def _daily_report_data() -> dict:
         if not line:
             continue
         text = line.split(" - ", 1)[1].strip() if " - " in line else line
+        text = _normalize_report_text(text)
         low = text.lower()
         if "erro" in low or "falha" in low:
             avisos.append(text)
@@ -1501,7 +1546,6 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
 
 
 
