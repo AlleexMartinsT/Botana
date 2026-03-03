@@ -22,24 +22,24 @@ except Exception:
     run_tray = None
 
 # -----------------------
-# FILTROS PARA DEBUG / ANÁLISE ISOLADA
+# FILTROS PARA DEBUG / ANÃLISE ISOLADA
 # -----------------------
-# Defina manualmente aqui (string) ou via variável de ambiente:
+# Defina manualmente aqui (string) ou via variÃ¡vel de ambiente:
 # Ex.: set SKIP_UNTIL_NF=12345       (Windows CMD)
 
-# Se quiser que o script ignore tudo até achar a NF X, defina SKIP_UNTIL_NF
+# Se quiser que o script ignore tudo atÃ© achar a NF X, defina SKIP_UNTIL_NF
 SKIP_UNTIL_NF = os.environ.get("SKIP_UNTIL_NF") or None  # ex: "12345"
 SKIP_UNTIL_NF = "19843"
 
-# Se quiser processar somente uma NF específica (ignorar todas as outras), defina NF_ALVO
+# Se quiser processar somente uma NF especÃ­fica (ignorar todas as outras), defina NF_ALVO
 NF_ALVO = os.environ.get("NF_ALVO") or None  # ex: "12345"
 
-# Se NF_ALVO for usado e quiser que o script pare após processar essa NF, coloque True
+# Se NF_ALVO for usado e quiser que o script pare apÃ³s processar essa NF, coloque True
 STOP_AFTER_NF = os.environ.get("STOP_AFTER_NF", "False").lower() in ("1", "true", "yes")
 # -----------------------
 
-stop_event = threading.Event()  # usado para parar o loop com segurança
-running = False # indica se o loop principal está ativo
+stop_event = threading.Event()  # usado para parar o loop com seguranÃ§a
+running = False # indica se o loop principal estÃ¡ ativo
 last_status = {"ok": True, "message": "Aguardando", "at": None}
 APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
@@ -130,27 +130,58 @@ def _process_finish(ok: bool, error: str = ""):
         _PROCESS_STATS["current"] = cur
 
 
-def _process_snapshot() -> dict:
+def _reading_state() -> dict:
+    """
+    Estado consistente da leitura, com auto-correcao de divergencia entre flag e ciclo ativo.
+    """
+    global _IS_READING
     with _PROCESS_STATS_LOCK:
-        return {
-            "running": bool(running),
-            "reading": bool(_reading_active()),
-            "current": dict(_PROCESS_STATS.get("current", {})),
-            "last": dict(_PROCESS_STATS.get("last", {})),
-        }
+        cur = dict(_PROCESS_STATS.get("current", {}))
+    current_active = bool(cur.get("active"))
+    flag_raw = bool(_IS_READING)
+    corrected = False
+    source = "idle"
+
+    if flag_raw and not current_active:
+        _IS_READING = False
+        corrected = True
+        source = "stale_flag_corrected"
+    elif current_active and not flag_raw:
+        _IS_READING = True
+        corrected = True
+        source = "synced_from_current"
+    elif current_active and flag_raw:
+        source = "flag_and_current"
+
+    reading_now = bool(_IS_READING) and current_active
+    if not reading_now and source == "idle" and current_active:
+        source = "current_only"
+
+    return {
+        "reading": bool(reading_now),
+        "source": source,
+        "flag_raw": flag_raw,
+        "current_active": current_active,
+        "corrected": corrected,
+    }
 
 
 def _reading_active() -> bool:
-    """Retorna se existe ciclo ativo de leitura e corrige flag stale quando necessário."""
-    global _IS_READING
-    if not bool(_IS_READING):
-        return False
+    return bool(_reading_state().get("reading"))
+
+
+def _process_snapshot() -> dict:
+    r = _reading_state()
     with _PROCESS_STATS_LOCK:
         cur = dict(_PROCESS_STATS.get("current", {}))
-    if bool(cur.get("active")):
-        return True
-    _IS_READING = False
-    return False
+        last = dict(_PROCESS_STATS.get("last", {}))
+    return {
+        "running": bool(running),
+        "reading": bool(r.get("reading", False)),
+        "reading_diag": r,
+        "current": cur,
+        "last": last,
+    }
 
 
 def _get_gmail_service_locked(timeout: float | None = None):
@@ -357,7 +388,7 @@ def _now():
 
 def _normalize_report_text(text: str) -> str:
     out = str(text or "")
-    markers = ("Ã", "Â", "â", "ðŸ", "�", "рџ")
+    markers = ("Ãƒ", "Ã‚", "Ã¢", "Ã°Å¸", "ï¿½", "Ñ€ÑŸ")
     if any(m in out for m in markers):
         for enc in ("latin-1", "cp1252", "cp1251"):
             try:
@@ -368,25 +399,25 @@ def _normalize_report_text(text: str) -> str:
             except Exception:
                 continue
     replacements = {
-        "Ã¡": "á",
-        "Ã¢": "â",
-        "Ã£": "ã",
-        "Ã ": "à",
-        "Ã©": "é",
-        "Ãª": "ê",
-        "Ã­": "í",
-        "Ã³": "ó",
-        "Ã´": "ô",
-        "Ãµ": "õ",
-        "Ãº": "ú",
-        "Ã§": "ç",
-        "Â ": "",
-        "â€“": "–",
-        "â€”": "—",
-        "â€œ": "“",
-        "â€": "”",
-        "â€˜": "‘",
-        "â€™": "’",
+        "ÃƒÂ¡": "Ã¡",
+        "ÃƒÂ¢": "Ã¢",
+        "ÃƒÂ£": "Ã£",
+        "Ãƒ ": "Ã ",
+        "ÃƒÂ©": "Ã©",
+        "ÃƒÂª": "Ãª",
+        "ÃƒÂ­": "Ã­",
+        "ÃƒÂ³": "Ã³",
+        "ÃƒÂ´": "Ã´",
+        "ÃƒÂµ": "Ãµ",
+        "ÃƒÂº": "Ãº",
+        "ÃƒÂ§": "Ã§",
+        "Ã‚ ": "",
+        "Ã¢â‚¬â€œ": "â€“",
+        "Ã¢â‚¬â€": "â€”",
+        "Ã¢â‚¬Å“": "â€œ",
+        "Ã¢â‚¬Â": "â€",
+        "Ã¢â‚¬Ëœ": "â€˜",
+        "Ã¢â‚¬â„¢": "â€™",
     }
     for src, dst in replacements.items():
         out = out.replace(src, dst)
@@ -469,7 +500,7 @@ def processar_emails_enviados():
 
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
-            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lançamentos.")
+            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lanÃ§amentos.")
             _sync_progress()
             return _summary()
 
@@ -504,22 +535,22 @@ def processar_emails_enviados():
                         _sync_progress()
                         try:
                             dados = extrairDadosXML(arquivo)
-                            # Ignora vendas à vista
+                            # Ignora vendas Ã  vista
                             nat_op = dados.get("naturezaOperacao", "").strip().upper()
                             dest_nome = dados.get("destinatario", "")
                             dest_cnpj = re.sub(r"\D+", "", str(dados.get("cnpjDestinatario") or ""))
                             if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
-                                # Checa se a mensagem já foi processada no relatório atual:
+                                # Checa se a mensagem jÃ¡ foi processada no relatÃ³rio atual:
                                 if dados.get('nf') not in consolidarRelatorioTMP():
-                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda à vista).")
+                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda Ã  vista).")
                                     continue
-                                else: logger.info(f"{cor_ciano}NF {dados['nf']} já registrada no relatório, não duplicando a mensagem de ignorada.{reset}")
+                                else: logger.info(f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}")
                                 continue
                             cnpj_mva = re.sub(r"\D+", "", str(CNPJ_MVA or ""))
                             cnpj_eh = re.sub(r"\D+", "", str(CNPJ_EH or ""))
                             if dest_cnpj and (dest_cnpj == cnpj_mva or dest_cnpj == cnpj_eh):
-                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {dest_nome} / {dest_cnpj})")
-                                escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (destinatário é o nosso).")
+                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatÃ¡rio Ã© o nosso: {dest_nome} / {dest_cnpj})")
+                                escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (destinatÃ¡rio Ã© o nosso).")
                                 continue
                             if not dados:
                                 motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
@@ -536,7 +567,7 @@ def processar_emails_enviados():
                     # =============================
                     # PDF -> tenta identificar boleto
                     # =============================
-                    elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessário
+                    elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessÃ¡rio
                         nome_upper = nome_arquivo.upper()
 
                         # Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
@@ -549,14 +580,14 @@ def processar_emails_enviados():
                                 boletos.append(num_boleto)
                                 logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                             else:
-                                logger.info("Nenhum número de boleto encontrado no nome: %s", nome_arquivo)
+                                logger.info("Nenhum nÃºmero de boleto encontrado no nome: %s", nome_arquivo)
                         elif arquivo.lower().endswith(".pdf"):
                             nome_upper = nome_arquivo.upper()
 
                             # Palavras que indicam boleto (considera erros comuns)
                             padrao_boleto = r"\b(BOLET[OA]?|BOLTO|BOLETOO|BOLETT?|BLT)\b"
 
-                            # Só tenta identificar número se o nome realmente tiver algo próximo de "boleto"
+                            # SÃ³ tenta identificar nÃºmero se o nome realmente tiver algo prÃ³ximo de "boleto"
                             if re.search(padrao_boleto, nome_upper):
                                 match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
                                 if match:
@@ -564,12 +595,12 @@ def processar_emails_enviados():
                                     boletos.append(num_boleto)
                                     logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                                 else:
-                                    logger.info("Possível boleto sem número identificado: %s", nome_arquivo)
+                                    logger.info("PossÃ­vel boleto sem nÃºmero identificado: %s", nome_arquivo)
                             else:
-                                logger.info("PDF ignorado (não parece boleto): %s", nome_arquivo)
+                                logger.info("PDF ignorado (nÃ£o parece boleto): %s", nome_arquivo)
 
                     else:
-                        logger.info("Arquivo não identificado como boleto: %s", nome_arquivo)
+                        logger.info("Arquivo nÃ£o identificado como boleto: %s", nome_arquivo)
 
                 finally:
                     # Remove sempre o anexo local (independente do tipo)
@@ -588,18 +619,18 @@ def processar_emails_enviados():
                 marcar_mensagem_com_label(service, msg_id)
                 logger.info("E-mail %s marcado com 'XML Processado Botana'", msg_id)
             except Exception as e:
-                logger.exception("Falha ao aplicar rótulo: %s", e)
+                logger.exception("Falha ao aplicar rÃ³tulo: %s", e)
 
             # Nenhum XML -> pula este e-mail
             if not dados_xmls:
-                logger.info("Nenhum XML válido encontrado neste e-mail.")
+                logger.info("Nenhum XML vÃ¡lido encontrado neste e-mail.")
                 continue
 
             # =============================
             # Atualiza planilhas
             # =============================
             for dados_xml in dados_xmls:
-                # --- FILTRAGEM POR NF (para debug/análise isolada) ---
+                # --- FILTRAGEM POR NF (para debug/anÃ¡lise isolada) ---
                 nf_num = str(dados_xml.get("nf", "")).strip()
 
                 # NF_ALVO: processa somente essa NF (ignora as outras)
@@ -610,22 +641,22 @@ def processar_emails_enviados():
                     else:
                         logger.info(f"NF_ALVO encontrada: {nf_num}")
 
-                # SKIP_UNTIL_NF: ignora tudo até encontrar essa NF; quando encontrada, passa a processar normalmente
+                # SKIP_UNTIL_NF: ignora tudo atÃ© encontrar essa NF; quando encontrada, passa a processar normalmente
                 if SKIP_UNTIL_NF:
-                    # usa atributo da função para manter estado entre ciclos enquanto o processo está vivo
+                    # usa atributo da funÃ§Ã£o para manter estado entre ciclos enquanto o processo estÃ¡ vivo
                     if not hasattr(processar_emails_enviados, "_skip_reached"):
                         processar_emails_enviados._skip_reached = False
 
                     if not processar_emails_enviados._skip_reached:
                         if nf_num == str(SKIP_UNTIL_NF):
                             processar_emails_enviados._skip_reached = True
-                            logger.info(f"SKIP_UNTIL_NF: NF {nf_num} encontrada - a partir daqui será processada.")
+                            logger.info(f"SKIP_UNTIL_NF: NF {nf_num} encontrada - a partir daqui serÃ¡ processada.")
                         else:
                             logger.info(f"SKIP_UNTIL_NF ativo, pulando NF {nf_num}")
                             continue
 
-                # Se chegou até aqui, a NF será processada normalmente.
-                # Se NF_ALVO + STOP_AFTER_NF: após processar, se encerra o loop/principal para análise isolada.
+                # Se chegou atÃ© aqui, a NF serÃ¡ processada normalmente.
+                # Se NF_ALVO + STOP_AFTER_NF: apÃ³s processar, se encerra o loop/principal para anÃ¡lise isolada.
 
                 cnpj_emit = re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or ""))
                 ano = dados_xml.get("anoVencimento")
@@ -647,7 +678,7 @@ def processar_emails_enviados():
                 if n_boletos == 0:
                     boletos_map = [None] * n_parcelas
                 else:
-                    # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa só os primeiros N
+                    # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa sÃ³ os primeiros N
                     boletos_map = [boletos[i] if i < n_boletos else None for i in range(n_parcelas)]
                     if n_boletos > n_parcelas:
                         logger.info("Mais boletos (%d) que parcelas (%d). Sobraram: %s", n_boletos, n_parcelas, boletos[n_parcelas:])
@@ -660,10 +691,10 @@ def processar_emails_enviados():
                         "vencimento": parcela["vencimento"],
                         "numParcela": parcela["numParcela"],
                         "valorParcela": parcela["valor"],
-                        "boleto": num_boleto  # adiciona campo explícito (opcional)
+                        "boleto": num_boleto  # adiciona campo explÃ­cito (opcional)
                     })
 
-                    # Ajusta descrição com o boleto mapeado (se houver)
+                    # Ajusta descriÃ§Ã£o com o boleto mapeado (se houver)
                     if num_boleto:
                         dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
                     else:
@@ -695,10 +726,10 @@ def processar_emails_enviados():
                                 total_processados += 1
                                 _write_history_launch_event(dados_xml, dados_parcela, resultado)
                                 _sync_progress()
-                            # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para análise isolada.
+                            # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para anÃ¡lise isolada.
                             if NF_ALVO and STOP_AFTER_NF and isinstance(resultado, dict) and bool(resultado.get("inserted")):
-                                logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execução.")
-                                # força saída limpa do loop principal retornando da função
+                                logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execuÃ§Ã£o.")
+                                # forÃ§a saÃ­da limpa do loop principal retornando da funÃ§Ã£o
                                 return _summary()
                             break
 
@@ -718,23 +749,23 @@ def processar_emails_enviados():
         if SKIP_UNTIL_NF and not skip_reached and next_page_token:
             if interativo_cmd:
                 resposta = input(
-                    f"\nNF {SKIP_UNTIL_NF} não encontrada neste lote de {batch_size}. "
+                    f"\nNF {SKIP_UNTIL_NF} nÃ£o encontrada neste lote de {batch_size}. "
                     f"Deseja continuar com mais {batch_size}? [s/N]: "
                 ).strip().lower()
                 if resposta in ("s", "sim", "y", "yes"):
                     page_token = next_page_token
                     continue
-                logger.info("Busca interrompida pelo usuário antes de encontrar a NF %s.", SKIP_UNTIL_NF)
+                logger.info("Busca interrompida pelo usuÃ¡rio antes de encontrar a NF %s.", SKIP_UNTIL_NF)
             else:
                 logger.info(
-                    "NF %s não encontrada no lote atual e execução não interativa. "
-                    "Encerrando sem carregar próximas páginas.",
+                    "NF %s nÃ£o encontrada no lote atual e execuÃ§Ã£o nÃ£o interativa. "
+                    "Encerrando sem carregar prÃ³ximas pÃ¡ginas.",
                     SKIP_UNTIL_NF,
                 )
         break
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
     escreverRelatorio(
-        f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lançamentos."
+        f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lanÃ§amentos."
     )
     _sync_progress()
     return _summary()
@@ -751,10 +782,10 @@ def main_loop():
             summary = processar_emails_enviados()
             _process_finish(ok=True, error="")
             msg = (
-                f"Ciclo concluído: {int((summary or {}).get('messages', 0))} e-mails, "
+                f"Ciclo concluÃ­do: {int((summary or {}).get('messages', 0))} e-mails, "
                 f"{int((summary or {}).get('attachments', 0))} anexos, "
                 f"{int((summary or {}).get('xmls', 0))} XML, "
-                f"{int((summary or {}).get('launched', 0))} lançamentos."
+                f"{int((summary or {}).get('launched', 0))} lanÃ§amentos."
             )
             last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         except Exception as e:
@@ -776,18 +807,18 @@ def executar_um_ciclo():
         summary = processar_emails_enviados()
         _process_finish(ok=True, error="")
         msg = (
-            f"Execução manual concluída: {int((summary or {}).get('messages', 0))} e-mails, "
+            f"ExecuÃ§Ã£o manual concluÃ­da: {int((summary or {}).get('messages', 0))} e-mails, "
             f"{int((summary or {}).get('attachments', 0))} anexos, "
             f"{int((summary or {}).get('xmls', 0))} XML, "
-            f"{int((summary or {}).get('launched', 0))} lançamentos."
+            f"{int((summary or {}).get('launched', 0))} lanÃ§amentos."
         )
         last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return True, msg
     except Exception as exc:
-        logger.exception("Erro na execução manual: %s", exc)
+        logger.exception("Erro na execuÃ§Ã£o manual: %s", exc)
         _process_finish(ok=False, error=str(exc))
-        last_status = {"ok": False, "message": f"Erro na execução manual: {exc}", "at": datetime.now().isoformat()}
+        last_status = {"ok": False, "message": f"Erro na execuÃ§Ã£o manual: {exc}", "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return False, str(exc)
     finally:
@@ -816,7 +847,7 @@ def parar_verificacao():
 
 
 def on_quit():
-    """Chamado quando o usuário clica em 'Sair' no tray."""
+    """Chamado quando o usuÃ¡rio clica em 'Sair' no tray."""
     parar_verificacao()
     time.sleep(1)
     sys.exit(0)
@@ -875,7 +906,7 @@ def _find_store_image_path() -> Path | None:
         candidates.append(Path(sys.executable).resolve().parent / n)
         candidates.append(Path.home() / "Desktop" / n)
 
-    # Fallback para a imagem do FinanceBot, se não houver imagem local do Botana.
+    # Fallback para a imagem do FinanceBot, se nÃ£o houver imagem local do Botana.
     for n in names:
         candidates.append(Path("C:/FinanceBot/assets/branding") / n)
         candidates.append(Path("C:/FinanceBot") / n)
@@ -1026,7 +1057,7 @@ def _history_from_reports(
                 status = str(payload.get("status") or "").strip()
                 sheet_title = str(payload.get("sheet_title") or "").strip()
                 aba = str(payload.get("aba") or "").strip()
-                local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/Relatório"
+                local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/RelatÃ³rio"
 
                 item = {
                     "type": "boleto_lancado",
@@ -1225,7 +1256,7 @@ def _reauthenticate_gmail() -> dict:
         pass
     _get_gmail_service_locked()
     _connected_email(force=True)
-    return {"ok": True, "message": "Reautenticação concluída"}
+    return {"ok": True, "message": "ReautenticaÃ§Ã£o concluÃ­da"}
 
 
 
@@ -1251,8 +1282,8 @@ button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;b
 </style></head><body>
 <section class="card">
 <h1>Acesso ao Botana</h1>
-<p>Entre com usuário e senha para continuar</p>
-<label>Usuário</label><input id="u" type="text" autocomplete="username"/>
+<p>Entre com usuÃ¡rio e senha para continuar</p>
+<label>UsuÃ¡rio</label><input id="u" type="text" autocomplete="username"/>
 <label>Senha</label><input id="p" type="password" autocomplete="current-password"/>
 <button id="b" onclick="login()">Entrar</button>
 <button id="hubBackLogin" class="btn-sec hidden" type="button" onclick="backToHub()">Voltar ao HUB</button>
@@ -1282,7 +1313,7 @@ async function login(){
     const r=await fetch(_url('/api/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     const j=await r.json();
     if(r.ok&&j.ok){window.location.href=_url('/');return;}
-    m.textContent=j.message||'Usuário ou senha inválidos';
+    m.textContent=j.message||'UsuÃ¡rio ou senha invÃ¡lidos';
   }catch(_){
     m.textContent='Falha ao conectar com o servidor';
   }finally{b.disabled=false;}
@@ -1398,22 +1429,22 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}}
 </style></head><body>
-<div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
+<div id="ov" class="ov"><div class="ovb"><h4>ReautenticaÃ§Ã£o em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticaÃ§Ã£o comeÃ§arÃ¡ em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
   <section class="top">
     <span>Botana - Painel de Controle MVA</span>
     <div class="top-right">
-      <span id="who" class="whoami">Usuário: -</span>
+      <span id="who" class="whoami">UsuÃ¡rio: -</span>
       <button id="backHubBtn" class="logout-btn hub-back-btn hidden" onclick="goHub()">Voltar ao HUB</button>
       <button class="logout-btn" onclick="logout()">Sair</button>
-      <span id="pill" class="status-pill off"><span>●</span><span>Aguardando</span></span>
+      <span id="pill" class="status-pill off"><span>â—</span><span>Aguardando</span></span>
     </div>
   </section>
 
   <div class="tabs">
     <button id="tabBtnMain" type="button" class="tab-btn active" onclick="switchTab('main')">Painel</button>
-    <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
-    <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
+    <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">HistÃ³rico</button>
+    <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">DiagnÃ³stico</button>
   </div>
 
   <section id="tabMain" class="tab-panel">
@@ -1423,60 +1454,60 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="s">
           <div class="h">
             <span>Conta Botana</span>
-            <span id="accBadge" class="status-pill off"><span>●</span><span>Aguardando</span></span>
+            <span id="accBadge" class="status-pill off"><span>â—</span><span>Aguardando</span></span>
           </div>
           <div id="accEmail" class="muted">E-mail conectado: -</div>
           <div id="accDetail" class="muted">Aguardando leitura</div>
           <div id="accProblem" class="problem hidden">-</div>
         </div>
       </div>
-      <div id="cool" class="muted" style="margin-top:8px">Próxima verificação automática: -</div>
+      <div id="cool" class="muted" style="margin-top:8px">PrÃ³xima verificaÃ§Ã£o automÃ¡tica: -</div>
       <div class="proc-grid">
         <div id="procRun" class="proc-line">Loop: -</div>
         <div id="procNow" class="proc-line">Ciclo atual: -</div>
-        <div id="procLast" class="proc-line">Último ciclo: -</div>
+        <div id="procLast" class="proc-line">Ãšltimo ciclo: -</div>
       </div>
     </section>
 
     <section class="card">
-      <h3>Relatórios diários</h3>
+      <h3>RelatÃ³rios diÃ¡rios</h3>
       <div class="kpi daily">
         <div class="k"><div id="kp1" class="n">0</div><div class="t">Processados</div></div>
         <div class="k"><div id="kp2" class="n">0</div><div class="t">Ignorados</div></div>
         <div class="k"><div id="kp3" class="n">0</div><div class="t">Avisos no ciclo</div></div>
         <div class="k"><div id="kp4" class="n">0</div><div class="t">Avisos no dia</div></div>
       </div>
-      <div id="rmeta" class="muted rmeta">Sem relatório encontrado ainda</div>
+      <div id="rmeta" class="muted rmeta">Sem relatÃ³rio encontrado ainda</div>
       <div class="lists">
-        <div class="box"><h4>Últimos processados</h4><ul id="lp"><li>Sem itens</li></ul></div>
-        <div class="box"><h4>Últimos ignorados</h4><ul id="li"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Ãšltimos processados</h4><ul id="lp"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Ãšltimos ignorados</h4><ul id="li"><li>Sem itens</li></ul></div>
         <div class="box"><h4>Avisos recentes</h4><ul id="la"><li>Sem itens</li></ul></div>
       </div>
     </section>
 
     <section class="cfg-grid">
       <article class="card cfg-main-card">
-        <h3>Configuração do Gmail</h3>
+        <h3>ConfiguraÃ§Ã£o do Gmail</h3>
         <div class="cfg-main">
           <div class="cfg-fields">
             <div>
-              <label>Período</label>
+              <label>PerÃ­odo</label>
               <select id="mode" class="mode-wide">
-                <option value="last_15_days">Últimos 15 dias</option>
-                <option value="last_30_days">Últimos 30 dias</option>
-                <option value="last_45_days">Últimos 45 dias</option>
-                <option value="last_60_days">Últimos 60 dias</option>
+                <option value="last_15_days">Ãšltimos 15 dias</option>
+                <option value="last_30_days">Ãšltimos 30 dias</option>
+                <option value="last_45_days">Ãšltimos 45 dias</option>
+                <option value="last_60_days">Ãšltimos 60 dias</option>
                 <option value="current_week">Semana atual</option>
-                <option value="previous_month">Mês anterior</option>
-                <option value="current_and_previous_month">Mês atual + mês anterior</option>
+                <option value="previous_month">MÃªs anterior</option>
+                <option value="current_and_previous_month">MÃªs atual + mÃªs anterior</option>
               </select>
             </div>
             <div>
-              <label>Máx páginas</label>
+              <label>MÃ¡x pÃ¡ginas</label>
               <input id="maxPages" class="num-sm" type="number" min="1" max="20"/>
             </div>
             <div>
-              <label>Tamanho da página</label>
+              <label>Tamanho da pÃ¡gina</label>
               <input id="pageSize" class="num-sm" type="number" min="1" max="500"/>
             </div>
             <div>
@@ -1484,12 +1515,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <input id="intervalMin" class="num-sm" type="number" min="1" max="720"/>
             </div>
           </div>
-          <div class="cfg-save"><button onclick="saveSettings()">Salvar configuração</button></div>
-          <div class="cfg-status"><label>Status da última execução</label><input id="last" type="text" readonly value="-"/></div>
+          <div class="cfg-save"><button onclick="saveSettings()">Salvar configuraÃ§Ã£o</button></div>
+          <div class="cfg-status"><label>Status da Ãºltima execuÃ§Ã£o</label><input id="last" type="text" readonly value="-"/></div>
         </div>
       </article>
       <article class="card auth-card">
-        <h3>Autenticação</h3>
+        <h3>AutenticaÃ§Ã£o</h3>
         <div class="btns">
           <button id="reauthBtn" class="sec" onclick="reauth('principal')">Principal</button>
         </div>
@@ -1498,7 +1529,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <h3>Reprocessar e-mails</h3>
         <div class="reproc-grid">
           <div>
-            <label>Dias para trás</label>
+            <label>Dias para trÃ¡s</label>
             <input id="days" type="number" value="30" min="1" max="365"/>
           </div>
           <div>
@@ -1506,7 +1537,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
+        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como nÃ£o lido</label>
         <div class="btns">
           <button onclick="reprocess()">Remover labels para reprocessar</button>
           <button class="sec" onclick="runNow()">Executar agora</button>
@@ -1517,13 +1548,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabHist" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>Histórico de processamento e lançamentos</h3>
+      <h3>HistÃ³rico de processamento e lanÃ§amentos</h3>
       <div class="hist-filters">
         <div><label>Data inicial</label><input id="hFrom" type="date"/></div>
         <div><label>Data final</label><input id="hTo" type="date"/></div>
-        <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente números"/></div>
-        <div><label>CNPJ destinatário</label><input id="hDest" type="text" placeholder="Somente números"/></div>
-        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, descrição, aba"/></div>
+        <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente nÃºmeros"/></div>
+        <div><label>CNPJ destinatÃ¡rio</label><input id="hDest" type="text" placeholder="Somente nÃºmeros"/></div>
+        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, descriÃ§Ã£o, aba"/></div>
         <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
         <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
@@ -1535,7 +1566,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th class="sortable" data-key="venc">Vencimento</th>
               <th class="sortable" data-key="doc">Documento</th>
               <th class="sortable" data-key="cliente">Cliente</th>
-              <th class="sortable" data-key="desc">Descrição</th>
+              <th class="sortable" data-key="desc">DescriÃ§Ã£o</th>
               <th class="sortable" data-key="parcela">Parcela</th>
               <th class="sortable" data-key="vparcela">Valor Parcela</th>
               <th class="sortable" data-key="vtotal">Valor Total</th>
@@ -1552,7 +1583,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabDiag" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>Diagnóstico</h3>
+      <h3>DiagnÃ³stico</h3>
       <pre id="details">-</pre>
     </section>
   </section>
@@ -1574,7 +1605,7 @@ function goHub(){
   window.location.assign(target);
 }
 function initHubBackButton(){const b=document.getElementById('backHubBtn');if(!b)return;if(_BASE_PREFIX)b.classList.remove('hidden');else b.classList.add('hidden');}
-async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('não autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
+async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('nÃ£o autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
 let _nextRemain=0;
 function _fmtSec(total){
   const t=Math.max(0, Number(total||0));
@@ -1589,10 +1620,10 @@ function _tickNext(){
   const el=document.getElementById('cool');
   if(!el) return;
   if(_nextRemain>0){
-    el.textContent='Próxima verificação automática em '+_fmtSec(_nextRemain);
+    el.textContent='PrÃ³xima verificaÃ§Ã£o automÃ¡tica em '+_fmtSec(_nextRemain);
     _nextRemain=Math.max(0,_nextRemain-1);
   }else{
-    el.textContent='Próxima verificação automática: sem contagem no momento';
+    el.textContent='PrÃ³xima verificaÃ§Ã£o automÃ¡tica: sem contagem no momento';
   }
 }
 let _activeTab='main';
@@ -1628,11 +1659,11 @@ function switchTab(tab){
     try{window.scrollTo({top:0,behavior:'auto'});}catch(_){window.scrollTo(0,0);}
   }
 }
-function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
+function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>â—</span><span>Em execuÃ§Ã£o</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>â—</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>â—</span><span>Com erro</span>';}
 function setAccBadge(kind,label){
   const b=document.getElementById('accBadge');
   b.className='status-pill '+kind;
-  b.innerHTML='<span>●</span><span>'+label+'</span>';
+  b.innerHTML='<span>â—</span><span>'+label+'</span>';
 }
 function updAccount(state){
   const e=document.getElementById('accEmail');
@@ -1670,7 +1701,7 @@ function updDaily(rep){
   if(rep&&rep.exists){
     meta.textContent='Atualizado em: '+String(rep.updated_at||'-')+' | Arquivo: '+String(rep.path||'-');
   }else{
-    meta.textContent='Sem relatório encontrado ainda';
+    meta.textContent='Sem relatÃ³rio encontrado ainda';
   }
   setList('lp',(rep&&rep.processados)||[]);
   setList('li',(rep&&rep.ignorados)||[]);
@@ -1682,7 +1713,7 @@ function _fmtCycleShort(c){
   const a=Number(it.attachments||0);
   const x=Number(it.xmls||0);
   const l=Number(it.launched||0);
-  return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l}`;
+  return `E-mails ${m} | Anexos ${a} | XML ${x} | LanÃ§amentos ${l}`;
 }
 function updProcessing(proc){
   const runEl=document.getElementById('procRun');
@@ -1693,24 +1724,53 @@ function updProcessing(proc){
   const reading=!!p.reading;
   const running=!!p.running;
   if(reading) runEl.textContent='Loop: executando ciclo agora';
-  else if(running) runEl.textContent='Loop: ativo (aguardando próximo ciclo)';
+  else if(running) runEl.textContent='Loop: ativo (aguardando prÃ³ximo ciclo)';
   else runEl.textContent='Loop: pausado';
 
   const cur=p.current||{};
   const curStart=cur.started_at?_fmtDateTime(cur.started_at):'-';
-  nowEl.textContent=`Ciclo atual: início ${curStart} | ${_fmtCycleShort(cur)}`;
+  nowEl.textContent=`Ciclo atual: inÃ­cio ${curStart} | ${_fmtCycleShort(cur)}`;
 
   const last=p.last||{};
   const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
   let statusTxt='-';
   if(last.ok===true) statusTxt='OK';
   else if(last.ok===false) statusTxt='Erro';
-  let msg=`Último ciclo: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+  let msg=`Ãšltimo ciclo: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
   const err=String(last.error||'').trim();
   if(statusTxt==='Erro'&&err) msg += ` | ${err}`;
   lastEl.textContent=msg;
 }
-async function refresh(){try{const j=await api('/api/state');const reading=!!j.reading;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,reading);updDaily(j.daily_report||{});updProcessing(j.processing||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
+async function refresh(){
+  try{
+    const j=await api('/api/state');
+    const reading=!!j.reading;
+    const ok=!!(j.last_status&&j.last_status.ok);
+    const s=(j.settings||{});
+    document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');
+    document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');
+    document.getElementById('maxPages').value=String(s.gmail_max_pages||3);
+    document.getElementById('pageSize').value=String(s.gmail_page_size||50);
+    document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);
+    document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');
+    const diag={
+      last_status:(j.last_status||{}),
+      account:(j.account||{}),
+      scheduler:(j.scheduler||{}),
+      processing:(j.processing||{}),
+      diagnostic:(j.diagnostic||{})
+    };
+    document.getElementById('details').textContent=JSON.stringify(diag,null,2);
+    _nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);
+    _tickNext();
+    updAccount(j.account||{});
+    setPill(ok,reading);
+    updDaily(j.daily_report||{});
+    updProcessing(j.processing||{});
+  }catch(err){
+    document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);
+  }
+}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
@@ -1836,7 +1896,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
             if user:
                 return user
             if parsed_path.startswith("/api/"):
-                _json_response(self, 401, {"ok": False, "message": "Não autenticado"})
+                _json_response(self, 401, {"ok": False, "message": "NÃ£o autenticado"})
             else:
                 _html_response(self, 200, _render_login_html())
             return None
@@ -1865,7 +1925,8 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 if not str(email_info.get("email", "")).strip() and not str(email_info.get("error", "")).strip():
                     email_info = _connected_email(force=True)
                 last_msg = str((last_status or {}).get("message", "") or "")
-                reading_now = _reading_active()
+                reading_info = _reading_state()
+                reading_now = bool(reading_info.get("reading"))
                 email_value = str(email_info.get("email", "")).strip()
                 email_err = str(email_info.get("error", "")).strip()
                 email_pending = bool(email_info.get("pending", False))
@@ -1874,10 +1935,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Falha ao validar o e-mail conectado"
                 elif email_pending:
                     acc_status = "waiting"
-                    friendly = "Autenticação em andamento. Aguarde a confirmação no navegador"
+                    friendly = "AutenticaÃ§Ã£o em andamento. Aguarde a confirmaÃ§Ã£o no navegador"
                 elif not email_value:
                     acc_status = "waiting"
-                    friendly = "Autenticação pendente. Clique em Autenticação > Principal"
+                    friendly = "AutenticaÃ§Ã£o pendente. Clique em AutenticaÃ§Ã£o > Principal"
                 elif reading_now:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
@@ -1886,10 +1947,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Monitoramento pausado. Use Executar agora ou inicie o loop."
                 elif (last_status or {}).get("ok", True):
                     acc_status = "waiting"
-                    friendly = "Aguardando a próxima verificação automática"
+                    friendly = "Aguardando a prÃ³xima verificaÃ§Ã£o automÃ¡tica"
                 else:
                     acc_status = "error"
-                    friendly = "Falha na comunicação com a API. Veja os detalhes técnicos para identificar a causa."
+                    friendly = "Falha na comunicaÃ§Ã£o com a API. Veja os detalhes tÃ©cnicos para identificar a causa."
                 status_view = {
                     "ok": acc_status != "error",
                     "message": (email_err or friendly or last_msg or "Aguardando"),
@@ -1924,6 +1985,12 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "next_in_seconds": _scheduler_next_seconds(),
                         },
                         "processing": _process_snapshot(),
+                        "diagnostic": {
+                            "reading_source": str(reading_info.get("source", "")),
+                            "reading_flag_raw": bool(reading_info.get("flag_raw", False)),
+                            "reading_current_active": bool(reading_info.get("current_active", False)),
+                            "reading_corrected": bool(reading_info.get("corrected", False)),
+                        },
                         "daily_report": _daily_report_data(),
                         "auth": {"user": user, "role": _role_of(user)},
                     },
@@ -1948,7 +2015,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     cnpj_dest=cnpj_dest,
                 )
                 return _json_response(self, 200, {"items": items})
-            return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
+            return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
 
         def do_POST(self):
             try:
@@ -1959,7 +2026,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     username = str(data.get("username", "")).strip()
                     password = str(data.get("password", ""))
                     if not _verify_login(username, password):
-                        return _json_response(self, 401, {"ok": False, "message": "Usuário ou senha inválidos"})
+                        return _json_response(self, 401, {"ok": False, "message": "UsuÃ¡rio ou senha invÃ¡lidos"})
                     token = _create_session(username)
                     cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
                     return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
@@ -1992,7 +2059,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
                     _save_settings(
                         {
                             "gmail_filter_mode": data.get("gmail_filter_mode", _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
@@ -2002,10 +2069,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
                         }
                     )
-                    return _json_response(self, 200, {"ok": True, "message": "Configuração salva"})
+                    return _json_response(self, 200, {"ok": True, "message": "ConfiguraÃ§Ã£o salva"})
                 if parsed.path == "/api/reprocess":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
                     try:
                         days = max(1, min(365, int(data.get("days", 30))))
                     except Exception:
@@ -2016,17 +2083,17 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         max_messages = 100
                     mark_unread = bool(data.get("mark_unread", True))
                     result = _reprocess_recent(days=days, max_messages=max_messages, mark_unread=mark_unread)
-                    friendly = f"Reprocessamento concluído: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas"
+                    friendly = f"Reprocessamento concluÃ­do: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas"
                     return _json_response(self, 200, {"ok": True, "result": result, "friendly": friendly})
                 if parsed.path == "/api/reauth":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
                     account = str(data.get("account", "principal")).strip().lower()
                     if account != "principal":
                         account = "principal"
                     info = _reauthenticate_gmail()
-                    return _json_response(self, 200, {"ok": True, "account": account, "message": info.get("message", "Reautenticação concluída"), "friendly": "Reautenticação concluída"})
-                return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
+                    return _json_response(self, 200, {"ok": True, "account": account, "message": info.get("message", "ReautenticaÃ§Ã£o concluÃ­da"), "friendly": "ReautenticaÃ§Ã£o concluÃ­da"})
+                return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
                 return _json_response(self, 500, {"ok": False, "message": "Erro interno no servidor"})
@@ -2050,12 +2117,12 @@ def parse_args():
     p.add_argument("--server", action="store_true", help="Executa em modo servidor HTTP")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8865)
-    p.add_argument("--no-loop", action="store_true", help="Não inicia o loop automaticamente no modo servidor")
+    p.add_argument("--no-loop", action="store_true", help="NÃ£o inicia o loop automaticamente no modo servidor")
     return p.parse_args()
 
 
 # =========================
-# EXECUÇÃO PRINCIPAL
+# EXECUÃ‡ÃƒO PRINCIPAL
 # =========================
 if __name__ == "__main__":
     try:
