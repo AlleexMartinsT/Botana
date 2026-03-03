@@ -743,9 +743,26 @@ def _send_store_image(handler: BaseHTTPRequestHandler) -> bool:
         return False
 
 
-def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
+def _history_from_reports(
+    limit: int = 300,
+    query: str = "",
+    dt_from: str = "",
+    dt_to: str = "",
+    cnpj_emit: str = "",
+    cnpj_dest: str = "",
+) -> list[dict]:
     out = []
     q = str(query or "").strip().lower()
+    f_emit = re.sub(r"\D+", "", str(cnpj_emit or ""))
+    f_dest = re.sub(r"\D+", "", str(cnpj_dest or ""))
+    try:
+        dt_from_obj = datetime.strptime(str(dt_from or "").strip(), "%Y-%m-%d").date() if str(dt_from or "").strip() else None
+    except Exception:
+        dt_from_obj = None
+    try:
+        dt_to_obj = datetime.strptime(str(dt_to or "").strip(), "%Y-%m-%d").date() if str(dt_to or "").strip() else None
+    except Exception:
+        dt_to_obj = None
     rel_dir = Path(RELATORIO_DIR)
     if not rel_dir.exists():
         return out
@@ -763,11 +780,51 @@ def _history_from_reports(limit: int = 300, query: str = "") -> list[dict]:
                     dt, msg = line.split(" - ", 1)
                 else:
                     dt, msg = "", line
+                msg_norm = _normalize_report_text(msg)
+                raw_norm = _normalize_report_text(line)
+
+                dt_clean = str(dt or "").strip()
+                date_obj = None
+                if dt_clean:
+                    try:
+                        date_obj = datetime.strptime(dt_clean[:19], "%Y-%m-%d %H:%M:%S").date()
+                    except Exception:
+                        date_obj = None
+                if dt_from_obj and date_obj and date_obj < dt_from_obj:
+                    continue
+                if dt_to_obj and date_obj and date_obj > dt_to_obj:
+                    continue
+
+                cnpjs = re.findall(r"\b\d{14}\b", msg_norm)
+                emit = cnpjs[0] if len(cnpjs) >= 1 else ""
+                dest = cnpjs[1] if len(cnpjs) >= 2 else ""
+                if f_emit and f_emit not in emit:
+                    continue
+                if f_dest and f_dest not in dest:
+                    continue
+
+                if q and q not in raw_norm.lower():
+                    continue
+
+                nf_match = re.search(r"\bNF\s*([0-9]+)\b", msg_norm, flags=re.IGNORECASE)
+                nf_num = nf_match.group(1) if nf_match else ""
                 out.append(
                     {
-                        "at": dt.strip(),
-                        "message": _normalize_report_text(msg),
-                        "raw": _normalize_report_text(line),
+                        "type": "boleto_lancado",
+                        "at": dt_clean,
+                        "conta": "Botana",
+                        "doc_tipo": "NF" if nf_num else "-",
+                        "numero": nf_num,
+                        "fornecedor": "Botana",
+                        "cnpj_emit": emit,
+                        "cnpj_dest": dest,
+                        "dest_label": "",
+                        "local_lancamento": "Botana/Relatório",
+                        "vencimento": "-",
+                        "parcela": "-",
+                        "detalhe": msg_norm,
+                        "message": msg_norm,
+                        "raw": raw_norm,
                     }
                 )
                 if len(out) >= limit:
@@ -1052,12 +1109,33 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
+.hist-filters{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px;align-items:end}
+.hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.hist-filters > div label{width:100%;text-align:center}
+.hist-filters > div input,.hist-filters > div select{width:100%;text-align:center}
+.hist-filters .search-wide{grid-column:span 2}
+.table-wrap{width:100%;overflow:auto;border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb}
+.hist-table{width:100%;border-collapse:collapse;font-size:.82rem;table-layout:fixed}
+.hist-table th,.hist-table td{border-bottom:1px solid #edd4bc;padding:7px 8px;text-align:center;vertical-align:top;white-space:normal;word-break:break-word}
+.hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1}
+.hist-table th.sortable{cursor:pointer;user-select:none}
+.hist-table th.sortable:after{content:" <>";font-size:.75rem;color:#b0672d}
+.hist-table th.sortable.asc:after{content:" ^"}
+.hist-table th.sortable.desc:after{content:" v"}
+.hist-table td:last-child{max-width:360px;white-space:normal}
+.cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center}
+.cell-btn{padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:left}
+.cell-btn:hover{text-decoration:underline}
+.cell-pop{position:absolute;top:100%;left:0;background:#fffaf6;border:1px solid #e7c8a8;border-radius:8px;padding:6px;box-shadow:0 8px 20px rgba(21,11,6,.15);display:none;z-index:5;min-width:160px}
+.cell-pop button{width:100%;border:0;background:#fff1e3;padding:6px;border-radius:6px;cursor:pointer;font-size:.78rem;color:#5a311b}
+.cell-menu.open .cell-pop{display:block}
 .ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
 .ov.show{display:flex}
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -1173,13 +1251,32 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabHist" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>Histórico</h3>
-      <div class="btns">
-        <input id="hQuery" class="inp" type="text" placeholder="Buscar no histórico">
-        <input id="hLimit" class="inp" type="number" min="10" max="2000" value="300" placeholder="Limite">
-        <button onclick="loadHistory()">Aplicar filtros</button>
+      <h3>Histórico de processamento e lançamentos</h3>
+      <div class="hist-filters">
+        <div><label>Data inicial</label><input id="hFrom" type="date"/></div>
+        <div><label>Data final</label><input id="hTo" type="date"/></div>
+        <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente números"/></div>
+        <div><label>CNPJ destinatário</label><input id="hDest" type="text" placeholder="Somente números"/></div>
+        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Fornecedor, documento, aba"/></div>
+        <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
+        <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
-      <pre id="historyList" style="margin-top:8px">Carregando...</pre>
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="hist-table">
+          <thead>
+            <tr>
+              <th class="sortable" data-key="at">Data/Hora</th>
+              <th class="sortable" data-key="conta">Conta</th>
+              <th class="sortable" data-key="doc">Documento</th>
+              <th class="sortable" data-key="fornecedor">Fornecedor</th>
+              <th class="sortable" data-key="dest">Destino</th>
+              <th class="sortable" data-key="local">Lançado em</th>
+              <th class="sortable" data-key="detalhe">Detalhes</th>
+            </tr>
+          </thead>
+          <tbody id="hBody"><tr><td colspan="7">Sem dados</td></tr></tbody>
+        </table>
+      </div>
     </section>
   </section>
 
@@ -1327,20 +1424,81 @@ async function reauth(account){
   }
 }
 async function reprocess(){const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
-async function loadHistory(){
-  const q=(document.getElementById('hQuery').value||'').trim();
-  const l=Number(document.getElementById('hLimit').value||300);
+function _fmtDateTime(v){if(!v)return '-';try{return new Date(v).toLocaleString('pt-BR');}catch(_){return String(v);}}
+function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
+function _toggleMenu(ev,btn){ev.stopPropagation();const wrap=btn.closest('.cell-menu');document.querySelectorAll('.cell-menu.open').forEach(x=>{if(x!==wrap)x.classList.remove('open');});wrap.classList.toggle('open');}
+async function _showCnpj(ev,btn){ev.stopPropagation();const cnpj=btn.getAttribute('data-cnpj')||'-';try{await navigator.clipboard.writeText(cnpj);}catch(_){}const wrap=btn.closest('.cell-menu');if(wrap)wrap.classList.remove('open');}
+document.addEventListener('click',()=>{document.querySelectorAll('.cell-menu.open').forEach(x=>x.classList.remove('open'));});
+let _histItems=[];
+let _histSort={key:'at',dir:'desc'};
+function _mapDestLabel(item){const v=String(item?.dest_label||'').trim();return v?v:'-';}
+function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
+function _shortName(txt){
+  let s=String(txt||'').replace(/\\(bot\\)/ig,'').trim();
+  if(!s)return '-';
+  const parts=s.split(/\\s+/).filter(Boolean);
+  if(parts.length<=2)return parts.join(' ');
+  const shortTok=(v)=>{const c=String(v||'').replace(/[^A-Za-z0-9]/g,'');return c.length>0&&c.length<=2;};
+  if(shortTok(parts[0])&&shortTok(parts[1]))return parts.slice(0,3).join(' ');
+  return parts.slice(0,2).join(' ');
+}
+function _getSortValue(it,key){if(key==='at')return it.at||'';if(key==='conta')return it.conta||'';if(key==='doc')return it._doc||'';if(key==='fornecedor')return it._fornecedor||'';if(key==='dest')return it._dest||'';if(key==='local')return it._local||'';if(key==='detalhe')return it._detalhe||'';return '';}
+function _sortHist(items){const k=_histSort.key;const dir=_histSort.dir==='asc'?1:-1;return [...items].sort((a,b)=>{const va=_getSortValue(a,k);const vb=_getSortValue(b,k);if(va<vb)return -1*dir;if(va>vb)return 1*dir;return 0;});}
+function _renderHistory(items){
+  _histItems=Array.isArray(items)?items:[];
+  const body=document.getElementById('hBody');
+  body.innerHTML='';
+  let arr=_histItems.filter(it=>it.type==='boleto_lancado');
+  arr=arr.map(it=>{
+    const doc=`${it.doc_tipo||'-'} ${it.numero||''}`.trim();
+    const fornec=_shortName(it.fornecedor||'-');
+    const dest=_mapDestLabel(it);
+    const local=_fmtLocal(it.local_lancamento);
+    const detalhe=`Venc: ${it.vencimento||'-'} | ${it.parcela||'-'}`;
+    return {...it,_doc:doc,_fornecedor:fornec,_dest:dest,_local:local,_detalhe:detalhe};
+  });
+  if(!arr.length){body.innerHTML='<tr><td colspan="7">Sem dados para os filtros selecionados</td></tr>';return;}
+  arr=_sortHist(arr);
+  arr.forEach(it=>{
+    const tr=document.createElement('tr');
+    const emit=String(it.cnpj_emit||'-');
+    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" onclick=\"_toggleMenu(event,this)\">${_esc(it._fornecedor)}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
+    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.conta||'-')}</td><td>${_esc(it._doc)}</td><td>${menu}</td><td>${_esc(it._dest)}</td><td>${_esc(it._local)}</td><td>${_esc(it._detalhe)}</td>`;
+    body.appendChild(tr);
+  });
+}
+function _setSort(key){
+  const ths=document.querySelectorAll('.hist-table th.sortable');
+  ths.forEach(th=>{th.classList.remove('asc');th.classList.remove('desc');});
+  if(_histSort.key===key){_histSort.dir=_histSort.dir==='asc'?'desc':'asc';}
+  else{_histSort.key=key;_histSort.dir='asc';}
+  const th=document.querySelector(`.hist-table th.sortable[data-key="${key}"]`);
+  if(th)th.classList.add(_histSort.dir);
+  _renderHistory(_histItems);
+}
+document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventListener('click',()=>_setSort(th.dataset.key));});
+async function loadHistory(silent=false){
   const p=new URLSearchParams();
-  if(q)p.set('q',q);
-  p.set('limit',String(Math.max(10,Math.min(2000,l||300))));
+  const vFrom=document.getElementById('hFrom').value||'';
+  const vTo=document.getElementById('hTo').value||'';
+  const vEmit=(document.getElementById('hEmit').value||'').trim();
+  const vDest=(document.getElementById('hDest').value||'').trim();
+  const vQuery=(document.getElementById('hQuery').value||'').trim();
+  const vLimit=Number(document.getElementById('hLimit').value||300);
+  if(vFrom)p.set('from',vFrom);
+  if(vTo)p.set('to',vTo);
+  if(vEmit)p.set('cnpj_emit',vEmit);
+  if(vDest)p.set('cnpj_dest',vDest);
+  if(vQuery)p.set('q',vQuery);
+  p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
   const j=await api('/api/history?'+p.toString());
   const items=j.items||[];
-  const lines=items.map(i=>`${i.at||''} - ${i.message||''}`.trim());
-  document.getElementById('historyList').textContent=lines.length?lines.join('\\n'):'Sem itens.';
+  _renderHistory(items);
 }
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
+document.querySelectorAll('#hFrom,#hTo,#hEmit,#hDest,#hQuery,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
 refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
 initHubBackButton();
@@ -1448,12 +1606,23 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 )
             if parsed.path == "/api/history":
                 qs = parse_qs(parsed.query or "")
+                dt_from = (qs.get("from", [""])[0] or "").strip()
+                dt_to = (qs.get("to", [""])[0] or "").strip()
+                cnpj_emit = (qs.get("cnpj_emit", [""])[0] or "").strip()
+                cnpj_dest = (qs.get("cnpj_dest", [""])[0] or "").strip()
                 query = (qs.get("q", [""])[0] or "").strip()
                 try:
                     limit = int((qs.get("limit", ["300"])[0] or "300").strip())
                 except Exception:
                     limit = 300
-                items = _history_from_reports(limit=max(10, min(limit, 2000)), query=query)
+                items = _history_from_reports(
+                    limit=max(10, min(limit, 2000)),
+                    query=query,
+                    dt_from=dt_from,
+                    dt_to=dt_to,
+                    cnpj_emit=cnpj_emit,
+                    cnpj_dest=cnpj_dest,
+                )
                 return _json_response(self, 200, {"items": items})
             return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
 
@@ -1578,7 +1747,3 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
-
-
-
