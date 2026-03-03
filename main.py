@@ -134,10 +134,23 @@ def _process_snapshot() -> dict:
     with _PROCESS_STATS_LOCK:
         return {
             "running": bool(running),
-            "reading": bool(_IS_READING),
+            "reading": bool(_reading_active()),
             "current": dict(_PROCESS_STATS.get("current", {})),
             "last": dict(_PROCESS_STATS.get("last", {})),
         }
+
+
+def _reading_active() -> bool:
+    """Retorna se existe ciclo ativo de leitura e corrige flag stale quando necessário."""
+    global _IS_READING
+    if not bool(_IS_READING):
+        return False
+    with _PROCESS_STATS_LOCK:
+        cur = dict(_PROCESS_STATS.get("current", {}))
+    if bool(cur.get("active")):
+        return True
+    _IS_READING = False
+    return False
 
 
 def _get_gmail_service_locked(timeout: float | None = None):
@@ -1852,6 +1865,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 if not str(email_info.get("email", "")).strip() and not str(email_info.get("error", "")).strip():
                     email_info = _connected_email(force=True)
                 last_msg = str((last_status or {}).get("message", "") or "")
+                reading_now = _reading_active()
                 email_value = str(email_info.get("email", "")).strip()
                 email_err = str(email_info.get("error", "")).strip()
                 email_pending = bool(email_info.get("pending", False))
@@ -1864,7 +1878,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 elif not email_value:
                     acc_status = "waiting"
                     friendly = "Autenticação pendente. Clique em Autenticação > Principal"
-                elif _IS_READING:
+                elif reading_now:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
                 elif not running:
@@ -1881,7 +1895,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     "message": (email_err or friendly or last_msg or "Aguardando"),
                     "at": (last_status or {}).get("at"),
                 }
-                if not status_view["at"] and (email_value or _IS_READING):
+                if not status_view["at"] and (email_value or reading_now):
                     status_view["at"] = datetime.now().isoformat()
                 return _json_response(
                     self,
@@ -1889,7 +1903,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     {
                         "ok": True,
                         "running": bool(running),
-                        "reading": bool(_IS_READING),
+                        "reading": bool(reading_now),
                         "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
                         "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
                         "settings": {
