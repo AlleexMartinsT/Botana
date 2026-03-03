@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import hashlib
 import hmac
 import json
@@ -312,6 +312,38 @@ def _normalize_report_text(text: str) -> str:
     out = re.sub(r"\s{2,}", " ", out)
     return out.strip()
 
+
+def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: dict):
+    """Registra no relatorio um evento estruturado apenas para lancamentos validos."""
+    try:
+        if not isinstance(result, dict) or not bool(result.get("inserted")):
+            return
+        nf = str(dados_parcela.get("nf") or dados_xml.get("nf") or "").strip()
+        if not nf:
+            return
+        payload = {
+            "type": "boleto_lancado",
+            "at": _now(),
+            "nf": nf,
+            "cliente": str(dados_parcela.get("destinatario") or dados_xml.get("destinatario") or "").strip(),
+            "cnpj_emit": re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or "")),
+            "cnpj_dest": re.sub(r"\D+", "", str(dados_xml.get("cnpjDestinatario") or "")),
+            "vencimento": str(result.get("vencimento") or dados_parcela.get("vencimento") or "").strip(),
+            "descricao": str(result.get("descricao") or dados_parcela.get("descricao") or "").strip(),
+            "valor_total": float(result.get("valor_total", dados_parcela.get("valorTotal", 0)) or 0),
+            "qtd_parcelas": int(result.get("qtd_parcelas", dados_parcela.get("qtdParcelas", 1)) or 1),
+            "parcela": str(result.get("parcela") or dados_parcela.get("numParcela") or "").strip(),
+            "valor_parcela": float(result.get("valor_parcela", dados_parcela.get("valorParcela", 0)) or 0),
+            "valor_pago": str(result.get("valor_pago") or "").strip(),
+            "status": str(result.get("status") or "").strip(),
+            "sheet_title": str(result.get("sheet_title") or "").strip(),
+            "sheet_type": str(result.get("sheet_type") or "").strip(),
+            "aba": str(result.get("aba") or "").strip(),
+        }
+        escreverRelatorio(f"{_now()} - HIST_JSON {json.dumps(payload, ensure_ascii=False)}")
+    except Exception as exc:
+        logger.warning("Falha ao registrar evento estruturado no historico: %s", exc)
+
 def processar_emails_enviados():
     global _IS_READING
     service = _get_gmail_service_locked()
@@ -366,7 +398,8 @@ def processar_emails_enviados():
                             dados = extrairDadosXML(arquivo)
                             # Ignora vendas à vista
                             nat_op = dados.get("naturezaOperacao", "").strip().upper()
-                            dest = dados.get("destinatario", "")
+                            dest_nome = dados.get("destinatario", "")
+                            dest_cnpj = re.sub(r"\D+", "", str(dados.get("cnpjDestinatario") or ""))
                             if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
                                 # Checa se a mensagem já foi processada no relatório atual:
                                 if dados.get('nf') not in consolidarRelatorioTMP():
@@ -374,9 +407,10 @@ def processar_emails_enviados():
                                     continue
                                 else: logger.info(f"{cor_ciano}NF {dados['nf']} já registrada no relatório, não duplicando a mensagem de ignorada.{reset}")
                                 continue
-                            if ( CNPJ_MVA.replace(".", "").replace("/", "").replace("-", "") in dest or
-                                 CNPJ_EH.replace(".", "").replace("/", "").replace("-", "") in dest ):
-                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {dest})")
+                            cnpj_mva = re.sub(r"\D+", "", str(CNPJ_MVA or ""))
+                            cnpj_eh = re.sub(r"\D+", "", str(CNPJ_EH or ""))
+                            if dest_cnpj and (dest_cnpj == cnpj_mva or dest_cnpj == cnpj_eh):
+                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatário é o nosso: {dest_nome} / {dest_cnpj})")
                                 escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (destinatário é o nosso).")
                                 continue
                             if not dados:
@@ -485,7 +519,7 @@ def processar_emails_enviados():
                 # Se chegou até aqui, a NF será processada normalmente.
                 # Se NF_ALVO + STOP_AFTER_NF: após processar, se encerra o loop/principal para análise isolada.
 
-                cnpj_emit = dados_xml.get("cnpjEmitente")
+                cnpj_emit = re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or ""))
                 ano = dados_xml.get("anoVencimento")
                 planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
 
@@ -525,7 +559,7 @@ def processar_emails_enviados():
                     if num_boleto:
                         dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
                     else:
-                        if "18471209000107" in cnpj_emit.upper():
+                        if cnpj_emit == "18471209000107":
                             dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP BR (Bot)"
                         else:
                             dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
@@ -548,10 +582,12 @@ def processar_emails_enviados():
                                 cache[planilha_id] = gc.open_by_key(planilha_id)
 
                             planilha = cache[planilha_id]
-                            atualizarPlanilha(planilha, dados_parcela, gc)
-                            total_processados += 1
+                            resultado = atualizarPlanilha(planilha, dados_parcela, gc)
+                            if isinstance(resultado, dict) and bool(resultado.get("inserted")):
+                                total_processados += 1
+                                _write_history_launch_event(dados_xml, dados_parcela, resultado)
                             # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para análise isolada.
-                            if NF_ALVO and STOP_AFTER_NF:
+                            if NF_ALVO and STOP_AFTER_NF and isinstance(resultado, dict) and bool(resultado.get("inserted")):
                                 logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execução.")
                                 # força saída limpa do loop principal retornando da função
                                 return
@@ -763,70 +799,152 @@ def _history_from_reports(
         dt_to_obj = datetime.strptime(str(dt_to or "").strip(), "%Y-%m-%d").date() if str(dt_to or "").strip() else None
     except Exception:
         dt_to_obj = None
+
+    def _safe_float(v):
+        try:
+            if isinstance(v, str):
+                vv = v.strip()
+                if not vv:
+                    return 0.0
+                if "," in vv and "." in vv:
+                    vv = vv.replace(".", "").replace(",", ".")
+                elif "," in vv:
+                    vv = vv.replace(",", ".")
+                return float(vv)
+            return float(v or 0)
+        except Exception:
+            return 0.0
+
+    def _safe_int(v, default=0):
+        try:
+            return int(v)
+        except Exception:
+            return int(default)
+
+    def _parse_date_obj(dt_text: str):
+        t = str(dt_text or "").strip()
+        if not t:
+            return None
+        candidates = [
+            (t[:19], "%Y-%m-%d %H:%M:%S"),
+            (t[:19], "%Y-%m-%dT%H:%M:%S"),
+            (t[:10], "%Y-%m-%d"),
+        ]
+        for cand, fmt in candidates:
+            try:
+                return datetime.strptime(cand, fmt).date()
+            except Exception:
+                continue
+        try:
+            return datetime.fromisoformat(t.replace("Z", "+00:00")).date()
+        except Exception:
+            return None
+
     rel_dir = Path(RELATORIO_DIR)
     if not rel_dir.exists():
         return out
+
     files = sorted(rel_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
     for fp in files:
         try:
-            for line in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
-                line = line.strip()
+            for raw_line in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = str(raw_line or "").strip()
                 if not line:
                     continue
-                if q and q not in line.lower():
-                    continue
-                # formato típico: "YYYY-MM-DD HH:MM:SS - mensagem"
                 if " - " in line:
                     dt, msg = line.split(" - ", 1)
                 else:
                     dt, msg = "", line
-                msg_norm = _normalize_report_text(msg)
-                raw_norm = _normalize_report_text(line)
 
-                dt_clean = str(dt or "").strip()
-                date_obj = None
-                if dt_clean:
-                    try:
-                        date_obj = datetime.strptime(dt_clean[:19], "%Y-%m-%d %H:%M:%S").date()
-                    except Exception:
-                        date_obj = None
+                msg = str(msg or "").strip()
+                if not msg.startswith("HIST_JSON "):
+                    continue
+
+                raw_json = msg[len("HIST_JSON ") :].strip()
+                try:
+                    payload = json.loads(raw_json)
+                except Exception:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("type") or "boleto_lancado") != "boleto_lancado":
+                    continue
+
+                at = str(payload.get("at") or dt or "").strip()
+                date_obj = _parse_date_obj(at)
                 if dt_from_obj and date_obj and date_obj < dt_from_obj:
                     continue
                 if dt_to_obj and date_obj and date_obj > dt_to_obj:
                     continue
 
-                cnpjs = re.findall(r"\b\d{14}\b", msg_norm)
-                emit = cnpjs[0] if len(cnpjs) >= 1 else ""
-                dest = cnpjs[1] if len(cnpjs) >= 2 else ""
+                emit = re.sub(r"\D+", "", str(payload.get("cnpj_emit") or ""))
+                dest = re.sub(r"\D+", "", str(payload.get("cnpj_dest") or ""))
                 if f_emit and f_emit not in emit:
                     continue
                 if f_dest and f_dest not in dest:
                     continue
 
-                if q and q not in raw_norm.lower():
-                    continue
+                nf = str(payload.get("nf") or "").strip()
+                cliente = str(payload.get("cliente") or "").strip()
+                descricao = str(payload.get("descricao") or "").strip()
+                vencimento = str(payload.get("vencimento") or "").strip()
+                parcela = str(payload.get("parcela") or "").strip()
+                valor_parcela = _safe_float(payload.get("valor_parcela"))
+                valor_total = _safe_float(payload.get("valor_total"))
+                valor_pago = payload.get("valor_pago")
+                valor_pago_text = str(valor_pago or "").strip()
+                status = str(payload.get("status") or "").strip()
+                sheet_title = str(payload.get("sheet_title") or "").strip()
+                aba = str(payload.get("aba") or "").strip()
+                local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/Relatório"
 
-                nf_match = re.search(r"\bNF\s*([0-9]+)\b", msg_norm, flags=re.IGNORECASE)
-                nf_num = nf_match.group(1) if nf_match else ""
-                out.append(
-                    {
-                        "type": "boleto_lancado",
-                        "at": dt_clean,
-                        "conta": "Botana",
-                        "doc_tipo": "NF" if nf_num else "-",
-                        "numero": nf_num,
-                        "fornecedor": "Botana",
-                        "cnpj_emit": emit,
-                        "cnpj_dest": dest,
-                        "dest_label": "",
-                        "local_lancamento": "Botana/Relatório",
-                        "vencimento": "-",
-                        "parcela": "-",
-                        "detalhe": msg_norm,
-                        "message": msg_norm,
-                        "raw": raw_norm,
-                    }
-                )
+                item = {
+                    "type": "boleto_lancado",
+                    "at": at,
+                    "nf": nf,
+                    "numero": nf,
+                    "doc_tipo": "NF" if nf else "-",
+                    "cliente": cliente,
+                    "fornecedor": cliente,
+                    "descricao": descricao,
+                    "vencimento": vencimento,
+                    "parcela": parcela,
+                    "valor_parcela": valor_parcela,
+                    "valor_total": valor_total,
+                    "valor_pago": valor_pago_text,
+                    "status": status,
+                    "sheet_title": sheet_title,
+                    "aba": aba,
+                    "local_lancamento": local,
+                    "cnpj_emit": emit,
+                    "cnpj_dest": dest,
+                    "qtd_parcelas": _safe_int(payload.get("qtd_parcelas"), 1),
+                    "raw": _normalize_report_text(line),
+                    "message": _normalize_report_text(f"NF {nf} - {cliente} - {descricao}"),
+                }
+
+                if q:
+                    hay = " ".join(
+                        [
+                            at,
+                            nf,
+                            cliente,
+                            descricao,
+                            vencimento,
+                            parcela,
+                            str(valor_parcela),
+                            str(valor_total),
+                            valor_pago_text,
+                            status,
+                            local,
+                            emit,
+                            dest,
+                        ]
+                    ).lower()
+                    if q not in hay:
+                        continue
+
+                out.append(item)
                 if len(out) >= limit:
                     return out
         except Exception:
@@ -869,6 +987,17 @@ def _daily_report_data() -> dict:
         if not line:
             continue
         text = line.split(" - ", 1)[1].strip() if " - " in line else line
+        if text.startswith("HIST_JSON "):
+            try:
+                payload = json.loads(text[len("HIST_JSON ") :].strip())
+                nf = str(payload.get("nf") or "-").strip()
+                cliente = str(payload.get("cliente") or "-").strip()
+                parcela = str(payload.get("parcela") or "-").strip()
+                venc = str(payload.get("vencimento") or "-").strip()
+                processados.append(f"NF {nf} | Cliente: {cliente} | {parcela} | Venc: {venc}")
+                continue
+            except Exception:
+                pass
         text = _normalize_report_text(text)
         low = text.lower()
         if "erro" in low or "falha" in low:
@@ -1257,7 +1386,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div><label>Data final</label><input id="hTo" type="date"/></div>
         <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente números"/></div>
         <div><label>CNPJ destinatário</label><input id="hDest" type="text" placeholder="Somente números"/></div>
-        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Fornecedor, documento, aba"/></div>
+        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, descrição, aba"/></div>
         <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
         <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
@@ -1266,15 +1395,19 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <thead>
             <tr>
               <th class="sortable" data-key="at">Data/Hora</th>
-              <th class="sortable" data-key="conta">Conta</th>
+              <th class="sortable" data-key="venc">Vencimento</th>
               <th class="sortable" data-key="doc">Documento</th>
-              <th class="sortable" data-key="fornecedor">Fornecedor</th>
-              <th class="sortable" data-key="dest">Destino</th>
-              <th class="sortable" data-key="local">Lançado em</th>
-              <th class="sortable" data-key="detalhe">Detalhes</th>
+              <th class="sortable" data-key="cliente">Cliente</th>
+              <th class="sortable" data-key="desc">Descrição</th>
+              <th class="sortable" data-key="parcela">Parcela</th>
+              <th class="sortable" data-key="vparcela">Valor Parcela</th>
+              <th class="sortable" data-key="vtotal">Valor Total</th>
+              <th class="sortable" data-key="vpago">Valor Pago</th>
+              <th class="sortable" data-key="status">Status</th>
+              <th class="sortable" data-key="local">Planilha/Aba</th>
             </tr>
           </thead>
-          <tbody id="hBody"><tr><td colspan="7">Sem dados</td></tr></tbody>
+          <tbody id="hBody"><tr><td colspan="11">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -1431,18 +1564,35 @@ async function _showCnpj(ev,btn){ev.stopPropagation();const cnpj=btn.getAttribut
 document.addEventListener('click',()=>{document.querySelectorAll('.cell-menu.open').forEach(x=>x.classList.remove('open'));});
 let _histItems=[];
 let _histSort={key:'at',dir:'desc'};
-function _mapDestLabel(item){const v=String(item?.dest_label||'').trim();return v?v:'-';}
 function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
-function _shortName(txt){
-  let s=String(txt||'').replace(/\\(bot\\)/ig,'').trim();
-  if(!s)return '-';
-  const parts=s.split(/\\s+/).filter(Boolean);
-  if(parts.length<=2)return parts.join(' ');
-  const shortTok=(v)=>{const c=String(v||'').replace(/[^A-Za-z0-9]/g,'');return c.length>0&&c.length<=2;};
-  if(shortTok(parts[0])&&shortTok(parts[1]))return parts.slice(0,3).join(' ');
-  return parts.slice(0,2).join(' ');
+function _fmtMoney(v){
+  if(v===null||v===undefined) return '-';
+  if(typeof v==='number'&&Number.isFinite(v)){
+    return v.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+  }
+  const txt=String(v).trim();
+  if(!txt) return '-';
+  let norm=txt;
+  if(norm.includes(',')&&norm.includes('.')) norm=norm.replace(/[.]/g,'').replace(',','.');
+  else if(norm.includes(',')) norm=norm.replace(',','.');
+  const n=Number(norm);
+  if(!Number.isFinite(n)) return txt;
+  return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 }
-function _getSortValue(it,key){if(key==='at')return it.at||'';if(key==='conta')return it.conta||'';if(key==='doc')return it._doc||'';if(key==='fornecedor')return it._fornecedor||'';if(key==='dest')return it._dest||'';if(key==='local')return it._local||'';if(key==='detalhe')return it._detalhe||'';return '';}
+function _getSortValue(it,key){
+  if(key==='at')return it.at||'';
+  if(key==='venc')return it.vencimento||'';
+  if(key==='doc')return it._doc||'';
+  if(key==='cliente')return it.cliente||'';
+  if(key==='desc')return it.descricao||'';
+  if(key==='parcela')return it.parcela||'';
+  if(key==='vparcela')return Number(it.valor_parcela||0);
+  if(key==='vtotal')return Number(it.valor_total||0);
+  if(key==='vpago')return Number(it.valor_pago||0);
+  if(key==='status')return it.status||'';
+  if(key==='local')return it._local||'';
+  return '';
+}
 function _sortHist(items){const k=_histSort.key;const dir=_histSort.dir==='asc'?1:-1;return [...items].sort((a,b)=>{const va=_getSortValue(a,k);const vb=_getSortValue(b,k);if(va<vb)return -1*dir;if(va>vb)return 1*dir;return 0;});}
 function _renderHistory(items){
   _histItems=Array.isArray(items)?items:[];
@@ -1450,20 +1600,18 @@ function _renderHistory(items){
   body.innerHTML='';
   let arr=_histItems.filter(it=>it.type==='boleto_lancado');
   arr=arr.map(it=>{
-    const doc=`${it.doc_tipo||'-'} ${it.numero||''}`.trim();
-    const fornec=_shortName(it.fornecedor||'-');
-    const dest=_mapDestLabel(it);
+    const nf=String(it.nf||it.numero||'').trim();
+    const doc=nf?`NF ${nf}`:'-';
     const local=_fmtLocal(it.local_lancamento);
-    const detalhe=`Venc: ${it.vencimento||'-'} | ${it.parcela||'-'}`;
-    return {...it,_doc:doc,_fornecedor:fornec,_dest:dest,_local:local,_detalhe:detalhe};
+    return {...it,_doc:doc,_local:local};
   });
-  if(!arr.length){body.innerHTML='<tr><td colspan="7">Sem dados para os filtros selecionados</td></tr>';return;}
+  if(!arr.length){body.innerHTML='<tr><td colspan="11">Sem dados para os filtros selecionados</td></tr>';return;}
   arr=_sortHist(arr);
   arr.forEach(it=>{
     const tr=document.createElement('tr');
     const emit=String(it.cnpj_emit||'-');
-    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" onclick=\"_toggleMenu(event,this)\">${_esc(it._fornecedor)}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
-    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.conta||'-')}</td><td>${_esc(it._doc)}</td><td>${menu}</td><td>${_esc(it._dest)}</td><td>${_esc(it._local)}</td><td>${_esc(it._detalhe)}</td>`;
+    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" onclick=\"_toggleMenu(event,this)\">${_esc(it.cliente||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
+    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.vencimento||'-')}</td><td>${_esc(it._doc)}</td><td>${menu}</td><td>${_esc(it.descricao||'-')}</td><td>${_esc(it.parcela||'-')}</td><td>${_fmtMoney(it.valor_parcela)}</td><td>${_fmtMoney(it.valor_total)}</td><td>${_fmtMoney(it.valor_pago)}</td><td>${_esc(it.status||'-')}</td><td>${_esc(it._local)}</td>`;
     body.appendChild(tr);
   });
 }

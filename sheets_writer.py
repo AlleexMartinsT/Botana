@@ -1,13 +1,14 @@
 import gspread
 import logging
 from datetime import datetime
-import locale, os
+import locale
+import os
 import time
-from googleapiclient.errors import HttpError
+
 from config import PLANILHAS
 from logger_config import logger, cor_ciano, reset
 
-# Garante que os meses saiam em português (ex: Fev/2025)
+# Garante que os meses saiam em portugues (ex: Fev/2025)
 os.environ["LANG"] = "pt_BR.UTF-8"
 try:
     locale.setlocale(locale.LC_TIME, "pt_BR.UTF-8")
@@ -16,12 +17,14 @@ except locale.Error:
 
 logger = logging.getLogger("bot.sheets_writer")
 
+
 def apiCooldown():
-    logger.warning("⏳ Limite da API atingido, aguardando 30 segundos...")
+    logger.warning("Limite da API atingido, aguardando 30 segundos...")
     time.sleep(30)
 
+
 def _parse_date_any(date_str):
-    """Tenta vários formatos e retorna datetime ou None."""
+    """Tenta varios formatos e retorna datetime ou None."""
     if not date_str:
         return None
     formats = (
@@ -30,55 +33,71 @@ def _parse_date_any(date_str):
         "%Y-%m-%dT%H:%M:%S%z",
         "%Y-%m-%dT%H:%M:%S",
         "%d-%m-%Y",
-        "%d.%m.%Y"
+        "%d.%m.%Y",
     )
     for fmt in formats:
         try:
             return datetime.strptime(date_str, fmt)
         except Exception:
             continue
-    # tentativa final com fromisoformat (aceita Z -> +00:00)
     try:
-        return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        return datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
     except Exception:
         return None
 
 
+def _result(ok, inserted, reason, **extra):
+    return {
+        "ok": bool(ok),
+        "inserted": bool(inserted),
+        "duplicate": bool(reason == "duplicate"),
+        "reason": str(reason or ""),
+        "sheet_title": str(extra.get("sheet_title", "") or ""),
+        "sheet_type": str(extra.get("sheet_type", "") or ""),
+        "aba": str(extra.get("aba", "") or ""),
+        "vencimento": str(extra.get("vencimento", "") or ""),
+        "descricao": str(extra.get("descricao", "") or ""),
+        "nf": str(extra.get("nf", "") or ""),
+        "valor_total": float(extra.get("valor_total", 0.0) or 0.0),
+        "qtd_parcelas": int(extra.get("qtd_parcelas", 0) or 0),
+        "parcela": str(extra.get("parcela", "") or ""),
+        "valor_parcela": float(extra.get("valor_parcela", 0.0) or 0.0),
+        "valor_pago": str(extra.get("valor_pago", "") or ""),
+        "status": str(extra.get("status", "") or ""),
+    }
+
+
 def atualizarPlanilha(planilha, dados, gc):
     """
-    Atualiza a planilha Google Sheets com os dados extraídos do XML.
-    Cria automaticamente a aba do mês/ano caso não exista.
-    Se a data de vencimento for de outro ano (ex: 2026), muda para a planilha correspondente.
+    Atualiza a planilha Google Sheets com os dados extraidos do XML.
+    Retorna um dict com o resultado para registro no historico.
     """
 
     vencimento_raw = dados.get("vencimento")
     if not vencimento_raw:
-        logger.warning("⚠️ XML sem data de vencimento — ignorado.")
-        return
+        logger.warning("XML sem data de vencimento - ignorado.")
+        return _result(False, False, "missing_vencimento")
 
     dataVenc = _parse_date_any(vencimento_raw)
     if not dataVenc:
-        logger.warning(f"⚠️ Data inválida no XML: {vencimento_raw}")
-        return
+        logger.warning("Data invalida no XML: %s", vencimento_raw)
+        return _result(False, False, "invalid_vencimento")
 
-    # padroniza para DD/MM/YYYY
     venc_str = dataVenc.strftime("%d/%m/%Y")
     nomeAba = dataVenc.strftime("%b/%Y").capitalize()
     ano = str(dataVenc.year)
 
-    # Detecta tipo de planilha (MVA ou EH)
     nome_planilha_upper = planilha.title.upper() if hasattr(planilha, "title") else ""
     tipo = None
 
     for t, anos in PLANILHAS.items():
-        for ano_cadastrado, sheet_id in anos.items():
+        for _, sheet_id in anos.items():
             if sheet_id and sheet_id in planilha.url:
                 tipo = t
                 break
         if tipo:
             break
 
-    # fallback por nome
     if not tipo:
         if "MVA" in nome_planilha_upper:
             tipo = "MVA"
@@ -86,46 +105,54 @@ def atualizarPlanilha(planilha, dados, gc):
             tipo = "EH"
 
     if not tipo:
-        logger.error(f"❌ Tipo de planilha não identificado a partir do título: {nome_planilha_upper}")
-        return
+        logger.error("Tipo de planilha nao identificado a partir do titulo: %s", nome_planilha_upper)
+        return _result(False, False, "unknown_sheet_type")
 
-    # ================================
-    # 🔁 Redireciona automaticamente se o ano mudou
-    # ================================
     id_correto = PLANILHAS.get(tipo, {}).get(ano)
-
     if id_correto:
         if id_correto not in planilha.url:
             try:
                 planilha_nova = gc.open_by_key(id_correto)
-                logger.info(f"✅ Redirecionado para '{planilha_nova.title}' ({ano}) - Tipo {tipo}")
-                return atualizarPlanilha(planilha_nova, dados, gc)  # recursão segura
+                logger.info("Redirecionado para '%s' (%s) - Tipo %s", planilha_nova.title, ano, tipo)
+                return atualizarPlanilha(planilha_nova, dados, gc)
             except Exception as e:
-                logger.error(f"❌ Erro ao abrir planilha de {ano} ({tipo}): {e}")
-                return
+                logger.error("Erro ao abrir planilha de %s (%s): %s", ano, tipo, e)
+                return _result(False, False, "redirect_open_error")
     else:
-        logger.warning(f"⚠️ Nenhuma planilha configurada para {tipo} {ano}. Mantendo planilha atual.")
+        logger.warning("Nenhuma planilha configurada para %s %s. Mantendo planilha atual.", tipo, ano)
 
-    # ================================
-    # 📝 Insere linha na planilha atual
-    # ================================
-    descricao = dados.get("descricao", "")
-    if tipo in ("MVA", "EH"):
-        if "(BOT)" not in descricao.upper():
-            descricao = f"{descricao} (Bot)"
+    descricao = str(dados.get("descricao", "") or "").strip()
+    if tipo in ("MVA", "EH") and "(BOT)" not in descricao.upper():
+        descricao = f"{descricao} (Bot)"
 
-    # Tenta acessar a aba, se não existir cria
+    nf = str(dados.get("nf", "") or "").strip()
+    qtd_parcelas = int(dados.get("qtdParcelas", 1) or 1)
+    parcela = str(dados.get("numParcela", "1ª Parcela") or "1ª Parcela")
+    valor_total = float(dados.get("valorTotal", 0) or 0)
+    valor_parcela = float(dados.get("valorParcela", 0) or 0)
+    valor_pago = ""
+    status = ""
+
     try:
         aba = planilha.worksheet(nomeAba)
     except gspread.exceptions.WorksheetNotFound:
-        logger.warning(f"🆕 Criando nova aba: {nomeAba}")
+        logger.warning("Criando nova aba: %s", nomeAba)
         aba = planilha.add_worksheet(title=nomeAba, rows="100", cols="9")
-        aba.append_row([
-            "Vencimento", "Descrição", "NF", "Valor Total", "Qtd Parcelas",
-            "Parcela", "Valor Parcela", "Valor Pago", "Status"
-        ])
+        aba.append_row(
+            [
+                "Vencimento",
+                "Descrição",
+                "NF",
+                "Valor Total",
+                "Qtd Parcelas",
+                "Parcela",
+                "Valor Parcela",
+                "Valor Pago",
+                "Status",
+            ]
+        )
 
-    # Tenta obter todas as linhas (com retry por API limit)
+    linhas = []
     for _ in range(3):
         try:
             linhas = aba.get_all_values()
@@ -134,44 +161,57 @@ def atualizarPlanilha(planilha, dados, gc):
             if "429" in str(e):
                 apiCooldown()
                 continue
-            else:
-                raise e
+            raise e
 
-    # Evita duplicados — compara Vencimento + NF + Parcela + Descrição
     duplicado = any(
-        len(linha) >= 6 and
-        linha[0] == venc_str and
-        linha[2] == str(dados.get("nf", "")) and
-        linha[5] == dados.get("numParcela", "1ª Parcela") and
-        linha[1] == descricao
+        len(linha) >= 6
+        and linha[0] == venc_str
+        and linha[2] == nf
+        and linha[5] == parcela
+        and linha[1] == descricao
         for linha in linhas
     )
 
+    base_payload = {
+        "sheet_title": str(getattr(planilha, "title", "") or ""),
+        "sheet_type": tipo,
+        "aba": nomeAba,
+        "vencimento": venc_str,
+        "descricao": descricao,
+        "nf": nf,
+        "valor_total": valor_total,
+        "qtd_parcelas": qtd_parcelas,
+        "parcela": parcela,
+        "valor_parcela": valor_parcela,
+        "valor_pago": valor_pago,
+        "status": status,
+    }
+
     if duplicado:
-        logger.warning(f"⚠️ NF {dados.get('nf')} ({venc_str}) já existe em {nomeAba}.")
-        return
+        logger.warning("NF %s (%s) ja existe em %s.", nf, venc_str, nomeAba)
+        return _result(True, False, "duplicate", **base_payload)
 
     novaLinha = [
-    venc_str,
-    descricao,
-    dados.get("nf", ""),
-    float(dados.get("valorTotal", 0)),
-    int(dados.get("qtdParcelas", 1)),
-    dados.get("numParcela", "1ª Parcela"),
-    float(dados.get("valorParcela", 0)),
-    "",
-    ""
-]
+        venc_str,
+        descricao,
+        nf,
+        valor_total,
+        qtd_parcelas,
+        parcela,
+        valor_parcela,
+        valor_pago,
+        status,
+    ]
 
-    # Insere no Google Sheets
     for _ in range(3):
         try:
             aba.append_row(novaLinha, value_input_option="USER_ENTERED")
-            logger.info(f"{cor_ciano}✅ NF {dados.get('nf')} registrada em '{planilha.title}' / aba '{nomeAba}'{reset}")
-            break
+            logger.info(f"{cor_ciano}NF {nf} registrada em '{planilha.title}' / aba '{nomeAba}'{reset}")
+            return _result(True, True, "inserted", **base_payload)
         except gspread.exceptions.APIError as e:
             if "429" in str(e):
                 apiCooldown()
                 continue
-            else:
-                raise e
+            raise e
+
+    return _result(False, False, "append_failed", **base_payload)
