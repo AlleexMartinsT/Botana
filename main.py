@@ -505,10 +505,10 @@ def processar_emails_enviados():
             return _summary()
 
         primeira_pagina = False
-        total_msgs += len(msgs or [])
-        _sync_progress()
 
         for m in msgs:
+            total_msgs += 1
+            _sync_progress()
             msg_id = m.get("id")
             logger.info("Abrindo mensagem ID: %s", msg_id)
 
@@ -1366,6 +1366,10 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .rmeta{margin-top:6px}
 .proc-grid{margin-top:8px;display:grid;gap:4px}
 .proc-line{font-size:.82rem;color:#5e3a24}
+.proc-progress{margin-top:2px;display:grid;gap:4px}
+.proc-track{width:100%;height:10px;border-radius:999px;background:#f1ddcb;border:1px solid #debb9a;overflow:hidden}
+.proc-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--o),var(--o2));transition:width .25s ease}
+.proc-label{font-size:.78rem;color:#6b4128}
 .lists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
 .box{border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb;padding:8px}
 .box h4{margin:0 0 6px;font-size:.85rem;color:#58311b}
@@ -1464,6 +1468,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <div id="cool" class="muted" style="margin-top:8px">PrÃ³xima verificaÃ§Ã£o automÃ¡tica: -</div>
       <div class="proc-grid">
         <div id="procRun" class="proc-line">Loop: -</div>
+        <div class="proc-progress">
+          <div class="proc-track"><div id="procBarFill" class="proc-fill"></div></div>
+          <div id="procBarLabel" class="proc-label">Progresso: 0/0 (0%)</div>
+        </div>
         <div id="procNow" class="proc-line">Ciclo atual: -</div>
         <div id="procLast" class="proc-line">Ãšltimo ciclo: -</div>
       </div>
@@ -1715,31 +1723,41 @@ function _fmtCycleShort(c){
   const l=Number(it.launched||0);
   return `E-mails ${m} | Anexos ${a} | XML ${x} | LanÃ§amentos ${l}`;
 }
-function updProcessing(proc){
+function updProcessing(proc,maxMessages){
   const runEl=document.getElementById('procRun');
   const nowEl=document.getElementById('procNow');
   const lastEl=document.getElementById('procLast');
-  if(!runEl||!nowEl||!lastEl) return;
+  const barFill=document.getElementById('procBarFill');
+  const barLabel=document.getElementById('procBarLabel');
+  if(!runEl||!nowEl||!lastEl||!barFill||!barLabel) return;
   const p=proc||{};
   const reading=!!p.reading;
   const running=!!p.running;
   if(reading) runEl.textContent='Loop: executando ciclo agora';
-  else if(running) runEl.textContent='Loop: ativo (aguardando prÃ³ximo ciclo)';
+  else if(running) runEl.textContent='Loop: ativo (aguardando proximo ciclo)';
   else runEl.textContent='Loop: pausado';
 
   const cur=p.current||{};
   const curStart=cur.started_at?_fmtDateTime(cur.started_at):'-';
-  nowEl.textContent=`Ciclo atual: inÃ­cio ${curStart} | ${_fmtCycleShort(cur)}`;
+  nowEl.textContent=`Ciclo atual: inicio ${curStart} | ${_fmtCycleShort(cur)}`;
 
   const last=p.last||{};
   const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
   let statusTxt='-';
   if(last.ok===true) statusTxt='OK';
   else if(last.ok===false) statusTxt='Erro';
-  let msg=`Ãšltimo ciclo: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+  let msg=`Ultimo ciclo: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
   const err=String(last.error||'').trim();
   if(statusTxt==='Erro'&&err) msg += ` | ${err}`;
   lastEl.textContent=msg;
+
+  const maxV=Math.max(1, Number(maxMessages||100));
+  let curV=Number(cur.messages||0);
+  if(!Number.isFinite(curV)||curV<0) curV=0;
+  if(curV>maxV) curV=maxV;
+  const perc=Math.max(0,Math.min(100,Math.round((curV/maxV)*100)));
+  barFill.style.width=String(perc)+'%';
+  barLabel.textContent=`Progresso: ${curV}/${maxV} (${perc}%)`;
 }
 async function refresh(){
   try{
@@ -1766,7 +1784,7 @@ async function refresh(){
     updAccount(j.account||{});
     setPill(ok,reading);
     updDaily(j.daily_report||{});
-    updProcessing(j.processing||{});
+    updProcessing(j.processing||{}, Number(j.max_messages||100));
   }catch(err){
     document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);
   }
