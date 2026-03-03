@@ -998,6 +998,7 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .tab-btn{background:#fff5ea;color:#5a311b;border:1px solid #d7b393;border-radius:9px;padding:8px 12px;font-weight:700;cursor:pointer}
 .tab-btn.active{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
 .hidden{display:none}
+.tab-panel.hidden{display:none}
 #tabMain{padding:0 10px 10px;display:grid;gap:9px}
 #tabHist,#tabDiag{padding:0 10px 10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
@@ -1071,12 +1072,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
   </section>
 
   <div class="tabs">
-    <button id="tabBtnMain" class="tab-btn active" onclick="switchTab('main')">Painel</button>
-    <button id="tabBtnHist" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
-    <button id="tabBtnDiag" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
+    <button id="tabBtnMain" type="button" class="tab-btn active" onclick="switchTab('main')">Painel</button>
+    <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
+    <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
   </div>
 
-  <section id="tabMain">
+  <section id="tabMain" class="tab-panel">
     <section class="card">
       <h3>Status da conta de e-mail</h3>
       <div class="status-grid">
@@ -1170,7 +1171,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
   </section>
 
-  <section id="tabHist" class="hidden">
+  <section id="tabHist" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
       <h3>Histórico</h3>
       <div class="btns">
@@ -1182,7 +1183,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
   </section>
 
-  <section id="tabDiag" class="hidden">
+  <section id="tabDiag" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
       <h3>Diagnóstico</h3>
       <pre id="details">-</pre>
@@ -1227,16 +1228,34 @@ function _tickNext(){
     el.textContent='Próxima verificação automática: sem contagem no momento';
   }
 }
+let _activeTab='main';
+function _tabFromLocation(){
+  const h=String(window.location.hash||'').replace('#','').trim().toLowerCase();
+  if(h==='hist'||h==='diag'||h==='main') return h;
+  const q=new URLSearchParams(window.location.search||'');
+  const t=String(q.get('tab')||'').trim().toLowerCase();
+  if(t==='hist'||t==='diag'||t==='main') return t;
+  return 'main';
+}
 function switchTab(tab){
-  const m=tab==='main';
-  const h=tab==='hist';
-  const d=tab==='diag';
+  const next=(tab==='hist'||tab==='diag')?tab:'main';
+  const m=next==='main';
+  const h=next==='hist';
+  const d=next==='diag';
   document.getElementById('tabMain').classList.toggle('hidden',!m);
   document.getElementById('tabHist').classList.toggle('hidden',!h);
   document.getElementById('tabDiag').classList.toggle('hidden',!d);
   document.getElementById('tabBtnMain').classList.toggle('active',m);
   document.getElementById('tabBtnHist').classList.toggle('active',h);
   document.getElementById('tabBtnDiag').classList.toggle('active',d);
+  _activeTab=next;
+  if(next==='hist'){
+    loadHistory().catch(()=>{});
+  }
+  const nextHash='#'+next;
+  if(window.location.hash!==nextHash){
+    try{history.replaceState(null,'',nextHash);}catch(_){}
+  }
 }
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>●</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>●</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>●</span><span>Com erro</span>';}
 function setAccBadge(kind,label){
@@ -1318,7 +1337,8 @@ async function loadHistory(){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-refresh();loadHistory();setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
+window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
+refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
 initHubBackButton();
 </script></body></html>"""
 
@@ -1554,7 +1574,6 @@ if __name__ == "__main__":
             start_server("127.0.0.1", 8865, no_loop=False)
         else:
             run_tray(on_quit_callback=on_quit, start_callback=iniciar_verificacao)
-
 
 
 
