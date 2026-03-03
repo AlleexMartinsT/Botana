@@ -63,6 +63,81 @@ _EMAIL_CACHE = {"email": "", "error": "", "pending": False, "at": 0.0}
 _NEXT_RUN_AT = 0.0
 _GMAIL_SERVICE_LOCK = threading.Lock()
 _IS_READING = False
+_PROCESS_STATS_LOCK = threading.Lock()
+_PROCESS_STATS = {
+    "current": {
+        "active": False,
+        "started_at": "",
+        "messages": 0,
+        "attachments": 0,
+        "xmls": 0,
+        "launched": 0,
+    },
+    "last": {
+        "ok": None,
+        "started_at": "",
+        "finished_at": "",
+        "messages": 0,
+        "attachments": 0,
+        "xmls": 0,
+        "launched": 0,
+        "error": "",
+    },
+}
+
+
+def _process_start():
+    now = datetime.now().isoformat()
+    with _PROCESS_STATS_LOCK:
+        _PROCESS_STATS["current"] = {
+            "active": True,
+            "started_at": now,
+            "messages": 0,
+            "attachments": 0,
+            "xmls": 0,
+            "launched": 0,
+        }
+
+
+def _process_update(messages: int | None = None, attachments: int | None = None, xmls: int | None = None, launched: int | None = None):
+    with _PROCESS_STATS_LOCK:
+        cur = _PROCESS_STATS.get("current", {})
+        if messages is not None:
+            cur["messages"] = max(0, int(messages))
+        if attachments is not None:
+            cur["attachments"] = max(0, int(attachments))
+        if xmls is not None:
+            cur["xmls"] = max(0, int(xmls))
+        if launched is not None:
+            cur["launched"] = max(0, int(launched))
+
+
+def _process_finish(ok: bool, error: str = ""):
+    now = datetime.now().isoformat()
+    with _PROCESS_STATS_LOCK:
+        cur = dict(_PROCESS_STATS.get("current", {}))
+        _PROCESS_STATS["last"] = {
+            "ok": bool(ok),
+            "started_at": str(cur.get("started_at", "") or ""),
+            "finished_at": now,
+            "messages": int(cur.get("messages", 0) or 0),
+            "attachments": int(cur.get("attachments", 0) or 0),
+            "xmls": int(cur.get("xmls", 0) or 0),
+            "launched": int(cur.get("launched", 0) or 0),
+            "error": str(error or ""),
+        }
+        cur["active"] = False
+        _PROCESS_STATS["current"] = cur
+
+
+def _process_snapshot() -> dict:
+    with _PROCESS_STATS_LOCK:
+        return {
+            "running": bool(running),
+            "reading": bool(_IS_READING),
+            "current": dict(_PROCESS_STATS.get("current", {})),
+            "last": dict(_PROCESS_STATS.get("last", {})),
+        }
 
 
 def _get_gmail_service_locked(timeout: float | None = None):
@@ -346,6 +421,7 @@ def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: di
 
 def processar_emails_enviados():
     global _IS_READING
+    _process_start()
     service = _get_gmail_service_locked()
     batch_size = int(_RUNTIME_SETTINGS.get("max_messages", 100))
     total_msgs = 0
@@ -355,6 +431,21 @@ def processar_emails_enviados():
     page_token = None
     primeira_pagina = True
     interativo_cmd = bool(sys.stdin and sys.stdin.isatty())
+    def _summary() -> dict:
+        return {
+            "messages": int(total_msgs),
+            "attachments": int(anexos_lidos),
+            "xmls": int(xmls_lidos),
+            "launched": int(total_processados),
+        }
+
+    def _sync_progress():
+        _process_update(
+            messages=total_msgs,
+            attachments=anexos_lidos,
+            xmls=xmls_lidos,
+            launched=total_processados,
+        )
 
     while True:
         msgs, next_page_token = buscarMessagesEnviadosPagina(
@@ -366,10 +457,12 @@ def processar_emails_enviados():
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
             escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lançamentos.")
-            return
+            _sync_progress()
+            return _summary()
 
         primeira_pagina = False
         total_msgs += len(msgs or [])
+        _sync_progress()
 
         for m in msgs:
             msg_id = m.get("id")
@@ -380,6 +473,7 @@ def processar_emails_enviados():
                 logger.info("Nenhum anexo salvo para mensagem %s", msg_id)
                 continue
             anexos_lidos += len(arquivos)
+            _sync_progress()
 
             dados_xmls = []
             boletos = []
@@ -394,6 +488,7 @@ def processar_emails_enviados():
                     # =============================
                     if arquivo.lower().endswith(".xml"):
                         xmls_lidos += 1
+                        _sync_progress()
                         try:
                             dados = extrairDadosXML(arquivo)
                             # Ignora vendas à vista
@@ -586,11 +681,12 @@ def processar_emails_enviados():
                             if isinstance(resultado, dict) and bool(resultado.get("inserted")):
                                 total_processados += 1
                                 _write_history_launch_event(dados_xml, dados_parcela, resultado)
+                                _sync_progress()
                             # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para análise isolada.
                             if NF_ALVO and STOP_AFTER_NF and isinstance(resultado, dict) and bool(resultado.get("inserted")):
                                 logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execução.")
                                 # força saída limpa do loop principal retornando da função
-                                return
+                                return _summary()
                             break
 
                         except gspread.exceptions.APIError as e:
@@ -627,6 +723,8 @@ def processar_emails_enviados():
     escreverRelatorio(
         f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lançamentos."
     )
+    _sync_progress()
+    return _summary()
 
 def main_loop():
     global running, last_status, _NEXT_RUN_AT, _IS_READING
@@ -637,10 +735,18 @@ def main_loop():
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         try:
             _IS_READING = True
-            processar_emails_enviados()
-            last_status = {"ok": True, "message": "Ciclo executado com sucesso", "at": datetime.now().isoformat()}
+            summary = processar_emails_enviados()
+            _process_finish(ok=True, error="")
+            msg = (
+                f"Ciclo concluído: {int((summary or {}).get('messages', 0))} e-mails, "
+                f"{int((summary or {}).get('attachments', 0))} anexos, "
+                f"{int((summary or {}).get('xmls', 0))} XML, "
+                f"{int((summary or {}).get('launched', 0))} lançamentos."
+            )
+            last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         except Exception as e:
             logger.exception("Erro no ciclo principal: %s", e)
+            _process_finish(ok=False, error=str(e))
             last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
         finally:
             _IS_READING = False
@@ -651,17 +757,28 @@ def main_loop():
 
 
 def executar_um_ciclo():
-    global last_status, _NEXT_RUN_AT
+    global last_status, _NEXT_RUN_AT, _IS_READING
     try:
-        processar_emails_enviados()
-        last_status = {"ok": True, "message": "Execução manual concluída", "at": datetime.now().isoformat()}
+        _IS_READING = True
+        summary = processar_emails_enviados()
+        _process_finish(ok=True, error="")
+        msg = (
+            f"Execução manual concluída: {int((summary or {}).get('messages', 0))} e-mails, "
+            f"{int((summary or {}).get('attachments', 0))} anexos, "
+            f"{int((summary or {}).get('xmls', 0))} XML, "
+            f"{int((summary or {}).get('launched', 0))} lançamentos."
+        )
+        last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
-        return True, "Execução manual concluída"
+        return True, msg
     except Exception as exc:
         logger.exception("Erro na execução manual: %s", exc)
+        _process_finish(ok=False, error=str(exc))
         last_status = {"ok": False, "message": f"Erro na execução manual: {exc}", "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return False, str(exc)
+    finally:
+        _IS_READING = False
 
 
 def iniciar_verificacao():
@@ -1203,6 +1320,8 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .k .t{font-size:.78rem;color:#6b4128}
 .kpi.daily{grid-template-columns:repeat(4,minmax(0,1fr))}
 .rmeta{margin-top:6px}
+.proc-grid{margin-top:8px;display:grid;gap:4px}
+.proc-line{font-size:.82rem;color:#5e3a24}
 .lists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:8px}
 .box{border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb;padding:8px}
 .box h4{margin:0 0 6px;font-size:.85rem;color:#58311b}
@@ -1299,6 +1418,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
       </div>
       <div id="cool" class="muted" style="margin-top:8px">Próxima verificação automática: -</div>
+      <div class="proc-grid">
+        <div id="procRun" class="proc-line">Loop: -</div>
+        <div id="procNow" class="proc-line">Ciclo atual: -</div>
+        <div id="procLast" class="proc-line">Último ciclo: -</div>
+      </div>
     </section>
 
     <section class="card">
@@ -1539,7 +1663,41 @@ function updDaily(rep){
   setList('li',(rep&&rep.ignorados)||[]);
   setList('la',(rep&&rep.avisos)||[]);
 }
-async function refresh(){try{const j=await api('/api/state');const reading=!!j.reading;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,reading);updDaily(j.daily_report||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
+function _fmtCycleShort(c){
+  const it=c||{};
+  const m=Number(it.messages||0);
+  const a=Number(it.attachments||0);
+  const x=Number(it.xmls||0);
+  const l=Number(it.launched||0);
+  return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l}`;
+}
+function updProcessing(proc){
+  const runEl=document.getElementById('procRun');
+  const nowEl=document.getElementById('procNow');
+  const lastEl=document.getElementById('procLast');
+  if(!runEl||!nowEl||!lastEl) return;
+  const p=proc||{};
+  const reading=!!p.reading;
+  const running=!!p.running;
+  if(reading) runEl.textContent='Loop: executando ciclo agora';
+  else if(running) runEl.textContent='Loop: ativo (aguardando próximo ciclo)';
+  else runEl.textContent='Loop: pausado';
+
+  const cur=p.current||{};
+  const curStart=cur.started_at?_fmtDateTime(cur.started_at):'-';
+  nowEl.textContent=`Ciclo atual: início ${curStart} | ${_fmtCycleShort(cur)}`;
+
+  const last=p.last||{};
+  const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
+  let statusTxt='-';
+  if(last.ok===true) statusTxt='OK';
+  else if(last.ok===false) statusTxt='Erro';
+  let msg=`Último ciclo: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+  const err=String(last.error||'').trim();
+  if(statusTxt==='Erro'&&err) msg += ` | ${err}`;
+  lastEl.textContent=msg;
+}
+async function refresh(){try{const j=await api('/api/state');const reading=!!j.reading;const ok=!!(j.last_status&&j.last_status.ok);const s=(j.settings||{});document.getElementById('who').textContent='Usuário: '+String((j.auth&&j.auth.user)||'-');document.getElementById('mode').value=String(s.gmail_filter_mode||'last_30_days');document.getElementById('maxPages').value=String(s.gmail_max_pages||3);document.getElementById('pageSize').value=String(s.gmail_page_size||50);document.getElementById('intervalMin').value=String(s.loop_interval_minutes||30);document.getElementById('last').value=String((j.last_status&&j.last_status.message)||'-');document.getElementById('details').textContent=JSON.stringify(j.last_status||{},null,2);_nextRemain=Number((j.scheduler&&j.scheduler.next_in_seconds)||0);_tickNext();updAccount(j.account||{});setPill(ok,reading);updDaily(j.daily_report||{});updProcessing(j.processing||{});}catch(err){document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);}}
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
 async function runNow(){await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
@@ -1709,6 +1867,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 elif _IS_READING:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
+                elif not running:
+                    acc_status = "waiting"
+                    friendly = "Monitoramento pausado. Use Executar agora ou inicie o loop."
                 elif (last_status or {}).get("ok", True):
                     acc_status = "waiting"
                     friendly = "Aguardando a próxima verificação automática"
@@ -1748,6 +1909,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "scheduler": {
                             "next_in_seconds": _scheduler_next_seconds(),
                         },
+                        "processing": _process_snapshot(),
                         "daily_report": _daily_report_data(),
                         "auth": {"user": user, "role": _role_of(user)},
                     },
