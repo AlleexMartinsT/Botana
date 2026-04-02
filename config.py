@@ -35,11 +35,9 @@ GOOGLE_CREDENTIALS_SHEETS = os.path.join(
 # Planilhas
 PLANILHAS = {
     "MVA": {
-        "2025": os.getenv("SHEET_MVA_2025"),
         "2026": os.getenv("SHEET_MVA_2026"),
     },
     "EH": {
-        "2025": os.getenv("SHEET_EH_2025"),
         "2026": os.getenv("SHEET_EH_2026"),
     },
 }

@@ -95,26 +95,28 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz, filtroAba: str = ""
                 if len(linhaCompleta) > 1:
                     descricaoAtual = linhaCompleta[1]
                     
-                    # EN: Find specific "BLT" long numbering formats inside descriptions
-                    # BR: Eu busco encontrar formatos "BLT" com longa numeração dentro das descrições para refaze-las.
-                    def atualizarRegex(matchEncontrado):
+                    # EN: I fix BLT numbering issues in descriptions.
+                    # BR: Eu corrijo problemas de numeração de BLT nas descrições.
+                    def corrigirBlt(matchEncontrado):
                         textoPrefixo = matchEncontrado.group(1)
-                        numeroLongo = matchEncontrado.group(2)
+                        numeroBruto = matchEncontrado.group(2)
                         
-                        # EN: Finding trailing zeros chunk to cleanly separate ticket sequence 
-                        # BR: Eu busco um longo agrupamento de 0s seguidos (ao menos 4) e puxo o texto posterior sem zeros
-                        limpezaMatch = re.search(r'0{4,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroLongo)
-                        
+                        # EN: Case 1 - Full barcode typed out (very long number with many leading zeros).
+                        # BR: Caso 1 - Boleto digitado inteiramente (numero muito longo com muitos zeros).
+                        # Ex: "000000000000010097" → "10097"
+                        limpezaMatch = re.search(r'0{3,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroBruto)
                         if limpezaMatch:
-                            numeroExtraido = limpezaMatch.group(1)
-                            return textoPrefixo + numeroExtraido
+                            return textoPrefixo + limpezaMatch.group(1)
+                        
+                        # EN: Case 2 - Truncated BLT starting with 0 (the leading 1 was lost).
+                        # BR: Caso 2 - BLT truncado começando com 0 (o 1 inicial foi perdido).
+                        # Ex: "0097" → "10097", "0136" → "10136", "0152" → "10152"
+                        if re.match(r'^0\d{2,4}$', numeroBruto):
+                            return textoPrefixo + "1" + numeroBruto
+                        
                         return matchEncontrado.group(0)
                         
-                    novaDescricao = re.sub(r'(BLT\s+)([0-9-]+)', atualizarRegex, descricaoAtual)
-
-                    # Se já estiver truncado ou for especificamente 0136, força a correção para 10136
-                    novaDescricao = re.sub(r'\bBLT\s+0136\b', 'BLT 10136', novaDescricao)
-                    novaDescricao = re.sub(r'\bBLT\s+0136-', 'BLT 10136-', novaDescricao)
+                    novaDescricao = re.sub(r'(BLT[\s-]+)(\d[\d-]*\d)', corrigirBlt, descricaoAtual)
                     
                     if novaDescricao != descricaoAtual:
                         _adicionarLog("correcao", f"  Linha {numeroLinha} | De: {descricaoAtual} → Para: {novaDescricao}")
@@ -144,18 +146,17 @@ def atualizarHistoricosRetroativos():
                 changed = False
                 for i, line in enumerate(lines):
                     if 'HIST_JSON' in line:
-                        def atualizarRegex(matchEncontrado):
+                        def corrigirBltTexto(matchEncontrado):
                             textoPrefixo = matchEncontrado.group(1)
-                            numeroLongo = matchEncontrado.group(2)
-                            limpezaMatch = re.search(r'0{4,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroLongo)
-                            if limpezaMatch: return textoPrefixo + limpezaMatch.group(1)
+                            numeroBruto = matchEncontrado.group(2)
+                            limpezaMatch = re.search(r'0{3,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroBruto)
+                            if limpezaMatch:
+                                return textoPrefixo + limpezaMatch.group(1)
+                            if re.match(r'^0\d{2,4}$', numeroBruto):
+                                return textoPrefixo + "1" + numeroBruto
                             return matchEncontrado.group(0)
                         
-                        nl = re.sub(r'(BLT\s+)([0-9-]+)', atualizarRegex, line)
-                        nl = re.sub(r'\bBLT\s+0136\b', 'BLT 10136', nl)
-                        nl = re.sub(r'\bBLT\s+0136-', 'BLT 10136-', nl)
-                        nl = re.sub(r'\bBLT\s+136\b', 'BLT 10136', nl)
-                        nl = re.sub(r'\bBLT\s+136-', 'BLT 10136-', nl)
+                        nl = re.sub(r'(BLT[\s-]+)(\d[\d-]*\d)', corrigirBltTexto, line)
                         if nl != line:
                             lines[i] = nl
                             changed = True
