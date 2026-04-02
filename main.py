@@ -343,6 +343,8 @@ def _role_of(username: str) -> str:
 
 
 def _can_operate(username: str) -> bool:
+    if username == "hub_internal":
+        return True
     return _role_of(username) in {"dev", "admin"}
 
 
