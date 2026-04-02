@@ -1,11 +1,46 @@
 import time
 import re
+import threading
 import gspread
 from google.oauth2.service_account import Credentials
 
 import config
 
 print("Inicializando script de correção do Google Sheets...")
+
+# EN: In-memory log buffer shared across threads for real-time progress tracking.
+# BR: Eu mantenho um buffer de log em memória compartilhado entre threads para acompanhamento em tempo real.
+_logCorrecao = []
+_logLock = threading.Lock()
+_correcaoAtiva = False
+_correcaoLock = threading.Lock()
+
+def obterLog(desdeIndice: int = 0) -> dict:
+    """EN: I return the current log entries starting from a given index.
+    BR: Eu retorno as entradas de log a partir de um indice especificado."""
+    with _logLock:
+        entradas = list(_logCorrecao[desdeIndice:])
+    with _correcaoLock:
+        ativo = _correcaoAtiva
+    return {"entries": entradas, "ativo": ativo, "total": len(_logCorrecao)}
+
+def _adicionarLog(tipo: str, mensagem: str):
+    """EN: I append a log entry with timestamp and type.
+    BR: Eu adiciono uma entrada de log com timestamp e tipo."""
+    entrada = {
+        "ts": time.strftime("%H:%M:%S"),
+        "tipo": tipo,
+        "msg": mensagem,
+    }
+    with _logLock:
+        _logCorrecao.append(entrada)
+
+def _limparLog():
+    """EN: I clear all log entries for a fresh run.
+    BR: Eu limpo todas as entradas de log para uma nova execução."""
+    with _logLock:
+        _logCorrecao.clear()
+
 
 # EN: Setup authentication client for Google Sheets
 # BR: Eu configuro a autenticação para o Google Sheets através de conta de serviço local.
@@ -19,26 +54,31 @@ def getSheetsClient():
             config.GOOGLE_CREDENTIALS_SHEETS, scopes=SCOPES
         )
         clienteGoogle = gspread.authorize(credentialsGoogle)
-        print("Sucesso na autenticação com as credenciais!")
+        _adicionarLog("info", "Autenticação com Google Sheets bem-sucedida.")
         return clienteGoogle
     except Exception as erro:
-        print(f"Erro ao autenticar: {erro}")
+        _adicionarLog("erro", f"Erro ao autenticar: {erro}")
         return None
 
-# EN: Process a single spreadsheet based on its ID
-# BR: Eu processo uma única planilha procurada a partir do seu ID.
-def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz):
+# EN: Process a single spreadsheet based on its ID, optionally filtering by tab name.
+# BR: Eu processo uma única planilha procurada a partir do seu ID, opcionalmente filtrando por aba.
+def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz, filtroAba: str = ""):
     if not idPlanilha:
         return
     try:
         planilhaAtual = clienteSheets.open_by_key(idPlanilha)
-        print(f"\nVerificando planilha: {planilhaAtual.title} ({nomeMatriz})")
+        _adicionarLog("info", f"Verificando planilha: {planilhaAtual.title} ({nomeMatriz})")
     except Exception as erroOpen:
-        print(f"Erro ao abrir {nomeMatriz} com id {idPlanilha}: {erroOpen}")
+        _adicionarLog("erro", f"Erro ao abrir {nomeMatriz} com id {idPlanilha}: {erroOpen}")
         return
     
     for abaAtual in planilhaAtual.worksheets():
-        print(f" -> Lendo aba: {abaAtual.title}")
+        # EN: If a tab filter is specified, I only process matching tabs.
+        # BR: Se um filtro de aba foi especificado, eu so processo as abas correspondentes.
+        if filtroAba and filtroAba.lower() not in abaAtual.title.lower():
+            continue
+
+        _adicionarLog("info", f"  Lendo aba: {abaAtual.title}")
         try:
             # EN: Sleep to avoid API limit bottlenecks
             # BR: Eu coloco o robô para dormir um instante para evitar esgotar a cota da API (Too Many Requests).
@@ -77,9 +117,7 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz):
                     novaDescricao = re.sub(r'\bBLT\s+0136-', 'BLT 10136-', novaDescricao)
                     
                     if novaDescricao != descricaoAtual:
-                        print(f"      Corrigindo Linha {numeroLinha}:")
-                        print(f"         De: {descricaoAtual}")
-                        print(f"         Aa: {novaDescricao}")
+                        _adicionarLog("correcao", f"  Linha {numeroLinha} | De: {descricaoAtual} → Para: {novaDescricao}")
                         
                         # EN: Col 2 corresponds to 'B' which holds Description 
                         # BR: A coluna 2 é a letra B, responsável por abrigar a descrição.
@@ -87,16 +125,16 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz):
                         quantidadeAlteracoes += 1
                         time.sleep(1.5) # EN: Extra precaution delay. BR: Atraso extra de precaução proativa.
                         
-            print(f"      Terminou aba {abaAtual.title}. Células corrigidas na rodada: {quantidadeAlteracoes}")
+            _adicionarLog("info", f"  Aba {abaAtual.title} finalizada. Correções: {quantidadeAlteracoes}")
             
         except Exception as erroAba:
-            print(f"Erro ao processar aba {abaAtual.title}: {erroAba}")
+            _adicionarLog("erro", f"Erro na aba {abaAtual.title}: {erroAba}")
 
 def atualizarHistoricosRetroativos():
     import os, re
     from config import RELATORIO_DIR
     if os.path.exists(RELATORIO_DIR):
-        print(f"      Atualizando historico (TXT)...")
+        _adicionarLog("info", "Atualizando histórico (TXT)...")
         qt = 0
         for f in os.listdir(RELATORIO_DIR):
             if f.endswith('.txt'):
@@ -125,20 +163,41 @@ def atualizarHistoricosRetroativos():
                 if changed:
                     with open(p, 'w', encoding='utf-8') as file:
                         file.writelines(lines)
-        print(f"      Terminou atualizar histórico. Linhas corrigidas na rodada: {qt}")
+        _adicionarLog("info", f"Histórico atualizado. Linhas corrigidas: {qt}")
 
-def iniciar_assistente_em_background():
-    import threading
+def iniciar_assistente_em_background(empresa: str = "todos", filtroAba: str = ""):
+    """EN: I start the correction assistant in a background thread with optional filters.
+    BR: Eu inicio o assistente de correção em thread separada com filtros opcionais."""
+    global _correcaoAtiva
+    
+    with _correcaoLock:
+        if _correcaoAtiva:
+            return False
+        _correcaoAtiva = True
+    
+    _limparLog()
+    _adicionarLog("info", f"Iniciando varredura retroativa... (Empresa: {empresa}, Aba: {filtroAba or 'todas'})")
+    
     def tarefa_assistente():
-        print("[Assistente Botana] Iniciando varredura retroativa...")
-        clienteAtivo = getSheetsClient()
-        if clienteAtivo:
-            for nomeCompanhia, dictAnos in config.PLANILHAS.items():
-                for anoPlanilha, idGoogle in dictAnos.items():
-                    if idGoogle:
-                        processarPlanilha(clienteAtivo, idGoogle, f"{nomeCompanhia}-{anoPlanilha}")
-        atualizarHistoricosRetroativos()
-        print("[Assistente Botana] Varredura finalizada.")
+        global _correcaoAtiva
+        try:
+            clienteAtivo = getSheetsClient()
+            if clienteAtivo:
+                for nomeCompanhia, dictAnos in config.PLANILHAS.items():
+                    # EN: I filter by empresa if specified.
+                    # BR: Eu filtro por empresa se especificada.
+                    if empresa and empresa != "todos" and nomeCompanhia != empresa:
+                        continue
+                    for anoPlanilha, idGoogle in dictAnos.items():
+                        if idGoogle:
+                            processarPlanilha(clienteAtivo, idGoogle, f"{nomeCompanhia}-{anoPlanilha}", filtroAba)
+            atualizarHistoricosRetroativos()
+            _adicionarLog("info", "Varredura finalizada com sucesso!")
+        except Exception as erroGeral:
+            _adicionarLog("erro", f"Erro geral na varredura: {erroGeral}")
+        finally:
+            with _correcaoLock:
+                _correcaoAtiva = False
         
     threadLimpeza = threading.Thread(target=tarefa_assistente, daemon=True)
     threadLimpeza.start()

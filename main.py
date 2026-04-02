@@ -2044,7 +2044,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return user
             
             # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
-            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/clean-sheets"]:
+            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/clean-sheets", "/api/clean-sheets/log"]:
                 return "hub_internal"
 
             if parsed_path.startswith("/api/"):
@@ -2160,6 +2160,19 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 except Exception as e:
                     return _json_response(self, 500, {"status": "error", "message": str(e)})
 
+            if parsed.path == "/api/clean-sheets/log":
+                qs = parse_qs(parsed.query or "")
+                try:
+                    desdeIndice = int((qs.get("desde", ["0"])[0] or "0").strip())
+                except (ValueError, TypeError):
+                    desdeIndice = 0
+                try:
+                    import correcao_planilhas
+                    logData = correcao_planilhas.obterLog(desdeIndice)
+                    return _json_response(self, 200, {"ok": True, **logData})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
             if parsed.path == "/api/history":
                 qs = parse_qs(parsed.query or "")
                 dt_from = (qs.get("from", [""])[0] or "").strip()
@@ -2263,8 +2276,13 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
                     try:
                         import correcao_planilhas
-                        correcao_planilhas.iniciar_assistente_em_background()
-                        return _json_response(self, 200, {"ok": True, "friendly": "Assistente de Limpeza iniciado com sucesso."})
+                        empresaFiltro = str(data.get("empresa", "todos")).strip() or "todos"
+                        abaFiltro = str(data.get("aba", "")).strip()
+                        iniciou = correcao_planilhas.iniciar_assistente_em_background(empresaFiltro, abaFiltro)
+                        if iniciou:
+                            return _json_response(self, 200, {"ok": True, "friendly": "Assistente de correção iniciado."})
+                        else:
+                            return _json_response(self, 409, {"ok": False, "friendly": "Já existe uma correção em andamento."})
                     except Exception as e:
                         return _json_response(self, 500, {"ok": False, "friendly": f"Falha ao iniciar o assistente: {e}"})
 
