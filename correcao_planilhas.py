@@ -66,10 +66,15 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz):
                         limpezaMatch = re.search(r'0{4,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroLongo)
                         
                         if limpezaMatch:
-                            return textoPrefixo + limpezaMatch.group(1)
+                            numeroExtraido = limpezaMatch.group(1)
+                            return textoPrefixo + numeroExtraido
                         return matchEncontrado.group(0)
                         
                     novaDescricao = re.sub(r'(BLT\s+)([0-9-]+)', atualizarRegex, descricaoAtual)
+
+                    # Se já estiver truncado ou for especificamente 0136, força a correção para 10136
+                    novaDescricao = re.sub(r'\bBLT\s+0136\b', 'BLT 10136', novaDescricao)
+                    novaDescricao = re.sub(r'\bBLT\s+0136-', 'BLT 10136-', novaDescricao)
                     
                     if novaDescricao != descricaoAtual:
                         print(f"      Corrigindo Linha {numeroLinha}:")

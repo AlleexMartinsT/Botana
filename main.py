@@ -580,6 +580,9 @@ def processar_emails_enviados():
                                 m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
                                 if m_clean:
                                     num_boleto = m_clean.group(1)
+                                if num_boleto == "0136" or num_boleto == "136": num_boleto = "10136"
+                                elif num_boleto.startswith("0136-"): num_boleto = num_boleto.replace("0136-", "10136-", 1)
+                                elif num_boleto.startswith("136-"): num_boleto = num_boleto.replace("136-", "10136-", 1)
                                 boletos.append(num_boleto)
                                 logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                             else:
@@ -598,6 +601,9 @@ def processar_emails_enviados():
                                     m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
                                     if m_clean:
                                         num_boleto = m_clean.group(1)
+                                    if num_boleto == "0136" or num_boleto == "136": num_boleto = "10136"
+                                    elif num_boleto.startswith("0136-"): num_boleto = num_boleto.replace("0136-", "10136-", 1)
+                                    elif num_boleto.startswith("136-"): num_boleto = num_boleto.replace("136-", "10136-", 1)
                                     boletos.append(num_boleto)
                                     logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                                 else:
