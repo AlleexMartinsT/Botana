@@ -2001,6 +2001,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
             user = _current_session_user(self)
             if user:
                 return user
+            
+            # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
+            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/clean-sheets"]:
+                return "hub_internal"
+
             if parsed_path.startswith("/api/"):
                 _json_response(self, 401, {"ok": False, "message": "NÃ£o autenticado"})
             else:
