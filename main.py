@@ -953,7 +953,7 @@ def _send_store_image(handler: BaseHTTPRequestHandler) -> bool:
 
 
 
-def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> list[dict]:
+def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str) -> list[dict]:
     import gspread
     from google.oauth2.service_account import Credentials
     from config import GOOGLE_CREDENTIALS_SHEETS, PLANILHAS
@@ -998,6 +998,8 @@ def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> 
         return True
 
     for p_tipo, anos in PLANILHAS.items():
+        if empresa and empresa != "todos" and p_tipo != empresa:
+            continue
         for ano, id_planilha in anos.items():
             if id_planilha:
                 try:
@@ -2105,8 +2107,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 mes = (qs.get("mes", [""])[0] or "").strip()
                 nf_inicio = (qs.get("nf_inicio", [""])[0] or "").strip()
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
-                    items = _gerar_relatorio_nfs(filtro, mes, nf_inicio, nf_fim)
+                    items = _gerar_relatorio_nfs(filtro, mes, nf_inicio, nf_fim, empresa)
                     return _json_response(self, 200, {"status": "success", "items": items})
                 except Exception as e:
                     return _json_response(self, 500, {"status": "error", "message": str(e)})
