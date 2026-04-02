@@ -92,6 +92,41 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz):
         except Exception as erroAba:
             print(f"Erro ao processar aba {abaAtual.title}: {erroAba}")
 
+def atualizarHistoricosRetroativos():
+    import os, re
+    from config import RELATORIO_DIR
+    if os.path.exists(RELATORIO_DIR):
+        print(f"      Atualizando historico (TXT)...")
+        qt = 0
+        for f in os.listdir(RELATORIO_DIR):
+            if f.endswith('.txt'):
+                p = os.path.join(RELATORIO_DIR, f)
+                with open(p, 'r', encoding='utf-8') as file:
+                    lines = file.readlines()
+                changed = False
+                for i, line in enumerate(lines):
+                    if 'HIST_JSON' in line:
+                        def atualizarRegex(matchEncontrado):
+                            textoPrefixo = matchEncontrado.group(1)
+                            numeroLongo = matchEncontrado.group(2)
+                            limpezaMatch = re.search(r'0{4,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroLongo)
+                            if limpezaMatch: return textoPrefixo + limpezaMatch.group(1)
+                            return matchEncontrado.group(0)
+                        
+                        nl = re.sub(r'(BLT\s+)([0-9-]+)', atualizarRegex, line)
+                        nl = re.sub(r'\bBLT\s+0136\b', 'BLT 10136', nl)
+                        nl = re.sub(r'\bBLT\s+0136-', 'BLT 10136-', nl)
+                        nl = re.sub(r'\bBLT\s+136\b', 'BLT 10136', nl)
+                        nl = re.sub(r'\bBLT\s+136-', 'BLT 10136-', nl)
+                        if nl != line:
+                            lines[i] = nl
+                            changed = True
+                            qt += 1
+                if changed:
+                    with open(p, 'w', encoding='utf-8') as file:
+                        file.writelines(lines)
+        print(f"      Terminou atualizar histórico. Linhas corrigidas na rodada: {qt}")
+
 def iniciar_assistente_em_background():
     import threading
     def tarefa_assistente():
@@ -102,6 +137,7 @@ def iniciar_assistente_em_background():
                 for anoPlanilha, idGoogle in dictAnos.items():
                     if idGoogle:
                         processarPlanilha(clienteAtivo, idGoogle, f"{nomeCompanhia}-{anoPlanilha}")
+        atualizarHistoricosRetroativos()
         print("[Assistente Botana] Varredura finalizada.")
         
     threadLimpeza = threading.Thread(target=tarefa_assistente, daemon=True)
