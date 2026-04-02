@@ -577,6 +577,9 @@ def processar_emails_enviados():
                             match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
                             if match:
                                 num_boleto = match[-1]
+                                m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
+                                if m_clean:
+                                    num_boleto = m_clean.group(1)
                                 boletos.append(num_boleto)
                                 logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                             else:
@@ -592,6 +595,9 @@ def processar_emails_enviados():
                                 match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
                                 if match:
                                     num_boleto = match[-1]
+                                    m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
+                                    if m_clean:
+                                        num_boleto = m_clean.group(1)
                                     boletos.append(num_boleto)
                                     logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
                                 else:
@@ -2111,6 +2117,16 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         account = "principal"
                     info = _reauthenticate_gmail()
                     return _json_response(self, 200, {"ok": True, "account": account, "message": info.get("message", "ReautenticaÃ§Ã£o concluÃ­da"), "friendly": "ReautenticaÃ§Ã£o concluÃ­da"})
+                if parsed.path == "/api/clean-sheets":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    try:
+                        import correcao_planilhas
+                        correcao_planilhas.iniciar_assistente_em_background()
+                        return _json_response(self, 200, {"ok": True, "friendly": "Assistente de Limpeza iniciado com sucesso."})
+                    except Exception as e:
+                        return _json_response(self, 500, {"ok": False, "friendly": f"Falha ao iniciar o assistente: {e}"})
+
                 return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
