@@ -1236,10 +1236,82 @@ def _history_from_reports(
 
                 out.append(item)
                 if len(out) >= limit:
-                    return out
+                    break
         except Exception:
             continue
+
+    # I detect duplicate entries (same NF + same parcela) and mark them.
+    # Eu detecto entradas duplicadas (mesma NF + mesma parcela) e as marco.
+    contadorChaves = {}
+    for item in out:
+        chave = (str(item.get("nf", "")).strip(), str(item.get("parcela", "")).strip())
+        if chave[0]:  # Only count if NF is not empty / Só conto se a NF não é vazia
+            contadorChaves[chave] = contadorChaves.get(chave, 0) + 1
+    for item in out:
+        chave = (str(item.get("nf", "")).strip(), str(item.get("parcela", "")).strip())
+        item["duplicata"] = bool(chave[0] and contadorChaves.get(chave, 0) > 1)
+
     return out
+
+
+def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
+    """I remove a specific HIST_JSON entry from the report files.
+    # Eu removo uma entrada HIST_JSON especifica dos arquivos de relatorio."""
+    nfAlvo = str(nf or "").strip()
+    parcelaAlvo = str(parcela or "").strip()
+    atAlvo = str(at or "").strip()
+    if not nfAlvo:
+        return {"ok": False, "message": "NF não informada"}
+
+    relDir = Path(RELATORIO_DIR)
+    if not relDir.exists():
+        return {"ok": False, "message": "Diretório de relatórios não encontrado"}
+
+    arquivos = sorted(relDir.glob("relatorio_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for arquivo in arquivos:
+        try:
+            linhas = arquivo.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            continue
+
+        linhasNovas = []
+        removido = False
+        for linha in linhas:
+            textoLinha = str(linha or "").strip()
+            if not textoLinha:
+                linhasNovas.append(linha)
+                continue
+            # I check if this line is the HIST_JSON entry I want to delete.
+            # Eu verifico se esta linha e a entrada HIST_JSON que eu quero deletar.
+            if "HIST_JSON " in textoLinha and not removido:
+                posJson = textoLinha.find("HIST_JSON ")
+                if posJson >= 0:
+                    jsonBruto = textoLinha[posJson + len("HIST_JSON "):].strip()
+                    try:
+                        payload = json.loads(jsonBruto)
+                        nfPayload = str(payload.get("nf") or "").strip()
+                        parcelaPayload = str(payload.get("parcela") or "").strip()
+                        atPayload = str(payload.get("at") or "").strip()
+                        # I match by NF + parcela, and optionally by timestamp.
+                        # Eu faço match por NF + parcela, e opcionalmente pelo timestamp.
+                        if nfPayload == nfAlvo and parcelaPayload == parcelaAlvo:
+                            if not atAlvo or atPayload == atAlvo:
+                                removido = True
+                                continue  # I skip this line (delete it) / Eu pulo esta linha (deleto ela)
+                    except Exception:
+                        pass
+            linhasNovas.append(linha)
+
+        if removido:
+            try:
+                arquivo.write_text("\n".join(linhasNovas) + "\n", encoding="utf-8")
+                logger.info("Entrada NF %s parcela %s removida do relatório %s", nfAlvo, parcelaAlvo, arquivo.name)
+                return {"ok": True, "message": f"NF {nfAlvo} ({parcelaAlvo}) removida com sucesso"}
+            except Exception as exc:
+                logger.exception("Falha ao reescrever relatório %s: %s", arquivo.name, exc)
+                return {"ok": False, "message": f"Falha ao salvar: {exc}"}
+
+    return {"ok": False, "message": f"Entrada NF {nfAlvo} ({parcelaAlvo}) não encontrada nos relatórios"}
 
 
 def _latest_report_file() -> Path | None:
@@ -1554,6 +1626,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cell-pop{position:absolute;top:100%;left:0;background:#fffaf6;border:1px solid #e7c8a8;border-radius:8px;padding:6px;box-shadow:0 8px 20px rgba(21,11,6,.15);display:none;z-index:5;min-width:160px}
 .cell-pop button{width:100%;border:0;background:#fff1e3;padding:6px;border-radius:6px;cursor:pointer;font-size:.78rem;color:#5a311b}
 .cell-menu.open .cell-pop{display:block}
+.dup-row{background:rgba(255,193,7,.12)!important}
+.dup-row:hover{background:rgba(255,193,7,.2)!important}
+.dup-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:.7rem;font-weight:700;background:#fff3cd;color:#856404;border:1px solid #ffc107;margin-left:4px}
+.del-btn{padding:4px 8px;border:1px solid #e0a0a0;border-radius:6px;background:#fdecec;color:#b42b2b;font-size:.75rem;font-weight:600;cursor:pointer;white-space:nowrap}
+.del-btn:hover{background:#f8d7d7;border-color:#c45050}
 .ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
 .ov.show{display:flex}
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
@@ -1710,9 +1787,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th class="sortable" data-key="vpago">Valor Pago</th>
               <th class="sortable" data-key="status">Status</th>
               <th class="sortable" data-key="local">Planilha/Aba</th>
+              <th>Ações</th>
             </tr>
           </thead>
-          <tbody id="hBody"><tr><td colspan="11">Sem dados</td></tr></tbody>
+          <tbody id="hBody"><tr><td colspan="12">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -1975,21 +2053,25 @@ function _sortHist(items){const k=_histSort.key;const dir=_histSort.dir==='asc'?
 function _renderHistory(items){
   _histItems=Array.isArray(items)?items:[];
   const body=document.getElementById('hBody');
+  if(!body)return;
   body.innerHTML='';
-  let arr=_histItems.filter(it=>it.type==='boleto_lancado');
+  let arr=_histItems.filter(it=>it&&it.type==='boleto_lancado');
   arr=arr.map(it=>{
     const nf=String(it.nf||it.numero||'').trim();
     const doc=nf?`NF ${nf}`:'-';
     const local=_fmtLocal(it.local_lancamento);
     return {...it,_doc:doc,_local:local};
   });
-  if(!arr.length){body.innerHTML='<tr><td colspan="11">Sem dados para os filtros selecionados</td></tr>';return;}
+  if(!arr.length){body.innerHTML='<tr><td colspan="12">Sem dados para os filtros selecionados</td></tr>';return;}
   arr=_sortHist(arr);
   arr.forEach(it=>{
     const tr=document.createElement('tr');
+    if(it.duplicata)tr.classList.add('dup-row');
     const emit=String(it.cnpj_emit||'-');
+    const dupTag=it.duplicata?'<span class="dup-badge">DUPLICADA</span>':'';
     const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" onclick=\"_toggleMenu(event,this)\">${_esc(it.cliente||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
-    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.vencimento||'-')}</td><td>${_esc(it._doc)}</td><td>${menu}</td><td>${_esc(it.descricao||'-')}</td><td>${_esc(it.parcela||'-')}</td><td>${_fmtMoney(it.valor_parcela)}</td><td>${_fmtMoney(it.valor_total)}</td><td>${_fmtMoney(it.valor_pago)}</td><td>${_esc(it.status||'-')}</td><td>${_esc(it._local)}</td>`;
+    const delBtn=`<button class=\"del-btn\" onclick=\"deleteEntry('${_esc(it.nf||'')}','${_esc(it.parcela||'')}','${_esc(it.at||'')}')\">Excluir</button>`;
+    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.vencimento||'-')}</td><td>${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td>${_esc(it.descricao||'-')}</td><td>${_esc(it.parcela||'-')}</td><td>${_fmtMoney(it.valor_parcela)}</td><td>${_fmtMoney(it.valor_total)}</td><td>${_fmtMoney(it.valor_pago)}</td><td>${_esc(it.status||'-')}</td><td>${_esc(it._local)}</td><td>${delBtn}</td>`;
     body.appendChild(tr);
   });
 }
@@ -2004,22 +2086,38 @@ function _setSort(key){
 }
 document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventListener('click',()=>_setSort(th.dataset.key));});
 async function loadHistory(silent=false){
-  const p=new URLSearchParams();
-  const vFrom=document.getElementById('hFrom').value||'';
-  const vTo=document.getElementById('hTo').value||'';
-  const vEmit=(document.getElementById('hEmit').value||'').trim();
-  const vDest=(document.getElementById('hDest').value||'').trim();
-  const vQuery=(document.getElementById('hQuery').value||'').trim();
-  const vLimit=Number(document.getElementById('hLimit').value||300);
-  if(vFrom)p.set('from',vFrom);
-  if(vTo)p.set('to',vTo);
-  if(vEmit)p.set('cnpj_emit',vEmit);
-  if(vDest)p.set('cnpj_dest',vDest);
-  if(vQuery)p.set('q',vQuery);
-  p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
-  const j=await api('/api/history?'+p.toString());
-  const items=j.items||[];
-  _renderHistory(items);
+  try{
+    const p=new URLSearchParams();
+    const vFrom=(document.getElementById('hFrom')||{}).value||'';
+    const vTo=(document.getElementById('hTo')||{}).value||'';
+    const vEmit=((document.getElementById('hEmit')||{}).value||'').trim();
+    const vDest=((document.getElementById('hDest')||{}).value||'').trim();
+    const vQuery=((document.getElementById('hQuery')||{}).value||'').trim();
+    const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
+    if(vFrom)p.set('from',vFrom);
+    if(vTo)p.set('to',vTo);
+    if(vEmit)p.set('cnpj_emit',vEmit);
+    if(vDest)p.set('cnpj_dest',vDest);
+    if(vQuery)p.set('q',vQuery);
+    p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
+    const j=await api('/api/history?'+p.toString());
+    const items=(j&&Array.isArray(j.items))?j.items:[];
+    _renderHistory(items);
+  }catch(err){
+    if(!silent)console.warn('Erro ao carregar histórico:',err);
+    const body=document.getElementById('hBody');
+    if(body)body.innerHTML='<tr><td colspan="12">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+  }
+}
+async function deleteEntry(nf,parcela,at){
+  if(!nf)return;
+  const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nEssa ação é permanente.`;
+  if(!confirm(msg))return;
+  try{
+    const r=await api('/api/history/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nf:nf,parcela:parcela,at:at})});
+    if(r&&r.ok){await loadHistory();}
+    else{alert(r&&r.message||'Falha ao excluir');}
+  }catch(err){alert('Erro ao excluir: '+(err&&err.message||err));}
 }
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
@@ -2286,7 +2384,19 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     except Exception as e:
                         return _json_response(self, 500, {"ok": False, "friendly": f"Falha ao iniciar o assistente: {e}"})
 
-                return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
+                if parsed.path == "/api/history/delete":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    nfDel = str(data.get("nf", "")).strip()
+                    parcelaDel = str(data.get("parcela", "")).strip()
+                    atDel = str(data.get("at", "")).strip()
+                    if not nfDel:
+                        return _json_response(self, 400, {"ok": False, "message": "NF não informada"})
+                    resultado = _delete_history_entry(nf=nfDel, parcela=parcelaDel, at=atDel)
+                    statusCode = 200 if resultado.get("ok") else 404
+                    return _json_response(self, statusCode, resultado)
+
+                return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
                 return _json_response(self, 500, {"ok": False, "message": "Erro interno no servidor"})
