@@ -104,6 +104,7 @@ _MANUAL_ACTION = {
     "current_email": "",
     "current_subject": "",
     "current_date": "",
+    "requested_limit": 0,
 }
 
 
@@ -231,6 +232,7 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "current_email": "",
                 "current_subject": "",
                 "current_date": "",
+                "requested_limit": 0,
             }
         )
         for key, value in extra.items():
@@ -270,6 +272,7 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["current_email"] = ""
         _MANUAL_ACTION["current_subject"] = ""
         _MANUAL_ACTION["current_date"] = ""
+        _MANUAL_ACTION["requested_limit"] = 0
         for key, value in extra.items():
             _MANUAL_ACTION[key] = value
         return dict(_MANUAL_ACTION)
@@ -359,6 +362,8 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
         "Reprocessamento",
         "Reprocessamento iniciado.",
         detail=f"Ate {int(max_messages)} mensagens mais recentes com a label do Botana.",
+        progress_total=int(max_messages),
+        requested_limit=int(max_messages),
     )
     if not started:
         return False, snap
@@ -379,10 +384,11 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                 progress_total=int(result.get("matched", 0) or 0),
                 changed=int(result.get("changed", 0) or 0),
                 failed=int(result.get("failed", 0) or 0),
+                requested_limit=int(max_messages),
             )
         except Exception as exc:
             logger.exception("Falha no reprocessamento em background: %s", exc)
-            _manual_action_finish(False, "Erro no reprocessamento.", detail=str(exc))
+            _manual_action_finish(False, "Erro no reprocessamento.", detail=str(exc), requested_limit=int(max_messages))
 
     threading.Thread(target=_worker, daemon=True, name="botana-reprocess").start()
     return True, snap
@@ -2194,10 +2200,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .auth-card .btns button{width:100%}
 .reproc-card .btns{margin-top:8px;justify-content:center}
 .reproc-card h3{text-align:center}
-.reproc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}
+.reproc-grid{display:grid;grid-template-columns:minmax(180px,240px);gap:8px;align-items:end;justify-content:center;justify-items:center}
 .reproc-grid > div{display:flex;flex-direction:column;align-items:center}
 .reproc-grid > div label{text-align:center}
-.reproc-grid > div input,.reproc-grid > div select{text-align:center}
+.reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
+.reproc-card .muted{text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
 .action-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -2641,7 +2648,20 @@ function _fmtCycleShort(c){
   const l=Number(it.launched||0);
   return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l}`;
 }
-function updProcessing(proc,maxMessages){
+function _reprocessView(action){
+  const a=action||{};
+  const requested=Math.max(0, Number(a.requested_limit||0));
+  const total=Math.max(0, Number(a.progress_total||0));
+  const current=Math.max(0, Number(a.progress_current||0));
+  const visibleTotal=total>0?total:requested;
+  const denom=Math.max(1, visibleTotal||1);
+  const perc=visibleTotal>0?Math.max(0,Math.min(100,Math.round((Math.min(current,visibleTotal)/denom)*100))):0;
+  const currentEmail=String(a.current_email||'').trim();
+  const currentDate=String(a.current_date||'').trim();
+  const currentSubject=String(a.current_subject||'').trim();
+  return {requested,total,current,visibleTotal,perc,currentEmail,currentDate,currentSubject};
+}
+function updProcessing(proc,maxMessages,action){
   const runEl=document.getElementById('procRun');
   const nowEl=document.getElementById('procNow');
   const lastEl=document.getElementById('procLast');
@@ -2649,6 +2669,27 @@ function updProcessing(proc,maxMessages){
   const barLabel=document.getElementById('procBarLabel');
   if(!runEl||!nowEl||!lastEl||!barFill||!barLabel) return;
   const p=proc||{};
+  const a=action||{};
+  const active=!!a.active;
+  const kind=String(a.kind||'').trim();
+  if(active&&kind==='reprocess'){
+    const view=_reprocessView(a);
+    const detailParts=[];
+    if(view.currentEmail)detailParts.push(`E-mail atual ${view.currentEmail}`);
+    if(view.currentDate)detailParts.push(`Data ${view.currentDate}`);
+    if(view.currentSubject)detailParts.push(`Assunto ${view.currentSubject}`);
+    runEl.textContent='Loop: reprocessamento manual em andamento';
+    nowEl.textContent=detailParts.length?`Mensagem atual: ${detailParts.join(' | ')}`:'Mensagem atual: buscando e-mails para reprocessar';
+    const last=p.last||{};
+    const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
+    let statusTxt='-';
+    if(last.ok===true) statusTxt='OK';
+    else if(last.ok===false) statusTxt='Erro';
+    lastEl.textContent=`Último ciclo automático: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+    barFill.style.width=String(view.perc)+'%';
+    barLabel.textContent=`Reprocessamento: ${view.current}/${view.visibleTotal||'-'} (${view.perc}%) | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+    return;
+  }
   const reading=!!p.reading;
   const running=!!p.running;
   if(reading) runEl.textContent='Loop: executando ciclo agora';
@@ -2709,16 +2750,12 @@ function updManualAction(action,processing,maxMessages){
     detailEl.textContent=String(a.detail||'Leitura de e-mails e lançamentos em andamento.');
     _setManualBadge('ok','Em andamento');
   }else if(active&&kind==='reprocess'){
-    const total=Math.max(0, Number(a.progress_total||0));
-    const current=Math.max(0, Number(a.progress_current||0));
-    const perc=total>0?Math.max(6,Math.min(100,Math.round((current/total)*100))):18;
-    const currentEmail=String(a.current_email||'').trim();
-    const currentDate=String(a.current_date||'').trim();
+    const view=_reprocessView(a);
     const currentParts=[];
-    if(currentEmail)currentParts.push(`E-mail atual: ${currentEmail}`);
-    if(currentDate)currentParts.push(`Data: ${currentDate}`);
-    barEl.style.width=String(perc)+'%';
-    progressEl.textContent=`Mensagens: ${current}/${total||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
+    if(view.currentEmail)currentParts.push(`E-mail atual: ${view.currentEmail}`);
+    if(view.currentDate)currentParts.push(`Data: ${view.currentDate}`);
+    barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
+    progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
     msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
     detailEl.textContent=String(a.detail||'Removendo labels do Botana para nova leitura.');
     _setManualBadge('ok','Em andamento');
@@ -2728,7 +2765,7 @@ function updManualAction(action,processing,maxMessages){
     const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use os botões acima para reprocessar labels ou executar um ciclo manual.';
     barEl.style.width=status==='success'&&Number(a.progress_total||0)>0?'100%':'0%';
     progressEl.textContent=status==='success'||status==='error'
-      ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
+      ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Limite pedido ${Number(a.requested_limit||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
       : 'Progresso: -';
     msgEl.textContent=String(a.message||'Nenhuma ação manual em andamento.');
     detailEl.textContent=String(a.detail||finishedText);
@@ -2771,7 +2808,7 @@ async function refresh(){
     updAccount(j.account||{});
     setPill(ok,reading);
     updDaily(j.daily_report||{});
-    updProcessing(j.processing||{}, Number(j.max_messages||100));
+    updProcessing(j.processing||{}, Number(j.max_messages||100), j.manual_action||{});
     updManualAction(j.manual_action||{}, j.processing||{}, Number(j.max_messages||100));
   }catch(err){
     document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);
