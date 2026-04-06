@@ -29,7 +29,7 @@ except Exception:
 
 # Se quiser que o script ignore tudo atÃ© achar a NF X, defina SKIP_UNTIL_NF
 SKIP_UNTIL_NF = os.environ.get("SKIP_UNTIL_NF") or None  # ex: "12345"
-SKIP_UNTIL_NF = "19843"
+# SKIP_UNTIL_NF = "19843"
 
 # Se quiser processar somente uma NF especÃ­fica (ignorar todas as outras), defina NF_ALVO
 NF_ALVO = os.environ.get("NF_ALVO") or None  # ex: "12345"

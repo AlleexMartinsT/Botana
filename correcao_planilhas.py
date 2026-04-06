@@ -97,26 +97,52 @@ def processarPlanilha(clienteSheets, idPlanilha, nomeMatriz, filtroAba: str = ""
                     
                     # EN: I fix BLT numbering issues in descriptions.
                     # BR: Eu corrijo problemas de numeração de BLT nas descrições.
+                    # Rule: All BLT numbers should be 5 digits starting with 1 (10001-19999 range).
                     def corrigirBlt(matchEncontrado):
                         textoPrefixo = matchEncontrado.group(1)
                         numeroBruto = matchEncontrado.group(2)
                         
-                        # EN: Case 1 - Full barcode typed out (very long number with many leading zeros).
-                        # BR: Caso 1 - Boleto digitado inteiramente (numero muito longo com muitos zeros).
-                        # Ex: "000000000000010097" → "10097"
-                        limpezaMatch = re.search(r'0{3,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroBruto)
-                        if limpezaMatch:
-                            return textoPrefixo + limpezaMatch.group(1)
+                        # EN: I separate the numeric part from any dash-suffix like "-8" or "-53".
+                        # BR: Eu separo a parte numérica de qualquer sufixo com traço como "-8" ou "-53".
+                        partesMatch = re.match(r'^(\d+)(-.+)?$', numeroBruto)
+                        if not partesMatch:
+                            return matchEncontrado.group(0)
                         
-                        # EN: Case 2 - Truncated BLT starting with 0 (the leading 1 was lost).
-                        # BR: Caso 2 - BLT truncado começando com 0 (o 1 inicial foi perdido).
-                        # Ex: "0097" → "10097", "0136" → "10136", "0152" → "10152"
-                        if re.match(r'^0\d{2,4}$', numeroBruto):
-                            return textoPrefixo + "1" + numeroBruto
+                        numPuro = partesMatch.group(1)
+                        sufixo = partesMatch.group(2) or ""
                         
+                        # EN: Already correct: 5 digits starting with 1 → don't touch.
+                        # BR: Já está correto: 5 dígitos começando com 1 → não mexo.
+                        if len(numPuro) == 5 and numPuro[0] == '1':
+                            return matchEncontrado.group(0)
+                        
+                        # EN: 4 digits starting with 0 → prepend 1 (the leading 1 was truncated).
+                        # BR: 4 dígitos começando com 0 → adiciono 1 na frente (o 1 inicial foi perdido).
+                        # Ex: 0005→10005, 0097→10097, 0240→10240
+                        if len(numPuro) == 4 and numPuro[0] == '0':
+                            return textoPrefixo + "1" + numPuro + sufixo
+                        
+                        # EN: 1 digit → was corrupted, pad to 5 digits (1000X).
+                        # BR: 1 dígito → foi corrompido, restauro para 5 dígitos (1000X).
+                        # Ex: 5→10005, 1→10001, 8→10008
+                        if len(numPuro) == 1:
+                            return textoPrefixo + "1000" + numPuro + sufixo
+                        
+                        # EN: 2 digits → was corrupted, pad to 5 digits (100XX).
+                        # BR: 2 dígitos → foi corrompido, restauro para 5 dígitos (100XX).
+                        if len(numPuro) == 2:
+                            return textoPrefixo + "100" + numPuro + sufixo
+                        
+                        # EN: 3 digits → was corrupted, pad to 5 digits (10XXX).
+                        # BR: 3 dígitos → foi corrompido, restauro para 5 dígitos (10XXX).
+                        if len(numPuro) == 3:
+                            return textoPrefixo + "10" + numPuro + sufixo
+                        
+                        # EN: Anything else (6+ digits) → don't touch for safety.
+                        # BR: Qualquer outra coisa (6+ dígitos) → não mexo por segurança.
                         return matchEncontrado.group(0)
                         
-                    novaDescricao = re.sub(r'(BLT[\s-]+)(\d[\d-]*\d)', corrigirBlt, descricaoAtual)
+                    novaDescricao = re.sub(r'(BLT[\s-]+)(\d+(?:-[\w]+)?)', corrigirBlt, descricaoAtual)
                     
                     if novaDescricao != descricaoAtual:
                         _adicionarLog("correcao", f"  Linha {numeroLinha} | De: {descricaoAtual} → Para: {novaDescricao}")
@@ -146,17 +172,21 @@ def atualizarHistoricosRetroativos():
                 changed = False
                 for i, line in enumerate(lines):
                     if 'HIST_JSON' in line:
-                        def corrigirBltTexto(matchEncontrado):
-                            textoPrefixo = matchEncontrado.group(1)
-                            numeroBruto = matchEncontrado.group(2)
-                            limpezaMatch = re.search(r'0{3,}([1-9][0-9]*(-[0-9A-Za-z]+)?)$', numeroBruto)
-                            if limpezaMatch:
-                                return textoPrefixo + limpezaMatch.group(1)
-                            if re.match(r'^0\d{2,4}$', numeroBruto):
-                                return textoPrefixo + "1" + numeroBruto
-                            return matchEncontrado.group(0)
+                        def corrigirBltTexto(m):
+                            pref = m.group(1)
+                            raw = m.group(2)
+                            pm = re.match(r'^(\d+)(-.+)?$', raw)
+                            if not pm: return m.group(0)
+                            n = pm.group(1)
+                            s = pm.group(2) or ""
+                            if len(n) == 5 and n[0] == '1': return m.group(0)
+                            if len(n) == 4 and n[0] == '0': return pref + "1" + n + s
+                            if len(n) == 1: return pref + "1000" + n + s
+                            if len(n) == 2: return pref + "100" + n + s
+                            if len(n) == 3: return pref + "10" + n + s
+                            return m.group(0)
                         
-                        nl = re.sub(r'(BLT[\s-]+)(\d[\d-]*\d)', corrigirBltTexto, line)
+                        nl = re.sub(r'(BLT[\s-]+)(\d+(?:-[\w]+)?)', corrigirBltTexto, line)
                         if nl != line:
                             lines[i] = nl
                             changed = True
