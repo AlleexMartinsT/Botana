@@ -1672,9 +1672,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cell-pop{position:absolute;top:100%;left:0;background:#fffaf6;border:1px solid #e7c8a8;border-radius:8px;padding:6px;box-shadow:0 8px 20px rgba(21,11,6,.15);display:none;z-index:5;min-width:160px}
 .cell-pop button{width:100%;border:0;background:#fff1e3;padding:6px;border-radius:6px;cursor:pointer;font-size:.78rem;color:#5a311b}
 .cell-menu.open .cell-pop{display:block}
-.dup-row{background:rgba(255,193,7,.12)!important}
-.dup-row:hover{background:rgba(255,193,7,.2)!important}
-.dup-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:.7rem;font-weight:700;background:#fff3cd;color:#856404;border:1px solid #ffc107;margin-left:4px}
+.dup-row{background:rgba(220,53,69,.16)!important}
+.dup-row:hover{background:rgba(220,53,69,.24)!important}
+.dup-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:.7rem;font-weight:700;background:#fde7ea;color:#a61d2d;border:1px solid #dc3545;margin-left:4px}
 .del-btn{padding:4px 8px;border:1px solid #e0a0a0;border-radius:6px;background:#fdecec;color:#b42b2b;font-size:.75rem;font-weight:600;cursor:pointer;white-space:nowrap}
 .del-btn:hover{background:#f8d7d7;border-color:#c45050}
 .ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
