@@ -40,6 +40,7 @@ STOP_AFTER_NF = os.environ.get("STOP_AFTER_NF", "False").lower() in ("1", "true"
 
 stop_event = threading.Event()  # usado para parar o loop com seguranÃ§a
 running = False # indica se o loop principal estÃ¡ ativo
+_LOOP_THREAD = None
 last_status = {"ok": True, "message": "Aguardando", "at": None}
 APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
@@ -275,11 +276,11 @@ def _manual_action_busy_message() -> str:
 
 
 def _start_run_now_background() -> tuple[bool, dict]:
-    busy = _manual_action_busy_message()
-    if busy:
-        snap = _manual_action_snapshot()
+    snap = _manual_action_snapshot()
+    if bool(snap.get("active")):
         if not snap.get("message"):
-            snap["message"] = busy
+            label = str(snap.get("label") or "Acao manual").strip() or "Acao manual"
+            snap["message"] = f"{label} ja esta em andamento."
         return False, snap
     started, snap = _manual_action_begin(
         "run_now",
@@ -291,8 +292,26 @@ def _start_run_now_background() -> tuple[bool, dict]:
         return False, snap
 
     def _worker():
+        resume_loop = bool(running)
         try:
-            _manual_action_update(message="Execucao manual em andamento.")
+            if resume_loop:
+                _manual_action_update(
+                    message="Interrompendo ciclo automatico para executar agora.",
+                    detail="O loop automatico sera retomado depois da execucao manual.",
+                )
+                parar_verificacao(wait=True, timeout=120.0)
+                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                    _manual_action_finish(
+                        False,
+                        "Nao foi possivel executar agora.",
+                        detail="O ciclo automatico nao liberou a leitura a tempo.",
+                    )
+                    return
+            stop_event.clear()
+            _manual_action_update(
+                message="Execucao manual em andamento.",
+                detail="Acompanhe os contadores de leitura e lancamentos no painel.",
+            )
             ok, msg = executar_um_ciclo()
             proc = _process_snapshot().get("last", {})
             detail = (
@@ -301,9 +320,17 @@ def _start_run_now_background() -> tuple[bool, dict]:
                 f"XML: {int(proc.get('xmls', 0) or 0)} | "
                 f"Lancamentos: {int(proc.get('launched', 0) or 0)}"
             )
+            if resume_loop:
+                restarted = iniciar_verificacao()
+                detail = f"{detail} | Loop automatico {'retomado' if restarted else 'nao retomado'}."
             _manual_action_finish(ok, msg, detail=detail)
         except Exception as exc:
             logger.exception("Falha na execução manual em background: %s", exc)
+            if resume_loop:
+                try:
+                    iniciar_verificacao()
+                except Exception:
+                    logger.exception("Falha ao retomar loop automatico apos erro na execucao manual.")
             _manual_action_finish(False, "Erro na execucao manual.", detail=str(exc))
 
     threading.Thread(target=_worker, daemon=True, name="botana-run-now").start()
@@ -644,6 +671,7 @@ def processar_emails_enviados():
     page_token = None
     primeira_pagina = True
     interativo_cmd = bool(sys.stdin and sys.stdin.isatty())
+    abort_logged = False
     def _summary() -> dict:
         return {
             "messages": int(total_msgs),
@@ -660,7 +688,20 @@ def processar_emails_enviados():
             launched=total_processados,
         )
 
+    def _abort_if_requested() -> bool:
+        nonlocal abort_logged
+        if not _processing_abort_requested():
+            return False
+        if not abort_logged:
+            abort_logged = True
+            logger.info("Ciclo interrompido por solicitacao.")
+            escreverRelatorio(f"{_now()} - CICLO interrompido por solicitacao.")
+        _sync_progress()
+        return True
+
     while True:
+        if _abort_if_requested():
+            return _summary()
         msgs, next_page_token = buscarMessagesEnviadosPagina(
             service,
             max_results=batch_size,
@@ -676,6 +717,8 @@ def processar_emails_enviados():
         primeira_pagina = False
 
         for m in msgs:
+            if _abort_if_requested():
+                return _summary()
             total_msgs += 1
             _sync_progress()
             msg_id = m.get("id")
@@ -693,6 +736,8 @@ def processar_emails_enviados():
 
             # Processa todos os anexos baixados
             for arquivo in arquivos:
+                if _abort_if_requested():
+                    return _summary()
                 nome_arquivo = os.path.basename(arquivo)
 
                 try:
@@ -796,6 +841,8 @@ def processar_emails_enviados():
             # =============================
             # Marca o e-mail como processado
             # =============================
+            if _abort_if_requested():
+                return _summary()
             try:
                 marcar_mensagem_com_label(service, msg_id)
                 logger.info("E-mail %s marcado com 'XML Processado Botana'", msg_id)
@@ -812,6 +859,8 @@ def processar_emails_enviados():
             # =============================
             for dados_xml in dados_xmls:
                 # --- FILTRAGEM POR NF (para debug/anÃ¡lise isolada) ---
+                if _abort_if_requested():
+                    return _summary()
                 nf_num = str(dados_xml.get("nf", "")).strip()
 
                 # NF_ALVO: processa somente essa NF (ignora as outras)
@@ -866,6 +915,8 @@ def processar_emails_enviados():
 
                 # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
                 for idx, parcela in enumerate(parcelas):
+                    if _abort_if_requested():
+                        return _summary()
                     num_boleto = boletos_map[idx]
                     dados_parcela = dados_xml.copy()
                     dados_parcela.update({
@@ -886,6 +937,8 @@ def processar_emails_enviados():
 
                     # Tenta atualizar planilha com retry
                     for tentativa in range(5):
+                        if _abort_if_requested():
+                            return _summary()
                         try:
                             creds = Credentials.from_service_account_file(
                                 GOOGLE_CREDENTIALS_SHEETS,
@@ -952,7 +1005,7 @@ def processar_emails_enviados():
     return _summary()
 
 def main_loop():
-    global running, last_status, _NEXT_RUN_AT, _IS_READING
+    global running, last_status, _NEXT_RUN_AT, _IS_READING, _LOOP_THREAD
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     running = True
     logger.info("[Botana] Loop iniciado")
@@ -979,6 +1032,7 @@ def main_loop():
         if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
             break
     running = False
+    _LOOP_THREAD = None
     logger.info("[Botana] Loop finalizado")
 
 
@@ -1010,22 +1064,28 @@ def executar_um_ciclo():
 
 def iniciar_verificacao():
     """Inicia o loop principal em thread separada."""
-    global running
-    if running:
+    global running, _LOOP_THREAD
+    if running or (_LOOP_THREAD and _LOOP_THREAD.is_alive()):
         return False
     stop_event.clear()
     t = threading.Thread(target=main_loop, daemon=True, name="botana-loop")
+    _LOOP_THREAD = t
     t.start()
     return True
 
 
-def parar_verificacao():
+def parar_verificacao(wait: bool = False, timeout: float = 30.0):
     """Interrompe o loop principal."""
-    global running
-    if not running:
+    global running, _LOOP_THREAD
+    thread = _LOOP_THREAD
+    if not running and not (thread and thread.is_alive()):
         return False
     stop_event.set()
     running = False
+    if wait and thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(max(0.1, float(timeout or 0.1)))
+        if not thread.is_alive():
+            _LOOP_THREAD = None
     return True
 
 
@@ -1838,6 +1898,19 @@ def _scheduler_next_seconds() -> int:
     return max(0, int(_NEXT_RUN_AT - now))
 
 
+def _processing_abort_requested() -> bool:
+    return bool(stop_event.is_set())
+
+
+def _wait_for_processing_idle(timeout: float = 30.0) -> bool:
+    deadline = time.time() + max(0.5, float(timeout or 0))
+    while time.time() < deadline:
+        if not _reading_active():
+            return True
+        time.sleep(0.2)
+    return not _reading_active()
+
+
 def _reprocess_recent(days: int, max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
     service = _get_gmail_service_locked()
     label_id = ensure_label(service, LABEL_NAME)
@@ -2018,8 +2091,8 @@ pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-rad
 .h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;font-weight:700;color:#5b321c}
 .problem{color:#862818;font-size:.82rem;margin-top:4px}
 input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit}
-.cfg-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(120px,145px) minmax(230px,280px);gap:10px;align-items:stretch}
-.cfg-grid > .card{height:100%;display:flex;flex-direction:column}
+.cfg-grid{display:grid;grid-template-columns:minmax(560px,1fr) minmax(120px,145px) minmax(230px,280px);gap:10px;align-items:start}
+.cfg-grid > .card{height:auto;display:flex;flex-direction:column;align-self:start}
 .cfg-main{display:grid;gap:8px;flex:1}
 .cfg-main-card h3{text-align:center}
 .cfg-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;align-items:end;justify-items:center}

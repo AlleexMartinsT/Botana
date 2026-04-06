@@ -60,7 +60,9 @@ No `instances.json` do Hub, use:
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
 - Durante uma ação manual, os dois botões ficam desabilitados para evitar execuções concorrentes.
 - A execução manual usa os contadores de leitura/lotes já exibidos no painel para mostrar avanço do ciclo.
+- Se o loop automático estiver ativo, `Executar agora` interrompe esse ciclo, roda a execução manual e retoma o monitoramento no fim.
 - O reprocessamento mostra quantas mensagens foram encontradas, quantas já foram atualizadas e quantas falharam.
+- Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
 
 ## Histórico no painel
 
