@@ -1612,16 +1612,24 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-filters > div input,.hist-filters > div select{width:100%;text-align:center}
 .hist-filters .search-wide{grid-column:span 2}
 .table-wrap{width:100%;overflow:auto;border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb}
-.hist-table{width:100%;border-collapse:collapse;font-size:.82rem;table-layout:fixed}
-.hist-table th,.hist-table td{border-bottom:1px solid #edd4bc;padding:7px 8px;text-align:center;vertical-align:top;white-space:normal;word-break:break-word}
+.hist-table{width:100%;border-collapse:collapse;font-size:.8rem;table-layout:fixed}
+.hist-table th,.hist-table td{border-bottom:1px solid #edd4bc;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1}
 .hist-table th.sortable{cursor:pointer;user-select:none}
 .hist-table th.sortable:after{content:" <>";font-size:.75rem;color:#b0672d}
 .hist-table th.sortable.asc:after{content:" ^"}
 .hist-table th.sortable.desc:after{content:" v"}
-.hist-table td:last-child{max-width:360px;white-space:normal}
+.hist-table th:nth-child(1),.hist-table td:nth-child(1){width:150px}
+.hist-table th:nth-child(2),.hist-table td:nth-child(2){width:110px}
+.hist-table th:nth-child(3),.hist-table td:nth-child(3){width:100px}
+.hist-table th:nth-child(4),.hist-table td:nth-child(4){width:240px;text-align:left}
+.hist-table th:nth-child(5),.hist-table td:nth-child(5){width:90px}
+.hist-table th:nth-child(6),.hist-table td:nth-child(6){width:130px}
+.hist-table th:nth-child(7),.hist-table td:nth-child(7){width:130px}
+.hist-table th:nth-child(8),.hist-table td:nth-child(8){width:150px}
+.hist-table th:nth-child(9),.hist-table td:nth-child(9){width:110px}
 .cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center}
-.cell-btn{padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:left}
+.cell-btn{padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-btn:hover{text-decoration:underline}
 .cell-pop{position:absolute;top:100%;left:0;background:#fffaf6;border:1px solid #e7c8a8;border-radius:8px;padding:6px;box-shadow:0 8px 20px rgba(21,11,6,.15);display:none;z-index:5;min-width:160px}
 .cell-pop button{width:100%;border:0;background:#fff1e3;padding:6px;border-radius:6px;cursor:pointer;font-size:.78rem;color:#5a311b}
@@ -1768,29 +1776,27 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div><label>Data final</label><input id="hTo" type="date"/></div>
         <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente nÃºmeros"/></div>
         <div><label>CNPJ destinatÃ¡rio</label><input id="hDest" type="text" placeholder="Somente nÃºmeros"/></div>
-        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, descriÃ§Ã£o, aba"/></div>
+        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, aba"/></div>
         <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
         <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
+      <div class="muted" style="margin-top:8px">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada.</div>
       <div class="table-wrap" style="margin-top:10px">
         <table class="hist-table">
           <thead>
             <tr>
-              <th class="sortable" data-key="at">Data/Hora</th>
-              <th class="sortable" data-key="venc">Vencimento</th>
-              <th class="sortable" data-key="doc">Documento</th>
+              <th class="sortable" data-key="at">Data</th>
+              <th class="sortable" data-key="venc">Venc.</th>
+              <th class="sortable" data-key="doc">NF</th>
               <th class="sortable" data-key="cliente">Cliente</th>
-              <th class="sortable" data-key="desc">DescriÃ§Ã£o</th>
-              <th class="sortable" data-key="parcela">Parcela</th>
-              <th class="sortable" data-key="vparcela">Valor Parcela</th>
-              <th class="sortable" data-key="vtotal">Valor Total</th>
-              <th class="sortable" data-key="vpago">Valor Pago</th>
-              <th class="sortable" data-key="status">Status</th>
-              <th class="sortable" data-key="local">Planilha/Aba</th>
-              <th>Ações</th>
+              <th class="sortable" data-key="parcela">Parc.</th>
+              <th class="sortable" data-key="vparcela">Parcela</th>
+              <th class="sortable" data-key="vtotal">Total</th>
+              <th class="sortable" data-key="local">Aba</th>
+              <th>Ação</th>
             </tr>
           </thead>
-          <tbody id="hBody"><tr><td colspan="12">Sem dados</td></tr></tbody>
+          <tbody id="hBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -2015,6 +2021,19 @@ async function reauth(account){
 async function reprocess(){const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 function _fmtDateTime(v){if(!v)return '-';try{return new Date(v).toLocaleString('pt-BR');}catch(_){return String(v);}}
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
+function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
+function _compactClienteLabel(cliente,descricao){
+  const fonte=_compactSpaces(descricao||cliente||'');
+  if(!fonte)return '-';
+  const blt=(fonte.match(/\\bBLT[\\s:-]*(\\d+(?:-\\d+)*)\\b/i)||[])[1]||'';
+  let base=fonte.replace(/\\bBLT[\\s:-]*\\d+(?:-\\d+)*.*$/i,'').trim();
+  if(!base)base=fonte;
+  const palavras=base.split(/\\s+/).filter(Boolean);
+  const uteis=palavras.filter(p=>!/^(DE|DA|DO|DAS|DOS|E)$/i.test(p));
+  const escolhidas=(uteis.length?uteis:palavras).slice(0,blt?2:3).join(' ');
+  const nomeCurto=_compactSpaces(escolhidas||base);
+  return _compactSpaces(blt?`${nomeCurto} ${blt}`:nomeCurto);
+}
 function _toggleMenu(ev,btn){ev.stopPropagation();const wrap=btn.closest('.cell-menu');document.querySelectorAll('.cell-menu.open').forEach(x=>{if(x!==wrap)x.classList.remove('open');});wrap.classList.toggle('open');}
 async function _showCnpj(ev,btn){ev.stopPropagation();const cnpj=btn.getAttribute('data-cnpj')||'-';try{await navigator.clipboard.writeText(cnpj);}catch(_){}const wrap=btn.closest('.cell-menu');if(wrap)wrap.classList.remove('open');}
 document.addEventListener('click',()=>{document.querySelectorAll('.cell-menu.open').forEach(x=>x.classList.remove('open'));});
@@ -2039,13 +2058,10 @@ function _getSortValue(it,key){
   if(key==='at')return it.at||'';
   if(key==='venc')return it.vencimento||'';
   if(key==='doc')return it._doc||'';
-  if(key==='cliente')return it.cliente||'';
-  if(key==='desc')return it.descricao||'';
+  if(key==='cliente')return it._cliente_view||it.descricao||it.cliente||'';
   if(key==='parcela')return it.parcela||'';
   if(key==='vparcela')return Number(it.valor_parcela||0);
   if(key==='vtotal')return Number(it.valor_total||0);
-  if(key==='vpago')return Number(it.valor_pago||0);
-  if(key==='status')return it.status||'';
   if(key==='local')return it._local||'';
   return '';
 }
@@ -2060,18 +2076,20 @@ function _renderHistory(items){
     const nf=String(it.nf||it.numero||'').trim();
     const doc=nf?`NF ${nf}`:'-';
     const local=_fmtLocal(it.local_lancamento);
-    return {...it,_doc:doc,_local:local};
+    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
+    return {...it,_doc:doc,_local:local,_cliente_view:clienteView};
   });
-  if(!arr.length){body.innerHTML='<tr><td colspan="12">Sem dados para os filtros selecionados</td></tr>';return;}
+  if(!arr.length){body.innerHTML='<tr><td colspan="9">Sem dados para os filtros selecionados</td></tr>';return;}
   arr=_sortHist(arr);
   arr.forEach(it=>{
     const tr=document.createElement('tr');
     if(it.duplicata)tr.classList.add('dup-row');
     const emit=String(it.cnpj_emit||'-');
     const dupTag=it.duplicata?'<span class="dup-badge">DUPLICADA</span>':'';
-    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" onclick=\"_toggleMenu(event,this)\">${_esc(it.cliente||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
-    const delBtn=`<button class=\"del-btn\" onclick=\"deleteEntry('${_esc(it.nf||'')}','${_esc(it.parcela||'')}','${_esc(it.at||'')}')\">Excluir</button>`;
-    tr.innerHTML=`<td>${_fmtDateTime(it.at)}</td><td>${_esc(it.vencimento||'-')}</td><td>${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td>${_esc(it.descricao||'-')}</td><td>${_esc(it.parcela||'-')}</td><td>${_fmtMoney(it.valor_parcela)}</td><td>${_fmtMoney(it.valor_total)}</td><td>${_fmtMoney(it.valor_pago)}</td><td>${_esc(it.status||'-')}</td><td>${_esc(it._local)}</td><td>${delBtn}</td>`;
+    const tituloCliente=_compactSpaces(it.descricao||it.cliente||'-');
+    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" title=\"${_esc(tituloCliente)}\" onclick=\"_toggleMenu(event,this)\">${_esc(it._cliente_view||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
+    const delBtn=`<button class=\"del-btn\" title=\"Remove apenas este registro do histórico\" onclick=\"deleteEntry('${_esc(it.nf||'')}','${_esc(it.parcela||'')}','${_esc(it.at||'')}')\">Excluir</button>`;
+    tr.innerHTML=`<td title=\"${_esc(_fmtDateTime(it.at))}\">${_fmtDateTime(it.at)}</td><td title=\"${_esc(it.vencimento||'-')}\">${_esc(it.vencimento||'-')}</td><td title=\"${_esc(it._doc)}\">${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td title=\"${_esc(it.parcela||'-')}\">${_esc(it.parcela||'-')}</td><td title=\"${_esc(_fmtMoney(it.valor_parcela))}\">${_fmtMoney(it.valor_parcela)}</td><td title=\"${_esc(_fmtMoney(it.valor_total))}\">${_fmtMoney(it.valor_total)}</td><td title=\"${_esc(it._local)}\">${_esc(it._local)}</td><td>${delBtn}</td>`;
     body.appendChild(tr);
   });
 }
@@ -2106,12 +2124,12 @@ async function loadHistory(silent=false){
   }catch(err){
     if(!silent)console.warn('Erro ao carregar histórico:',err);
     const body=document.getElementById('hBody');
-    if(body)body.innerHTML='<tr><td colspan="12">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
 }
 async function deleteEntry(nf,parcela,at){
   if(!nf)return;
-  const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nEssa ação é permanente.`;
+  const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nIsso remove apenas o registro do histórico/relatório, não a linha da planilha.`;
   if(!confirm(msg))return;
   try{
     const r=await api('/api/history/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nf:nf,parcela:parcela,at:at})});

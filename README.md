@@ -51,3 +51,10 @@ No `instances.json` do Hub, use:
 - `repo_url: "https://github.com/AlleexMartinsT/Botana.git"`
 - `auto_clone_missing: true`
 - `start_args: ["main.py","--server","--host","127.0.0.1","--port","8865"]`
+
+## Histórico no painel
+
+- A aba `Histórico` exibe uma grade compacta, em linha única por registro, para facilitar leitura dentro do Hub.
+- A coluna `Cliente` usa uma versão resumida da `Descrição`, preservando o número do `BLT` quando existir.
+- As colunas `Descrição`, `Valor Pago` e `Status` não aparecem mais na grade principal.
+- O botão `Excluir` remove somente o registro do histórico/relatório (`relatorios/relatorio_*.txt`). Ele não apaga a linha original da planilha.
