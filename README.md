@@ -39,6 +39,8 @@ Sem iniciar o loop automático:
 - `POST /api/start`
 - `POST /api/stop`
 - `POST /api/run-now`
+- `POST /api/reprocess`
+- `GET /api/conferencia-parcelas`
 
 ## Integração com FinanceHub
 
@@ -52,6 +54,14 @@ No `instances.json` do Hub, use:
 - `auto_clone_missing: true`
 - `start_args: ["main.py","--server","--host","127.0.0.1","--port","8865"]`
 
+## Ações manuais no painel
+
+- Os botões `Executar agora` e `Remover labels para reprocessar` agora iniciam a ação em background e devolvem resposta visual imediata.
+- O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
+- Durante uma ação manual, os dois botões ficam desabilitados para evitar execuções concorrentes.
+- A execução manual usa os contadores de leitura/lotes já exibidos no painel para mostrar avanço do ciclo.
+- O reprocessamento mostra quantas mensagens foram encontradas, quantas já foram atualizadas e quantas falharam.
+
 ## Histórico no painel
 
 - A aba `Histórico` exibe uma grade compacta, em linha única por registro, para facilitar leitura dentro do Hub.
@@ -62,3 +72,10 @@ No `instances.json` do Hub, use:
 - Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
 - Registros com NF/parcela duplicadas ficam destacados em vermelho para facilitar a identificação.
 - O botão `Excluir` remove somente o registro do histórico/relatório (`relatorios/relatorio_*.txt`). Ele não apaga a linha original da planilha.
+
+## Conferência de parcelas
+
+- A aba `Conferência` resume por NF se a quantidade de parcelas lançadas bate com a quantidade esperada registrada no XML.
+- A varredura pode ser feita por `Mês do lançamento`, por `Faixa de NF` ou em `Tudo`.
+- O painel destaca NFs com parcelas faltando, duplicadas ou acima da quantidade esperada, com totais agregados no topo.
+- A conferência usa os eventos `HIST_JSON` gravados em `relatorios/relatorio_*.txt`, sem apagar ou regravar linhas da planilha.

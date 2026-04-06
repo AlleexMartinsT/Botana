@@ -64,6 +64,7 @@ _NEXT_RUN_AT = 0.0
 _GMAIL_SERVICE_LOCK = threading.Lock()
 _IS_READING = False
 _PROCESS_STATS_LOCK = threading.Lock()
+_PROCESS_EXEC_LOCK = threading.Lock()
 _PROCESS_STATS = {
     "current": {
         "active": False,
@@ -83,6 +84,21 @@ _PROCESS_STATS = {
         "launched": 0,
         "error": "",
     },
+}
+_MANUAL_ACTION_LOCK = threading.Lock()
+_MANUAL_ACTION = {
+    "active": False,
+    "kind": "",
+    "label": "",
+    "status": "idle",
+    "message": "Nenhuma acao manual em andamento.",
+    "detail": "",
+    "started_at": "",
+    "finished_at": "",
+    "progress_current": 0,
+    "progress_total": 0,
+    "changed": 0,
+    "failed": 0,
 }
 
 
@@ -182,6 +198,157 @@ def _process_snapshot() -> dict:
         "current": cur,
         "last": last,
     }
+
+
+def _manual_action_snapshot() -> dict:
+    with _MANUAL_ACTION_LOCK:
+        return dict(_MANUAL_ACTION)
+
+
+def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", progress_total: int = 0, **extra) -> tuple[bool, dict]:
+    with _MANUAL_ACTION_LOCK:
+        if bool(_MANUAL_ACTION.get("active")):
+            return False, dict(_MANUAL_ACTION)
+        _MANUAL_ACTION.update(
+            {
+                "active": True,
+                "kind": str(kind or "").strip(),
+                "label": str(label or "").strip(),
+                "status": "running",
+                "message": str(message or "").strip() or "Acao manual em andamento.",
+                "detail": str(detail or "").strip(),
+                "started_at": datetime.now().isoformat(),
+                "finished_at": "",
+                "progress_current": 0,
+                "progress_total": max(0, int(progress_total or 0)),
+                "changed": 0,
+                "failed": 0,
+            }
+        )
+        for key, value in extra.items():
+            _MANUAL_ACTION[key] = value
+        return True, dict(_MANUAL_ACTION)
+
+
+def _manual_action_update(
+    *,
+    message: str | None = None,
+    detail: str | None = None,
+    progress_current: int | None = None,
+    progress_total: int | None = None,
+    **extra,
+) -> dict:
+    with _MANUAL_ACTION_LOCK:
+        if message is not None:
+            _MANUAL_ACTION["message"] = str(message or "").strip()
+        if detail is not None:
+            _MANUAL_ACTION["detail"] = str(detail or "").strip()
+        if progress_current is not None:
+            _MANUAL_ACTION["progress_current"] = max(0, int(progress_current))
+        if progress_total is not None:
+            _MANUAL_ACTION["progress_total"] = max(0, int(progress_total))
+        for key, value in extra.items():
+            _MANUAL_ACTION[key] = value
+        return dict(_MANUAL_ACTION)
+
+
+def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> dict:
+    with _MANUAL_ACTION_LOCK:
+        _MANUAL_ACTION["active"] = False
+        _MANUAL_ACTION["status"] = "success" if ok else "error"
+        _MANUAL_ACTION["message"] = str(message or "").strip() or ("Acao concluida." if ok else "Acao concluida com erro.")
+        _MANUAL_ACTION["detail"] = str(detail or "").strip()
+        _MANUAL_ACTION["finished_at"] = datetime.now().isoformat()
+        for key, value in extra.items():
+            _MANUAL_ACTION[key] = value
+        return dict(_MANUAL_ACTION)
+
+
+def _manual_action_busy_message() -> str:
+    state = _manual_action_snapshot()
+    if bool(state.get("active")):
+        label = str(state.get("label") or "Acao manual").strip()
+        return f"{label} ja esta em andamento."
+    if _reading_active():
+        return "Ja existe uma leitura/processamento em andamento."
+    return ""
+
+
+def _start_run_now_background() -> tuple[bool, dict]:
+    busy = _manual_action_busy_message()
+    if busy:
+        snap = _manual_action_snapshot()
+        if not snap.get("message"):
+            snap["message"] = busy
+        return False, snap
+    started, snap = _manual_action_begin(
+        "run_now",
+        "Execucao manual",
+        "Execucao manual iniciada.",
+        detail="Acompanhe os contadores de leitura e lancamentos no painel.",
+    )
+    if not started:
+        return False, snap
+
+    def _worker():
+        try:
+            _manual_action_update(message="Execucao manual em andamento.")
+            ok, msg = executar_um_ciclo()
+            proc = _process_snapshot().get("last", {})
+            detail = (
+                f"E-mails: {int(proc.get('messages', 0) or 0)} | "
+                f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
+                f"XML: {int(proc.get('xmls', 0) or 0)} | "
+                f"Lancamentos: {int(proc.get('launched', 0) or 0)}"
+            )
+            _manual_action_finish(ok, msg, detail=detail)
+        except Exception as exc:
+            logger.exception("Falha na execução manual em background: %s", exc)
+            _manual_action_finish(False, "Erro na execucao manual.", detail=str(exc))
+
+    threading.Thread(target=_worker, daemon=True, name="botana-run-now").start()
+    return True, snap
+
+
+def _start_reprocess_background(days: int, max_messages: int, mark_unread: bool) -> tuple[bool, dict]:
+    busy = _manual_action_busy_message()
+    if busy:
+        snap = _manual_action_snapshot()
+        if not snap.get("message"):
+            snap["message"] = busy
+        return False, snap
+    started, snap = _manual_action_begin(
+        "reprocess",
+        "Reprocessamento",
+        "Reprocessamento iniciado.",
+        detail=f"Ultimos {int(days)} dias | Limite {int(max_messages)} mensagens",
+    )
+    if not started:
+        return False, snap
+
+    def _progress(**kwargs):
+        _manual_action_update(**kwargs)
+
+    def _worker():
+        try:
+            result = _reprocess_recent(days=days, max_messages=max_messages, mark_unread=mark_unread, progress_cb=_progress)
+            friendly = f"Reprocessamento concluido: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas."
+            detail = f"Falhas: {result.get('failed', 0)} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
+            _manual_action_finish(
+                True,
+                friendly,
+                detail=detail,
+                progress_current=int(result.get("matched", 0) or 0),
+                progress_total=int(result.get("matched", 0) or 0),
+                changed=int(result.get("changed", 0) or 0),
+                failed=int(result.get("failed", 0) or 0),
+            )
+        except Exception as exc:
+            logger.exception("Falha no reprocessamento em background: %s", exc)
+            _manual_action_finish(False, "Erro no reprocessamento.", detail=str(exc))
+
+    threading.Thread(target=_worker, daemon=True, name="botana-reprocess").start()
+    return True, snap
 
 
 def _get_gmail_service_locked(timeout: float | None = None):
@@ -793,7 +960,8 @@ def main_loop():
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         try:
             _IS_READING = True
-            summary = processar_emails_enviados()
+            with _PROCESS_EXEC_LOCK:
+                summary = processar_emails_enviados()
             _process_finish(ok=True, error="")
             msg = (
                 f"Ciclo concluÃ­do: {int((summary or {}).get('messages', 0))} e-mails, "
@@ -818,7 +986,8 @@ def executar_um_ciclo():
     global last_status, _NEXT_RUN_AT, _IS_READING
     try:
         _IS_READING = True
-        summary = processar_emails_enviados()
+        with _PROCESS_EXEC_LOCK:
+            summary = processar_emails_enviados()
         _process_finish(ok=True, error="")
         msg = (
             f"ExecuÃ§Ã£o manual concluÃ­da: {int((summary or {}).get('messages', 0))} e-mails, "
@@ -1296,6 +1465,213 @@ def _history_from_reports(
     return out
 
 
+def _parse_report_datetime(dt_text: str):
+    t = str(dt_text or "").strip()
+    if not t:
+        return None
+    candidates = [
+        (t[:19], "%Y-%m-%d %H:%M:%S"),
+        (t[:19], "%Y-%m-%dT%H:%M:%S"),
+        (t[:10], "%Y-%m-%d"),
+        (t[:10], "%d/%m/%Y"),
+    ]
+    for cand, fmt in candidates:
+        try:
+            return datetime.strptime(cand, fmt)
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _history_parcela_key(item: dict) -> str:
+    parcela = _normalize_report_text(str((item or {}).get("parcela") or "")).strip().lower()
+    if parcela:
+        return f"parcela:{parcela}"
+    vencimento = _normalize_report_text(str((item or {}).get("vencimento") or "")).strip()
+    valor = 0.0
+    try:
+        valor = round(float((item or {}).get("valor_parcela") or 0), 2)
+    except Exception:
+        valor = 0.0
+    if vencimento or valor:
+        return f"fallback:{vencimento}|{valor:.2f}"
+    return f"raw:{_normalize_report_text(str((item or {}).get('at') or '')).strip()}"
+
+
+def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> dict:
+    filtro_normalizado = str(filtro or "mes").strip().lower()
+    if filtro_normalizado not in {"mes", "nfs", "todos"}:
+        filtro_normalizado = "mes"
+
+    itens = _history_from_reports(limit=1000000)
+    grupos = {}
+    for item in itens:
+        nf = str(item.get("nf") or "").strip()
+        if not nf:
+            continue
+        grupos.setdefault(nf, []).append(item)
+
+    try:
+        nf_inicio_num = int(re.sub(r"\D+", "", str(nf_inicio or ""))) if str(nf_inicio or "").strip() else None
+    except Exception:
+        nf_inicio_num = None
+    try:
+        nf_fim_num = int(re.sub(r"\D+", "", str(nf_fim or ""))) if str(nf_fim or "").strip() else None
+    except Exception:
+        nf_fim_num = None
+    if nf_inicio_num is not None and nf_fim_num is not None and nf_inicio_num > nf_fim_num:
+        nf_inicio_num, nf_fim_num = nf_fim_num, nf_inicio_num
+
+    def _matches_scope(nf: str, nf_items: list[dict]) -> bool:
+        if filtro_normalizado == "todos":
+            return True
+        if filtro_normalizado == "nfs":
+            try:
+                nf_num = int(re.sub(r"\D+", "", str(nf or "")))
+            except Exception:
+                return False
+            if nf_inicio_num is not None and nf_num < nf_inicio_num:
+                return False
+            if nf_fim_num is not None and nf_num > nf_fim_num:
+                return False
+            return True
+        if not mes:
+            return True
+        for entry in nf_items:
+            at = _parse_report_datetime(entry.get("at"))
+            if at and at.strftime("%Y-%m") == mes:
+                return True
+        return False
+
+    itens_saida = []
+    resumo = {
+        "nfs_verificadas": 0,
+        "nfs_ok": 0,
+        "nfs_com_divergencia": 0,
+        "parcelas_esperadas": 0,
+        "parcelas_lancadas": 0,
+        "parcelas_duplicadas": 0,
+    }
+
+    for nf, nf_items in grupos.items():
+        if not _matches_scope(nf, nf_items):
+            continue
+
+        parcelas_contagem = {}
+        cliente = ""
+        descricao = ""
+        aba = ""
+        local = ""
+        ultimo_at = ""
+        vencimentos = set()
+        qtd_esperada = 0
+
+        for item in nf_items:
+            chave_parcela = _history_parcela_key(item)
+            parcelas_contagem[chave_parcela] = parcelas_contagem.get(chave_parcela, 0) + 1
+            try:
+                qtd_item = int(item.get("qtd_parcelas") or 1)
+            except Exception:
+                qtd_item = 1
+            qtd_esperada = max(qtd_esperada, qtd_item)
+            if not cliente:
+                cliente = str(item.get("cliente") or "").strip()
+            if not descricao:
+                descricao = str(item.get("descricao") or "").strip()
+            if not aba:
+                aba = str(item.get("aba") or "").strip()
+            if not local:
+                local = str(item.get("local_lancamento") or "").strip()
+            venc = str(item.get("vencimento") or "").strip()
+            if venc:
+                vencimentos.add(venc)
+            at_text = str(item.get("at") or "").strip()
+            if at_text and at_text > ultimo_at:
+                ultimo_at = at_text
+
+        qtd_lancada = len(parcelas_contagem)
+        qtd_bruta = sum(parcelas_contagem.values())
+        qtd_duplicada = max(0, qtd_bruta - qtd_lancada)
+        qtd_faltando = max(0, qtd_esperada - qtd_lancada)
+        qtd_excedente = max(0, qtd_lancada - qtd_esperada)
+
+        duplicadas = []
+        parcelas = []
+        for item in nf_items:
+            chave_parcela = _history_parcela_key(item)
+            label = _normalize_report_text(str(item.get("parcela") or item.get("vencimento") or "-")).strip() or "-"
+            if parcelas_contagem.get(chave_parcela, 0) > 1 and label not in duplicadas:
+                duplicadas.append(label)
+            if label not in parcelas:
+                parcelas.append(label)
+
+        if qtd_faltando == 0 and qtd_excedente == 0 and qtd_duplicada == 0:
+            status = "ok"
+            status_label = "OK"
+        elif qtd_faltando > 0 and qtd_duplicada > 0:
+            status = "erro"
+            status_label = "Faltando + duplicada"
+        elif qtd_faltando > 0:
+            status = "erro"
+            status_label = "Faltando"
+        elif qtd_excedente > 0:
+            status = "erro"
+            status_label = "A mais"
+        else:
+            status = "aviso"
+            status_label = "Duplicada"
+
+        itens_saida.append(
+            {
+                "nf": nf,
+                "cliente": _normalize_report_text(cliente),
+                "descricao": _normalize_report_text(descricao),
+                "qtd_esperada": qtd_esperada,
+                "qtd_lancada": qtd_lancada,
+                "qtd_bruta": qtd_bruta,
+                "qtd_faltando": qtd_faltando,
+                "qtd_excedente": qtd_excedente,
+                "qtd_duplicada": qtd_duplicada,
+                "parcelas": parcelas,
+                "parcelas_duplicadas": duplicadas,
+                "vencimentos": sorted(vencimentos),
+                "ultimo_lancamento": ultimo_at,
+                "aba": _normalize_report_text(aba),
+                "local_lancamento": _normalize_report_text(local),
+                "status": status,
+                "status_label": status_label,
+            }
+        )
+
+        resumo["nfs_verificadas"] += 1
+        resumo["parcelas_esperadas"] += qtd_esperada
+        resumo["parcelas_lancadas"] += qtd_lancada
+        resumo["parcelas_duplicadas"] += qtd_duplicada
+        if status == "ok":
+            resumo["nfs_ok"] += 1
+        else:
+            resumo["nfs_com_divergencia"] += 1
+
+    itens_saida.sort(
+        key=lambda item: (
+            0 if item.get("status") == "erro" else 1 if item.get("status") == "aviso" else 2,
+            -int(re.sub(r"\D+", "", str(item.get("nf") or "0")) or 0),
+        )
+    )
+
+    return {
+        "filtro": filtro_normalizado,
+        "mes": mes,
+        "nf_inicio": nf_inicio_num,
+        "nf_fim": nf_fim_num,
+        "summary": resumo,
+        "items": itens_saida,
+    }
+
+
 def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
     """I remove a specific HIST_JSON entry from the report files.
     # Eu removo uma entrada HIST_JSON especifica dos arquivos de relatorio."""
@@ -1462,7 +1838,7 @@ def _scheduler_next_seconds() -> int:
     return max(0, int(_NEXT_RUN_AT - now))
 
 
-def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
+def _reprocess_recent(days: int, max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
     service = _get_gmail_service_locked()
     label_id = ensure_label(service, LABEL_NAME)
     after = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y/%m/%d")
@@ -1471,6 +1847,15 @@ def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
     messages = resp.get("messages", []) or []
     changed = 0
     failed = 0
+    if callable(progress_cb):
+        progress_cb(
+            progress_current=0,
+            progress_total=len(messages),
+            changed=changed,
+            failed=failed,
+            message=f"{len(messages)} mensagens encontradas para reprocessar.",
+            detail="Removendo label do Botana e ajustando nao lido, quando marcado.",
+        )
     for item in messages:
         msg_id = str(item.get("id", "")).strip()
         if not msg_id:
@@ -1481,6 +1866,15 @@ def _reprocess_recent(days: int, max_messages: int, mark_unread: bool) -> dict:
             changed += 1
         except Exception:
             failed += 1
+        if callable(progress_cb):
+            progress_cb(
+                progress_current=changed + failed,
+                progress_total=len(messages),
+                changed=changed,
+                failed=failed,
+                message=f"Reprocessando mensagens: {changed + failed} de {len(messages)}.",
+                detail=f"Atualizadas: {changed} | Falhas: {failed}",
+            )
     return {
         "ok": True,
         "matched": len(messages),
@@ -1599,6 +1993,7 @@ label{display:block;font-weight:600;color:#5c341c;font-size:.9rem}
 button{padding:9px 12px;border:0;border-radius:9px;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:700;cursor:pointer;font-size:.9rem}
 button.sec{background:linear-gradient(90deg,#7a4d30,#5b341f);color:#fff9f3}
 button.warn{background:linear-gradient(90deg,#bc2d2d,#8f2020);color:#fff}
+button:disabled{opacity:.62;cursor:not-allowed;filter:saturate(.8)}
 .inp{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8px;background:#fffdfb;font-family:inherit;width:145px}
 pre{margin:0;background:#fff7ef;border:1px dashed #cf9f78;padding:8px;border-radius:10px;overflow:auto;max-height:340px;white-space:pre-wrap}
 .kpi{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
@@ -1648,6 +2043,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
+.action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
+.action-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.action-title{font-size:.84rem;font-weight:700;color:#5b321c}
+.action-detail{font-size:.78rem;color:#6c4a35}
+.action-progress{font-size:.78rem;color:#6b4128}
 .hist-filters{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:end}
 .hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .hist-filters > div label{width:100%;text-align:center}
@@ -1666,6 +2066,29 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-table th.is-resizing{background:#ffe5cf}
 .col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
 .col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
+.audit-filters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;align-items:end}
+.audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.audit-filters > div label{width:100%;text-align:center}
+.audit-filters > div input,.audit-filters > div select{width:100%;text-align:center}
+.audit-toolbar{margin-top:8px;display:flex;justify-content:center}
+.audit-note{max-width:900px;text-align:center}
+.audit-summary{margin-top:10px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.audit-summary .k{border:1px solid #e2b58d;border-radius:10px;background:linear-gradient(180deg,#fff7ef,#fff1e3);padding:10px;text-align:center}
+.audit-summary .n{font-size:1.3rem;font-weight:800;color:#7a3d11}
+.audit-summary .t{font-size:.8rem;color:#6b4126}
+.audit-table{width:100%;min-width:1340px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
+.audit-table th,.audit-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.audit-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
+.audit-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.audit-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.audit-status{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
+.audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
+.audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
+.audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
+.audit-row-aviso{background:rgba(255,193,7,.12)!important}
+.audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
+.audit-row-erro{background:rgba(220,53,69,.14)!important}
+.audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
 .cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center;width:100%}
 .cell-btn{display:block;width:100%;padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-btn:hover{text-decoration:underline}
@@ -1682,8 +2105,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -1700,6 +2123,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
   <div class="tabs">
     <button id="tabBtnMain" type="button" class="tab-btn active" onclick="switchTab('main')">Painel</button>
     <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
+    <button id="tabBtnAudit" type="button" class="tab-btn" onclick="switchTab('audit')">Conferência</button>
     <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
   </div>
 
@@ -1799,8 +2223,20 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
-          <button onclick="reprocess()">Remover labels para reprocessar</button>
-          <button class="sec" onclick="runNow()">Executar agora</button>
+          <button id="reprocessBtn" onclick="reprocess()">Remover labels para reprocessar</button>
+          <button id="runNowBtn" class="sec" onclick="runNow()">Executar agora</button>
+        </div>
+        <div class="action-box">
+          <div class="action-head">
+            <span class="action-title" id="manualActionTitle">Ações manuais</span>
+            <span id="manualActionBadge" class="status-pill off"><span>•</span><span>Aguardando</span></span>
+          </div>
+          <div id="manualActionMsg" class="proc-line">Nenhuma ação manual em andamento.</div>
+          <div id="manualActionDetail" class="action-detail">Use os botões acima para reprocessar labels ou executar um ciclo manual.</div>
+          <div class="proc-progress">
+            <div class="proc-track"><div id="manualActionBar" class="proc-fill"></div></div>
+            <div id="manualActionProgress" class="action-progress">Progresso: -</div>
+          </div>
         </div>
       </article>
     </section>
@@ -1854,6 +2290,64 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
   </section>
 
+  <section id="tabAudit" class="tab-panel hidden">
+    <section class="card" style="margin-top:10px">
+      <h3>Conferência de parcelas lançadas</h3>
+      <div class="audit-filters">
+        <div>
+          <label>Modo</label>
+          <select id="aMode" onchange="toggleAuditFilters()">
+            <option value="mes">Mês do lançamento</option>
+            <option value="nfs">Faixa de NF</option>
+            <option value="todos">Tudo</option>
+          </select>
+        </div>
+        <div>
+          <label>Mês</label>
+          <input id="aMonth" type="month"/>
+        </div>
+        <div>
+          <label>NF inicial</label>
+          <input id="aNfStart" type="text" placeholder="49001"/>
+        </div>
+        <div>
+          <label>NF final</label>
+          <input id="aNfEnd" type="text" placeholder="49100"/>
+        </div>
+        <div style="display:flex;align-items:end"><button onclick="loadParcelAudit()">Conferir parcelas</button></div>
+      </div>
+      <div class="audit-toolbar">
+        <div class="muted audit-note">A conferência compara a quantidade esperada de parcelas do XML com as parcelas efetivamente lançadas no histórico, mostrando faltas e duplicidades por NF.</div>
+      </div>
+      <div class="audit-summary">
+        <div class="k"><div id="auditK1" class="n">0</div><div class="t">NFs verificadas</div></div>
+        <div class="k"><div id="auditK2" class="n">0</div><div class="t">Com divergência</div></div>
+        <div class="k"><div id="auditK3" class="n">0</div><div class="t">Parcelas esperadas</div></div>
+        <div class="k"><div id="auditK4" class="n">0</div><div class="t">Parcelas lançadas</div></div>
+        <div class="k"><div id="auditK5" class="n">0</div><div class="t">Duplicadas</div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="audit-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>NF</th>
+              <th>Cliente</th>
+              <th>Esperadas</th>
+              <th>Lançadas</th>
+              <th>Faltando</th>
+              <th>Duplicadas</th>
+              <th>Parcelas</th>
+              <th>Último lançamento</th>
+              <th>Aba</th>
+            </tr>
+          </thead>
+          <tbody id="aBody"><tr><td colspan="10">Sem dados</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
   <section id="tabDiag" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
       <h3>Diagnóstico</h3>
@@ -1902,27 +2396,33 @@ function _tickNext(){
 let _activeTab='main';
 function _tabFromLocation(){
   const h=String(window.location.hash||'').replace('#','').trim().toLowerCase();
-  if(h==='hist'||h==='diag'||h==='main') return h;
+  if(h==='hist'||h==='diag'||h==='main'||h==='audit') return h;
   const q=new URLSearchParams(window.location.search||'');
   const t=String(q.get('tab')||'').trim().toLowerCase();
-  if(t==='hist'||t==='diag'||t==='main') return t;
+  if(t==='hist'||t==='diag'||t==='main'||t==='audit') return t;
   return 'main';
 }
 function switchTab(tab){
-  const next=(tab==='hist'||tab==='diag')?tab:'main';
+  const next=(tab==='hist'||tab==='diag'||tab==='audit')?tab:'main';
   const changed=_activeTab!==next;
   const m=next==='main';
   const h=next==='hist';
+  const a=next==='audit';
   const d=next==='diag';
   document.getElementById('tabMain').classList.toggle('hidden',!m);
   document.getElementById('tabHist').classList.toggle('hidden',!h);
+  document.getElementById('tabAudit').classList.toggle('hidden',!a);
   document.getElementById('tabDiag').classList.toggle('hidden',!d);
   document.getElementById('tabBtnMain').classList.toggle('active',m);
   document.getElementById('tabBtnHist').classList.toggle('active',h);
+  document.getElementById('tabBtnAudit').classList.toggle('active',a);
   document.getElementById('tabBtnDiag').classList.toggle('active',d);
   _activeTab=next;
   if(next==='hist'){
     loadHistory().catch(()=>{});
+  }
+  if(next==='audit'){
+    loadParcelAudit(true).catch(()=>{});
   }
   const nextHash='#'+next;
   if(window.location.hash!==nextHash){
@@ -2024,6 +2524,69 @@ function updProcessing(proc,maxMessages){
   barFill.style.width=String(perc)+'%';
   barLabel.textContent=`Progresso: ${curV}/${maxV} (${perc}%)`;
 }
+function _setManualBadge(kind,label){
+  const el=document.getElementById('manualActionBadge');
+  if(!el)return;
+  el.className='status-pill '+kind;
+  el.innerHTML='<span>•</span><span>'+label+'</span>';
+}
+function updManualAction(action,processing,maxMessages){
+  const a=action||{};
+  const msgEl=document.getElementById('manualActionMsg');
+  const detailEl=document.getElementById('manualActionDetail');
+  const titleEl=document.getElementById('manualActionTitle');
+  const barEl=document.getElementById('manualActionBar');
+  const progressEl=document.getElementById('manualActionProgress');
+  const runBtn=document.getElementById('runNowBtn');
+  const repBtn=document.getElementById('reprocessBtn');
+  if(!msgEl||!detailEl||!titleEl||!barEl||!progressEl)return;
+  const active=!!a.active;
+  const kind=String(a.kind||'').trim();
+  const label=String(a.label||'Ações manuais').trim()||'Ações manuais';
+  titleEl.textContent=label;
+  if(active&&kind==='run_now'){
+    const cur=((processing||{}).current)||{};
+    const maxV=Math.max(1, Number(maxMessages||100));
+    let curV=Number(cur.messages||0);
+    if(!Number.isFinite(curV)||curV<0)curV=0;
+    const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/maxV)*100)));
+    barEl.style.width=String(perc)+'%';
+    progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+    msgEl.textContent=String(a.message||'Execução manual em andamento.');
+    detailEl.textContent=String(a.detail||'Leitura de e-mails e lançamentos em andamento.');
+    _setManualBadge('ok','Em andamento');
+  }else if(active&&kind==='reprocess'){
+    const total=Math.max(0, Number(a.progress_total||0));
+    const current=Math.max(0, Number(a.progress_current||0));
+    const perc=total>0?Math.max(6,Math.min(100,Math.round((current/total)*100))):18;
+    barEl.style.width=String(perc)+'%';
+    progressEl.textContent=`Mensagens: ${current}/${total||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+    msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
+    detailEl.textContent=String(a.detail||'Removendo labels do Botana para nova leitura.');
+    _setManualBadge('ok','Em andamento');
+  }else{
+    const status=String(a.status||'idle');
+    const finished=String(a.finished_at||'').trim();
+    const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use os botões acima para reprocessar labels ou executar um ciclo manual.';
+    barEl.style.width=status==='success'&&Number(a.progress_total||0)>0?'100%':'0%';
+    progressEl.textContent=status==='success'||status==='error'
+      ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
+      : 'Progresso: -';
+    msgEl.textContent=String(a.message||'Nenhuma ação manual em andamento.');
+    detailEl.textContent=String(a.detail||finishedText);
+    if(status==='success')_setManualBadge('off','Concluída');
+    else if(status==='error')_setManualBadge('err','Com erro');
+    else _setManualBadge('off','Aguardando');
+  }
+  if(runBtn){
+    runBtn.disabled=active;
+    runBtn.textContent=active&&kind==='run_now'?'Executando...':'Executar agora';
+  }
+  if(repBtn){
+    repBtn.disabled=active;
+    repBtn.textContent=active&&kind==='reprocess'?'Reprocessando...':'Remover labels para reprocessar';
+  }
+}
 async function refresh(){
   try{
     const j=await api('/api/state');
@@ -2041,6 +2604,7 @@ async function refresh(){
       account:(j.account||{}),
       scheduler:(j.scheduler||{}),
       processing:(j.processing||{}),
+      manual_action:(j.manual_action||{}),
       diagnostic:(j.diagnostic||{})
     };
     document.getElementById('details').textContent=JSON.stringify(diag,null,2);
@@ -2050,13 +2614,31 @@ async function refresh(){
     setPill(ok,reading);
     updDaily(j.daily_report||{});
     updProcessing(j.processing||{}, Number(j.max_messages||100));
+    updManualAction(j.manual_action||{}, j.processing||{}, Number(j.max_messages||100));
   }catch(err){
     document.getElementById('details').textContent=JSON.stringify({erro:String((err&&err.message)||err||'Falha ao atualizar estado')},null,2);
   }
 }
 async function startLoop(){await api('/api/start',{method:'POST'});refresh();}
 async function stopLoop(){await api('/api/stop',{method:'POST'});refresh();}
-async function runNow(){await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});refresh();}
+async function runNow(){
+  const btn=document.getElementById('runNowBtn');
+  if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
+  const msgEl=document.getElementById('manualActionMsg');
+  const detailEl=document.getElementById('manualActionDetail');
+  if(msgEl)msgEl.textContent='Solicitação enviada. Iniciando execução manual...';
+  if(detailEl)detailEl.textContent='O painel vai atualizar automaticamente quando o backend aceitar a execução.';
+  try{
+    const j=await api('/api/run-now',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({account:'principal'})});
+    if(j&&j.message&&msgEl)msgEl.textContent=String(j.message);
+    await refresh();
+  }catch(err){
+    if(msgEl)msgEl.textContent='Falha ao iniciar a execução manual.';
+    if(detailEl)detailEl.textContent=String(err&&err.message||err);
+    alert('Erro ao executar agora: '+(err&&err.message||err));
+    await refresh();
+  }
+}
 async function saveSettings(){const payload={gmail_filter_mode:document.getElementById('mode').value,gmail_max_pages:Number(document.getElementById('maxPages').value||3),gmail_page_size:Number(document.getElementById('pageSize').value||50),loop_interval_minutes:Number(document.getElementById('intervalMin').value||30)};await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
 async function countdown(sec){const ov=document.getElementById('ov');const c=document.getElementById('cnt');let n=Number(sec||5);if(c)c.textContent=String(n);if(ov)ov.classList.add('show');await new Promise((res)=>{const t=setInterval(()=>{n-=1;if(c)c.textContent=String(Math.max(n,0));if(n<=0){clearInterval(t);res();}},1000);});if(ov)ov.classList.remove('show');}
 async function reauth(account){
@@ -2070,7 +2652,25 @@ async function reauth(account){
     if(btn){btn.disabled=false;btn.textContent='Principal';}
   }
 }
-async function reprocess(){const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});refresh();}
+async function reprocess(){
+  const btn=document.getElementById('reprocessBtn');
+  if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
+  const msgEl=document.getElementById('manualActionMsg');
+  const detailEl=document.getElementById('manualActionDetail');
+  if(msgEl)msgEl.textContent='Solicitação enviada. Buscando mensagens para reprocessar...';
+  if(detailEl)detailEl.textContent='As labels serão removidas em background e o painel mostrará o progresso.';
+  try{
+    const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
+    const j=await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(j&&j.friendly&&msgEl)msgEl.textContent=String(j.friendly);
+    await refresh();
+  }catch(err){
+    if(msgEl)msgEl.textContent='Falha ao iniciar o reprocessamento.';
+    if(detailEl)detailEl.textContent=String(err&&err.message||err);
+    alert('Erro ao reprocessar: '+(err&&err.message||err));
+    await refresh();
+  }
+}
 function _fmtDateTime(v){if(!v)return '-';try{return new Date(v).toLocaleString('pt-BR');}catch(_){return String(v);}}
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
@@ -2252,6 +2852,70 @@ async function loadHistory(silent=false){
     if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
 }
+function toggleAuditFilters(){
+  const mode=((document.getElementById('aMode')||{}).value||'mes').trim();
+  const monthEl=document.getElementById('aMonth');
+  const startEl=document.getElementById('aNfStart');
+  const endEl=document.getElementById('aNfEnd');
+  const useMonth=mode==='mes';
+  const useNf=mode==='nfs';
+  if(monthEl)monthEl.disabled=!useMonth;
+  if(startEl)startEl.disabled=!useNf;
+  if(endEl)endEl.disabled=!useNf;
+}
+function _fmtAuditList(values){
+  const arr=(Array.isArray(values)?values:[]).map(v=>_compactSpaces(v)).filter(Boolean);
+  return arr.length?arr.join(', '):'-';
+}
+function _setAuditSummary(summary){
+  const s=summary||{};
+  [['auditK1','nfs_verificadas'],['auditK2','nfs_com_divergencia'],['auditK3','parcelas_esperadas'],['auditK4','parcelas_lancadas'],['auditK5','parcelas_duplicadas']].forEach(([id,key])=>{
+    const el=document.getElementById(id);
+    if(el)el.textContent=String(s[key]||0);
+  });
+}
+function _renderParcelAudit(items){
+  const body=document.getElementById('aBody');
+  if(!body)return;
+  const arr=Array.isArray(items)?items:[];
+  body.innerHTML='';
+  if(!arr.length){
+    body.innerHTML='<tr><td colspan="10">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
+    return;
+  }
+  arr.forEach(it=>{
+    const tr=document.createElement('tr');
+    if(it.status==='erro')tr.classList.add('audit-row-erro');
+    else if(it.status==='aviso')tr.classList.add('audit-row-aviso');
+    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
+    const parcelasTxt=_fmtAuditList(it.parcelas);
+    const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
+    const local=_fmtLocal(it.local_lancamento||it.aba||'-');
+    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(parcelasTxt)}">${_esc(parcelasTxt)}</td><td title="${_esc(_fmtDateTime(it.ultimo_lancamento))}">${_esc(_fmtDateTime(it.ultimo_lancamento))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    body.appendChild(tr);
+  });
+}
+async function loadParcelAudit(silent=false){
+  try{
+    const p=new URLSearchParams();
+    const mode=((document.getElementById('aMode')||{}).value||'mes').trim()||'mes';
+    const monthValue=((document.getElementById('aMonth')||{}).value||'').trim();
+    const nfStart=((document.getElementById('aNfStart')||{}).value||'').trim();
+    const nfEnd=((document.getElementById('aNfEnd')||{}).value||'').trim();
+    p.set('filtro',mode);
+    if(mode==='mes'&&monthValue)p.set('mes',monthValue);
+    if(mode==='nfs'&&nfStart)p.set('nf_inicio',nfStart);
+    if(mode==='nfs'&&nfEnd)p.set('nf_fim',nfEnd);
+    const j=await api('/api/conferencia-parcelas?'+p.toString());
+    _setAuditSummary(j&&j.summary||{});
+    _renderParcelAudit(j&&j.items||[]);
+  }catch(err){
+    if(!silent)console.warn('Erro ao carregar conferência:',err);
+    _setAuditSummary({});
+    const body=document.getElementById('aBody');
+    if(body)body.innerHTML='<tr><td colspan="10">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+  }
+}
 async function deleteEntry(nf,parcela,at){
   if(!nf)return;
   const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nIsso remove apenas o registro do histórico/relatório, não a linha da planilha.`;
@@ -2266,8 +2930,14 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
+document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
-refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
+const _auditMonthEl=document.getElementById('aMonth');
+if(_auditMonthEl&&!_auditMonthEl.value){
+  try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
+}
+toggleAuditFilters();
+refresh();loadHistory();loadParcelAudit(true);switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(()=>{if(_activeTab==='hist')loadHistory(true);if(_activeTab==='audit')loadParcelAudit(true);},10000);
 initHubBackButton();
 </script></body></html>"""
 
@@ -2285,7 +2955,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return user
             
             # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
-            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/clean-sheets", "/api/clean-sheets/log"]:
+            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/clean-sheets", "/api/clean-sheets/log"]:
                 return "hub_internal"
 
             if parsed_path.startswith("/api/"):
@@ -2378,6 +3048,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             "next_in_seconds": _scheduler_next_seconds(),
                         },
                         "processing": _process_snapshot(),
+                        "manual_action": _manual_action_snapshot(),
                         "diagnostic": {
                             "reading_source": str(reading_info.get("source", "")),
                             "reading_flag_raw": bool(reading_info.get("flag_raw", False)),
@@ -2400,6 +3071,18 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     return _json_response(self, 200, {"status": "success", **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"status": "error", "message": str(e)})
+
+            if parsed.path == "/api/conferencia-parcelas":
+                qs = parse_qs(parsed.query or "")
+                filtro = (qs.get("filtro", [""])[0] or "mes").strip()
+                mes = (qs.get("mes", [""])[0] or "").strip()
+                nf_inicio = (qs.get("nf_inicio", [""])[0] or "").strip()
+                nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
+                try:
+                    resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim)
+                    return _json_response(self, 200, {"ok": True, **resultado})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
 
             if parsed.path == "/api/clean-sheets/log":
                 qs = parse_qs(parsed.query or "")
@@ -2484,8 +3167,29 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
                 if parsed.path == "/api/run-now":
                     _ = str(data.get("account", "principal"))
-                    ok, msg = executar_um_ciclo()
-                    return _json_response(self, 200 if ok else 500, {"ok": bool(ok), "message": msg})
+                    started, info = _start_run_now_background()
+                    if not started:
+                        msg = _manual_action_busy_message() or str((info or {}).get("message") or "Não foi possível iniciar a execução manual.")
+                        return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
+                    return _json_response(self, 202, {"ok": True, "started": True, "message": "Execução manual iniciada.", "action": info})
+                if parsed.path == "/api/reprocess":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
+                    try:
+                        days = max(1, min(365, int(data.get("days", 30))))
+                    except Exception:
+                        days = 30
+                    try:
+                        max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
+                    except Exception:
+                        max_messages = 100
+                    mark_unread = bool(data.get("mark_unread", True))
+                    started, info = _start_reprocess_background(days=days, max_messages=max_messages, mark_unread=mark_unread)
+                    if not started:
+                        msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
+                        return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
+                    friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens dos ultimos {days} dias"
+                    return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
@@ -2499,21 +3203,6 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         }
                     )
                     return _json_response(self, 200, {"ok": True, "message": "ConfiguraÃ§Ã£o salva"})
-                if parsed.path == "/api/reprocess":
-                    if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
-                    try:
-                        days = max(1, min(365, int(data.get("days", 30))))
-                    except Exception:
-                        days = 30
-                    try:
-                        max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
-                    except Exception:
-                        max_messages = 100
-                    mark_unread = bool(data.get("mark_unread", True))
-                    result = _reprocess_recent(days=days, max_messages=max_messages, mark_unread=mark_unread)
-                    friendly = f"Reprocessamento concluÃ­do: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas"
-                    return _json_response(self, 200, {"ok": True, "result": result, "friendly": friendly})
                 if parsed.path == "/api/reauth":
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
