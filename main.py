@@ -1072,6 +1072,11 @@ def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str, emp
 def _history_from_reports(
     limit: int = 300,
     query: str = "",
+    at_filter: str = "",
+    venc_filter: str = "",
+    nf_filter: str = "",
+    cliente_filter: str = "",
+    aba_filter: str = "",
     dt_from: str = "",
     dt_to: str = "",
     cnpj_emit: str = "",
@@ -1079,6 +1084,11 @@ def _history_from_reports(
 ) -> list[dict]:
     out = []
     q = str(query or "").strip().lower()
+    f_at = str(at_filter or "").strip().lower()
+    f_venc = str(venc_filter or "").strip().lower()
+    f_nf = str(nf_filter or "").strip().lower()
+    f_cliente = str(cliente_filter or "").strip().lower()
+    f_aba = str(aba_filter or "").strip().lower()
     f_emit = re.sub(r"\D+", "", str(cnpj_emit or ""))
     f_dest = re.sub(r"\D+", "", str(cnpj_dest or ""))
     try:
@@ -1174,19 +1184,51 @@ def _history_from_reports(
                 if f_dest and f_dest not in dest:
                     continue
 
-                nf = str(payload.get("nf") or "").strip()
-                cliente = str(payload.get("cliente") or "").strip()
-                descricao = str(payload.get("descricao") or "").strip()
-                vencimento = str(payload.get("vencimento") or "").strip()
-                parcela = str(payload.get("parcela") or "").strip()
+                nf = _normalize_report_text(str(payload.get("nf") or "").strip())
+                cliente = _normalize_report_text(str(payload.get("cliente") or "").strip())
+                descricao = _normalize_report_text(str(payload.get("descricao") or "").strip())
+                vencimento = _normalize_report_text(str(payload.get("vencimento") or "").strip())
+                parcela = _normalize_report_text(str(payload.get("parcela") or "").strip())
                 valor_parcela = _safe_float(payload.get("valor_parcela"))
                 valor_total = _safe_float(payload.get("valor_total"))
                 valor_pago = payload.get("valor_pago")
-                valor_pago_text = str(valor_pago or "").strip()
-                status = str(payload.get("status") or "").strip()
-                sheet_title = str(payload.get("sheet_title") or "").strip()
-                aba = str(payload.get("aba") or "").strip()
+                valor_pago_text = _normalize_report_text(str(valor_pago or "").strip())
+                status = _normalize_report_text(str(payload.get("status") or "").strip())
+                sheet_title = _normalize_report_text(str(payload.get("sheet_title") or "").strip())
+                aba = _normalize_report_text(str(payload.get("aba") or "").strip())
                 local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/RelatÃ³rio"
+
+                at_search_parts = [at]
+                try:
+                    at_dt = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                    at_search_parts.extend(
+                        [
+                            at_dt.strftime("%d/%m/%Y"),
+                            at_dt.strftime("%H:%M"),
+                            at_dt.strftime("%d/%m/%Y %H:%M"),
+                            at_dt.strftime("%d/%m/%Y, %H:%M:%S"),
+                            at_dt.strftime("%Y-%m-%d"),
+                            at_dt.strftime("%Y-%m-%d %H:%M"),
+                        ]
+                    )
+                except Exception:
+                    pass
+                if f_at:
+                    hay_at = " ".join(x for x in at_search_parts if x).lower()
+                    if f_at not in hay_at:
+                        continue
+                if f_venc and f_venc not in vencimento.lower():
+                    continue
+                if f_nf and f_nf not in nf.lower():
+                    continue
+                if f_cliente:
+                    hay_cliente = " ".join([cliente, descricao]).lower()
+                    if f_cliente not in hay_cliente:
+                        continue
+                if f_aba:
+                    hay_aba = " ".join([sheet_title, aba, local]).lower()
+                    if f_aba not in hay_aba:
+                        continue
 
                 item = {
                     "type": "boleto_lancado",
@@ -1457,7 +1499,7 @@ def _reauthenticate_gmail() -> dict:
         pass
     _get_gmail_service_locked()
     _connected_email(force=True)
-    return {"ok": True, "message": "ReautenticaÃ§Ã£o concluÃ­da"}
+    return {"ok": True, "message": "Reautenticação concluída"}
 
 
 
@@ -1483,8 +1525,8 @@ button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;b
 </style></head><body>
 <section class="card">
 <h1>Acesso ao Botana</h1>
-<p>Entre com usuÃ¡rio e senha para continuar</p>
-<label>UsuÃ¡rio</label><input id="u" type="text" autocomplete="username"/>
+<p>Entre com usuário e senha para continuar</p>
+<label>Usuário</label><input id="u" type="text" autocomplete="username"/>
 <label>Senha</label><input id="p" type="password" autocomplete="current-password"/>
 <button id="b" onclick="login()">Entrar</button>
 <button id="hubBackLogin" class="btn-sec hidden" type="button" onclick="backToHub()">Voltar ao HUB</button>
@@ -1514,7 +1556,7 @@ async function login(){
     const r=await fetch(_url('/api/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     const j=await r.json();
     if(r.ok&&j.ok){window.location.href=_url('/');return;}
-    m.textContent=j.message||'UsuÃ¡rio ou senha invÃ¡lidos';
+    m.textContent=j.message||'Usuário ou senha inválidos';
   }catch(_){
     m.textContent='Falha ao conectar com o servidor';
   }finally{b.disabled=false;}
@@ -1606,30 +1648,26 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
-.hist-filters{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:8px;align-items:end}
+.hist-filters{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:end}
 .hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .hist-filters > div label{width:100%;text-align:center}
 .hist-filters > div input,.hist-filters > div select{width:100%;text-align:center}
-.hist-filters .search-wide{grid-column:span 2}
-.table-wrap{width:100%;overflow:auto;border:1px solid #e4c6a7;border-radius:10px;background:#fffdfb}
-.hist-table{width:100%;border-collapse:collapse;font-size:.8rem;table-layout:fixed}
-.hist-table th,.hist-table td{border-bottom:1px solid #edd4bc;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1}
+.table-wrap{width:100%;overflow:auto;border:1px solid #d9af86;border-radius:10px;background:#fffdfb;box-shadow:inset 0 0 0 1px rgba(217,175,134,.22)}
+.hist-toolbar{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.hist-note{flex:1 1 420px}
+.hist-reset-btn{padding:6px 10px;font-size:.78rem}
+.hist-table{width:100%;min-width:1240px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
+.hist-table th,.hist-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;padding-right:18px;border-bottom:2px solid #cf9c73;overflow:visible}
 .hist-table th.sortable{cursor:pointer;user-select:none}
-.hist-table th.sortable:after{content:" <>";font-size:.75rem;color:#b0672d}
-.hist-table th.sortable.asc:after{content:" ^"}
-.hist-table th.sortable.desc:after{content:" v"}
-.hist-table th:nth-child(1),.hist-table td:nth-child(1){width:150px}
-.hist-table th:nth-child(2),.hist-table td:nth-child(2){width:110px}
-.hist-table th:nth-child(3),.hist-table td:nth-child(3){width:100px}
-.hist-table th:nth-child(4),.hist-table td:nth-child(4){width:240px;text-align:left}
-.hist-table th:nth-child(5),.hist-table td:nth-child(5){width:90px}
-.hist-table th:nth-child(6),.hist-table td:nth-child(6){width:130px}
-.hist-table th:nth-child(7),.hist-table td:nth-child(7){width:130px}
-.hist-table th:nth-child(8),.hist-table td:nth-child(8){width:150px}
-.hist-table th:nth-child(9),.hist-table td:nth-child(9){width:110px}
-.cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center}
-.cell-btn{padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:left;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hist-table th.sortable:after{content:""}
+.hist-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.hist-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.hist-table th.is-resizing{background:#ffe5cf}
+.col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
+.col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
+.cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center;width:100%}
+.cell-btn{display:block;width:100%;padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-btn:hover{text-decoration:underline}
 .cell-pop{position:absolute;top:100%;left:0;background:#fffaf6;border:1px solid #e7c8a8;border-radius:8px;padding:6px;box-shadow:0 8px 20px rgba(21,11,6,.15);display:none;z-index:5;min-width:160px}
 .cell-pop button{width:100%;border:0;background:#fff1e3;padding:6px;border-radius:6px;cursor:pointer;font-size:.78rem;color:#5a311b}
@@ -1647,22 +1685,22 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}}
 </style></head><body>
-<div id="ov" class="ov"><div class="ovb"><h4>ReautenticaÃ§Ã£o em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticaÃ§Ã£o comeÃ§arÃ¡ em:</p><div id="cnt" class="cnt">5</div></div></div>
+<div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
   <section class="top">
     <span>Botana - Painel de Controle MVA</span>
     <div class="top-right">
-      <span id="who" class="whoami">UsuÃ¡rio: -</span>
+      <span id="who" class="whoami">Usuário: -</span>
       <button id="backHubBtn" class="logout-btn hub-back-btn hidden" onclick="goHub()">Voltar ao HUB</button>
       <button class="logout-btn" onclick="logout()">Sair</button>
-      <span id="pill" class="status-pill off"><span>â—</span><span>Aguardando</span></span>
+      <span id="pill" class="status-pill off"><span>•</span><span>Aguardando</span></span>
     </div>
   </section>
 
   <div class="tabs">
     <button id="tabBtnMain" type="button" class="tab-btn active" onclick="switchTab('main')">Painel</button>
-    <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">HistÃ³rico</button>
-    <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">DiagnÃ³stico</button>
+    <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
+    <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
   </div>
 
   <section id="tabMain" class="tab-panel">
@@ -1672,14 +1710,14 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="s">
           <div class="h">
             <span>Conta Botana</span>
-            <span id="accBadge" class="status-pill off"><span>â—</span><span>Aguardando</span></span>
+            <span id="accBadge" class="status-pill off"><span>•</span><span>Aguardando</span></span>
           </div>
           <div id="accEmail" class="muted">E-mail conectado: -</div>
           <div id="accDetail" class="muted">Aguardando leitura</div>
           <div id="accProblem" class="problem hidden">-</div>
         </div>
       </div>
-      <div id="cool" class="muted" style="margin-top:8px">PrÃ³xima verificaÃ§Ã£o automÃ¡tica: -</div>
+      <div id="cool" class="muted" style="margin-top:8px">Próxima verificação automática: -</div>
       <div class="proc-grid">
         <div id="procRun" class="proc-line">Loop: -</div>
         <div class="proc-progress">
@@ -1687,49 +1725,49 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <div id="procBarLabel" class="proc-label">Progresso: 0/0 (0%)</div>
         </div>
         <div id="procNow" class="proc-line">Ciclo atual: -</div>
-        <div id="procLast" class="proc-line">Ãšltimo ciclo: -</div>
+        <div id="procLast" class="proc-line">Último ciclo: -</div>
       </div>
     </section>
 
     <section class="card">
-      <h3>RelatÃ³rios diÃ¡rios</h3>
+      <h3>Relatórios diários</h3>
       <div class="kpi daily">
         <div class="k"><div id="kp1" class="n">0</div><div class="t">Processados</div></div>
         <div class="k"><div id="kp2" class="n">0</div><div class="t">Ignorados</div></div>
         <div class="k"><div id="kp3" class="n">0</div><div class="t">Avisos no ciclo</div></div>
         <div class="k"><div id="kp4" class="n">0</div><div class="t">Avisos no dia</div></div>
       </div>
-      <div id="rmeta" class="muted rmeta">Sem relatÃ³rio encontrado ainda</div>
+      <div id="rmeta" class="muted rmeta">Sem relatório encontrado ainda</div>
       <div class="lists">
-        <div class="box"><h4>Ãšltimos processados</h4><ul id="lp"><li>Sem itens</li></ul></div>
-        <div class="box"><h4>Ãšltimos ignorados</h4><ul id="li"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Últimos processados</h4><ul id="lp"><li>Sem itens</li></ul></div>
+        <div class="box"><h4>Últimos ignorados</h4><ul id="li"><li>Sem itens</li></ul></div>
         <div class="box"><h4>Avisos recentes</h4><ul id="la"><li>Sem itens</li></ul></div>
       </div>
     </section>
 
     <section class="cfg-grid">
       <article class="card cfg-main-card">
-        <h3>ConfiguraÃ§Ã£o do Gmail</h3>
+        <h3>Configuração do Gmail</h3>
         <div class="cfg-main">
           <div class="cfg-fields">
             <div>
-              <label>PerÃ­odo</label>
+              <label>Período</label>
               <select id="mode" class="mode-wide">
-                <option value="last_15_days">Ãšltimos 15 dias</option>
-                <option value="last_30_days">Ãšltimos 30 dias</option>
-                <option value="last_45_days">Ãšltimos 45 dias</option>
-                <option value="last_60_days">Ãšltimos 60 dias</option>
+                <option value="last_15_days">Últimos 15 dias</option>
+                <option value="last_30_days">Últimos 30 dias</option>
+                <option value="last_45_days">Últimos 45 dias</option>
+                <option value="last_60_days">Últimos 60 dias</option>
                 <option value="current_week">Semana atual</option>
-                <option value="previous_month">MÃªs anterior</option>
-                <option value="current_and_previous_month">MÃªs atual + mÃªs anterior</option>
+                <option value="previous_month">Mês anterior</option>
+                <option value="current_and_previous_month">Mês atual + mês anterior</option>
               </select>
             </div>
             <div>
-              <label>MÃ¡x pÃ¡ginas</label>
+              <label>Máx páginas</label>
               <input id="maxPages" class="num-sm" type="number" min="1" max="20"/>
             </div>
             <div>
-              <label>Tamanho da pÃ¡gina</label>
+              <label>Tamanho da página</label>
               <input id="pageSize" class="num-sm" type="number" min="1" max="500"/>
             </div>
             <div>
@@ -1737,12 +1775,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <input id="intervalMin" class="num-sm" type="number" min="1" max="720"/>
             </div>
           </div>
-          <div class="cfg-save"><button onclick="saveSettings()">Salvar configuraÃ§Ã£o</button></div>
-          <div class="cfg-status"><label>Status da Ãºltima execuÃ§Ã£o</label><input id="last" type="text" readonly value="-"/></div>
+          <div class="cfg-save"><button onclick="saveSettings()">Salvar configuração</button></div>
+          <div class="cfg-status"><label>Status da última execução</label><input id="last" type="text" readonly value="-"/></div>
         </div>
       </article>
       <article class="card auth-card">
-        <h3>AutenticaÃ§Ã£o</h3>
+        <h3>Autenticação</h3>
         <div class="btns">
           <button id="reauthBtn" class="sec" onclick="reauth('principal')">Principal</button>
         </div>
@@ -1751,7 +1789,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <h3>Reprocessar e-mails</h3>
         <div class="reproc-grid">
           <div>
-            <label>Dias para trÃ¡s</label>
+            <label>Dias para trás</label>
             <input id="days" type="number" value="30" min="1" max="365"/>
           </div>
           <div>
@@ -1759,7 +1797,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como nÃ£o lido</label>
+        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
           <button onclick="reprocess()">Remover labels para reprocessar</button>
           <button class="sec" onclick="runNow()">Executar agora</button>
@@ -1770,30 +1808,44 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabHist" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>HistÃ³rico de processamento e lanÃ§amentos</h3>
+      <h3>Histórico de processamento e lançamentos</h3>
       <div class="hist-filters">
-        <div><label>Data inicial</label><input id="hFrom" type="date"/></div>
-        <div><label>Data final</label><input id="hTo" type="date"/></div>
-        <div><label>CNPJ emitente</label><input id="hEmit" type="text" placeholder="Somente nÃºmeros"/></div>
-        <div><label>CNPJ destinatÃ¡rio</label><input id="hDest" type="text" placeholder="Somente nÃºmeros"/></div>
-        <div class="search-wide"><label>Busca</label><input id="hQuery" type="text" placeholder="Cliente, NF, aba"/></div>
+        <div><label>Data / Horário</label><input id="hAt" type="text" placeholder="06/04/2026 12:30 ou 2026-04-06"/></div>
+        <div><label>Vencimento</label><input id="hVenc" type="date"/></div>
+        <div><label>NF</label><input id="hNf" type="text" placeholder="49001"/></div>
+        <div><label>Cliente</label><input id="hCliente" type="text" placeholder="Nome curto ou completo"/></div>
+        <div><label>Aba</label><input id="hAba" type="text" placeholder="Janeiro ou MVA/Janeiro"/></div>
         <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
         <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
-      <div class="muted" style="margin-top:8px">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada.</div>
+      <div class="hist-toolbar">
+        <div class="muted hist-note">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada. Arraste a divisória do cabeçalho para reajustar as colunas.</div>
+        <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
+      </div>
       <div class="table-wrap" style="margin-top:10px">
         <table class="hist-table">
+          <colgroup>
+            <col id="histCol-at" style="width:150px"/>
+            <col id="histCol-venc" style="width:110px"/>
+            <col id="histCol-doc" style="width:100px"/>
+            <col id="histCol-cliente" style="width:240px"/>
+            <col id="histCol-parcela" style="width:90px"/>
+            <col id="histCol-vparcela" style="width:130px"/>
+            <col id="histCol-vtotal" style="width:130px"/>
+            <col id="histCol-local" style="width:150px"/>
+            <col id="histCol-acao" style="width:110px"/>
+          </colgroup>
           <thead>
             <tr>
-              <th class="sortable" data-key="at">Data</th>
-              <th class="sortable" data-key="venc">Venc.</th>
-              <th class="sortable" data-key="doc">NF</th>
-              <th class="sortable" data-key="cliente">Cliente</th>
-              <th class="sortable" data-key="parcela">Parc.</th>
-              <th class="sortable" data-key="vparcela">Parcela</th>
-              <th class="sortable" data-key="vtotal">Total</th>
-              <th class="sortable" data-key="local">Aba</th>
-              <th>Ação</th>
+              <th class="sortable" data-key="at" data-colid="at">Data</th>
+              <th class="sortable" data-key="venc" data-colid="venc">Venc.</th>
+              <th class="sortable" data-key="doc" data-colid="doc">NF</th>
+              <th class="sortable" data-key="cliente" data-colid="cliente">Cliente</th>
+              <th class="sortable" data-key="parcela" data-colid="parcela">Parc.</th>
+              <th class="sortable" data-key="vparcela" data-colid="vparcela">Parcela</th>
+              <th class="sortable" data-key="vtotal" data-colid="vtotal">Total</th>
+              <th class="sortable" data-key="local" data-colid="local">Aba</th>
+              <th data-colid="acao">Ação</th>
             </tr>
           </thead>
           <tbody id="hBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
@@ -1804,7 +1856,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabDiag" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>DiagnÃ³stico</h3>
+      <h3>Diagnóstico</h3>
       <pre id="details">-</pre>
     </section>
   </section>
@@ -1826,7 +1878,7 @@ function goHub(){
   window.location.assign(target);
 }
 function initHubBackButton(){const b=document.getElementById('backHubBtn');if(!b)return;if(_BASE_PREFIX)b.classList.remove('hidden');else b.classList.add('hidden');}
-async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('nÃ£o autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
+async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('não autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
 let _nextRemain=0;
 function _fmtSec(total){
   const t=Math.max(0, Number(total||0));
@@ -1841,10 +1893,10 @@ function _tickNext(){
   const el=document.getElementById('cool');
   if(!el) return;
   if(_nextRemain>0){
-    el.textContent='PrÃ³xima verificaÃ§Ã£o automÃ¡tica em '+_fmtSec(_nextRemain);
+    el.textContent='Próxima verificação automática em '+_fmtSec(_nextRemain);
     _nextRemain=Math.max(0,_nextRemain-1);
   }else{
-    el.textContent='PrÃ³xima verificaÃ§Ã£o automÃ¡tica: sem contagem no momento';
+    el.textContent='Próxima verificação automática: sem contagem no momento';
   }
 }
 let _activeTab='main';
@@ -1880,11 +1932,11 @@ function switchTab(tab){
     try{window.scrollTo({top:0,behavior:'auto'});}catch(_){window.scrollTo(0,0);}
   }
 }
-function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>â—</span><span>Em execuÃ§Ã£o</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>â—</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>â—</span><span>Com erro</span>';}
+function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>•</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>•</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>•</span><span>Com erro</span>';}
 function setAccBadge(kind,label){
   const b=document.getElementById('accBadge');
   b.className='status-pill '+kind;
-  b.innerHTML='<span>â—</span><span>'+label+'</span>';
+  b.innerHTML='<span>•</span><span>'+label+'</span>';
 }
 function updAccount(state){
   const e=document.getElementById('accEmail');
@@ -1922,7 +1974,7 @@ function updDaily(rep){
   if(rep&&rep.exists){
     meta.textContent='Atualizado em: '+String(rep.updated_at||'-')+' | Arquivo: '+String(rep.path||'-');
   }else{
-    meta.textContent='Sem relatÃ³rio encontrado ainda';
+    meta.textContent='Sem relatório encontrado ainda';
   }
   setList('lp',(rep&&rep.processados)||[]);
   setList('li',(rep&&rep.ignorados)||[]);
@@ -1934,7 +1986,7 @@ function _fmtCycleShort(c){
   const a=Number(it.attachments||0);
   const x=Number(it.xmls||0);
   const l=Number(it.launched||0);
-  return `E-mails ${m} | Anexos ${a} | XML ${x} | LanÃ§amentos ${l}`;
+  return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l}`;
 }
 function updProcessing(proc,maxMessages){
   const runEl=document.getElementById('procRun');
@@ -2039,6 +2091,78 @@ async function _showCnpj(ev,btn){ev.stopPropagation();const cnpj=btn.getAttribut
 document.addEventListener('click',()=>{document.querySelectorAll('.cell-menu.open').forEach(x=>x.classList.remove('open'));});
 let _histItems=[];
 let _histSort={key:'at',dir:'desc'};
+const _histColStorageKey='botana.hist.colwidths.v1';
+const _histColDefaults={at:150,venc:110,doc:100,cliente:240,parcela:90,vparcela:130,vtotal:130,local:150,acao:110};
+let _histColWidths={..._histColDefaults};
+function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
+function _loadHistColWidths(){
+  try{
+    const raw=localStorage.getItem(_histColStorageKey);
+    if(!raw)return;
+    const parsed=JSON.parse(raw);
+    if(!parsed||typeof parsed!=='object')return;
+    _histColWidths={..._histColDefaults};
+    Object.keys(_histColDefaults).forEach((key)=>{
+      const next=Number(parsed[key]);
+      if(Number.isFinite(next)&&next>60)_histColWidths[key]=Math.round(next);
+    });
+  }catch(_){}
+}
+function _applyHistColWidths(){
+  Object.entries(_histColDefaults).forEach(([key,baseWidth])=>{
+    const col=document.getElementById(`histCol-${key}`);
+    if(!col)return;
+    const minWidth=key==='cliente'?180:80;
+    const width=Math.max(minWidth,Number(_histColWidths[key]||baseWidth));
+    col.style.width=`${width}px`;
+  });
+}
+function resetHistColumnWidths(){
+  _histColWidths={..._histColDefaults};
+  _applyHistColWidths();
+  _saveHistColWidths();
+}
+function _initHistoryColumnResize(){
+  const table=document.querySelector('.hist-table');
+  if(!table||table.dataset.resizeReady==='1')return;
+  table.dataset.resizeReady='1';
+  _loadHistColWidths();
+  _applyHistColWidths();
+  table.querySelectorAll('thead th[data-colid]').forEach((th)=>{
+    if(th.querySelector('.col-resizer'))return;
+    const key=th.dataset.colid;
+    const handle=document.createElement('span');
+    handle.className='col-resizer';
+    handle.title='Arraste para reajustar';
+    handle.addEventListener('click',(ev)=>{ev.preventDefault();ev.stopPropagation();});
+    const beginResize=(startX)=>{
+      const col=document.getElementById(`histCol-${key}`);
+      if(!col)return;
+      const startWidth=col.getBoundingClientRect().width;
+      th.classList.add('is-resizing');
+      const onMove=(moveX)=>{
+        const minWidth=key==='cliente'?180:80;
+        _histColWidths[key]=Math.max(minWidth,Math.round(startWidth+(moveX-startX)));
+        _applyHistColWidths();
+      };
+      const onMouseMove=(moveEv)=>{onMove(moveEv.clientX);};
+      const onMouseUp=()=>{
+        th.classList.remove('is-resizing');
+        window.removeEventListener('mousemove',onMouseMove);
+        window.removeEventListener('mouseup',onMouseUp);
+        _saveHistColWidths();
+      };
+      window.addEventListener('mousemove',onMouseMove);
+      window.addEventListener('mouseup',onMouseUp);
+    };
+    handle.addEventListener('mousedown',(ev)=>{
+      ev.preventDefault();
+      ev.stopPropagation();
+      beginResize(ev.clientX);
+    });
+    th.appendChild(handle);
+  });
+}
 function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
 function _fmtMoney(v){
   if(v===null||v===undefined) return '-';
@@ -2102,21 +2226,22 @@ function _setSort(key){
   if(th)th.classList.add(_histSort.dir);
   _renderHistory(_histItems);
 }
+_initHistoryColumnResize();
 document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventListener('click',()=>_setSort(th.dataset.key));});
 async function loadHistory(silent=false){
   try{
     const p=new URLSearchParams();
-    const vFrom=(document.getElementById('hFrom')||{}).value||'';
-    const vTo=(document.getElementById('hTo')||{}).value||'';
-    const vEmit=((document.getElementById('hEmit')||{}).value||'').trim();
-    const vDest=((document.getElementById('hDest')||{}).value||'').trim();
-    const vQuery=((document.getElementById('hQuery')||{}).value||'').trim();
+    const vAt=((document.getElementById('hAt')||{}).value||'').trim();
+    const vVenc=((document.getElementById('hVenc')||{}).value||'').trim();
+    const vNf=((document.getElementById('hNf')||{}).value||'').trim();
+    const vCliente=((document.getElementById('hCliente')||{}).value||'').trim();
+    const vAba=((document.getElementById('hAba')||{}).value||'').trim();
     const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
-    if(vFrom)p.set('from',vFrom);
-    if(vTo)p.set('to',vTo);
-    if(vEmit)p.set('cnpj_emit',vEmit);
-    if(vDest)p.set('cnpj_dest',vDest);
-    if(vQuery)p.set('q',vQuery);
+    if(vAt)p.set('at',vAt);
+    if(vVenc)p.set('venc',vVenc);
+    if(vNf)p.set('nf',vNf);
+    if(vCliente)p.set('cliente',vCliente);
+    if(vAba)p.set('aba',vAba);
     p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
     const j=await api('/api/history?'+p.toString());
     const items=(j&&Array.isArray(j.items))?j.items:[];
@@ -2140,7 +2265,7 @@ async function deleteEntry(nf,parcela,at){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-document.querySelectorAll('#hFrom,#hTo,#hEmit,#hDest,#hQuery,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
+document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
 refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(loadHistory,10000);
 initHubBackButton();
@@ -2203,10 +2328,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Falha ao validar o e-mail conectado"
                 elif email_pending:
                     acc_status = "waiting"
-                    friendly = "AutenticaÃ§Ã£o em andamento. Aguarde a confirmaÃ§Ã£o no navegador"
+                    friendly = "Autenticação em andamento. Aguarde a confirmação no navegador"
                 elif not email_value:
                     acc_status = "waiting"
-                    friendly = "AutenticaÃ§Ã£o pendente. Clique em AutenticaÃ§Ã£o > Principal"
+                    friendly = "Autenticação pendente. Clique em Autenticação > Principal"
                 elif reading_now:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
@@ -2215,10 +2340,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Monitoramento pausado. Use Executar agora ou inicie o loop."
                 elif (last_status or {}).get("ok", True):
                     acc_status = "waiting"
-                    friendly = "Aguardando a prÃ³xima verificaÃ§Ã£o automÃ¡tica"
+                    friendly = "Aguardando a próxima verificação automática"
                 else:
                     acc_status = "error"
-                    friendly = "Falha na comunicaÃ§Ã£o com a API. Veja os detalhes tÃ©cnicos para identificar a causa."
+                    friendly = "Falha na comunicação com a API. Veja os detalhes técnicos para identificar a causa."
                 status_view = {
                     "ok": acc_status != "error",
                     "message": (email_err or friendly or last_msg or "Aguardando"),
@@ -2291,6 +2416,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
             if parsed.path == "/api/history":
                 qs = parse_qs(parsed.query or "")
+                at_filter = (qs.get("at", [""])[0] or "").strip()
+                venc_filter = (qs.get("venc", [""])[0] or "").strip()
+                nf_filter = (qs.get("nf", [""])[0] or "").strip()
+                cliente_filter = (qs.get("cliente", [""])[0] or "").strip()
+                aba_filter = (qs.get("aba", [""])[0] or "").strip()
                 dt_from = (qs.get("from", [""])[0] or "").strip()
                 dt_to = (qs.get("to", [""])[0] or "").strip()
                 cnpj_emit = (qs.get("cnpj_emit", [""])[0] or "").strip()
@@ -2303,6 +2433,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 items = _history_from_reports(
                     limit=max(10, min(limit, 2000)),
                     query=query,
+                    at_filter=at_filter,
+                    venc_filter=venc_filter,
+                    nf_filter=nf_filter,
+                    cliente_filter=cliente_filter,
+                    aba_filter=aba_filter,
                     dt_from=dt_from,
                     dt_to=dt_to,
                     cnpj_emit=cnpj_emit,

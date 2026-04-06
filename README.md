@@ -57,4 +57,7 @@ No `instances.json` do Hub, use:
 - A aba `Histórico` exibe uma grade compacta, em linha única por registro, para facilitar leitura dentro do Hub.
 - A coluna `Cliente` usa uma versão resumida da `Descrição`, preservando o número do `BLT` quando existir.
 - As colunas `Descrição`, `Valor Pago` e `Status` não aparecem mais na grade principal.
+- Os títulos ficam centralizados, sem marcadores visuais de ordenação, e as divisórias da grade ficaram mais evidentes.
+- As colunas podem ser reajustadas arrastando a divisória do cabeçalho, com opção de resetar as larguras no próprio painel.
+- Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
 - O botão `Excluir` remove somente o registro do histórico/relatório (`relatorios/relatorio_*.txt`). Ele não apaga a linha original da planilha.
