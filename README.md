@@ -61,7 +61,8 @@ No `instances.json` do Hub, use:
 - Durante uma ação manual, os dois botões ficam desabilitados para evitar execuções concorrentes.
 - A execução manual usa os contadores de leitura/lotes já exibidos no painel para mostrar avanço do ciclo.
 - Se o loop automático estiver ativo, `Executar agora` interrompe esse ciclo, roda a execução manual e retoma o monitoramento no fim.
-- O reprocessamento mostra quantas mensagens foram encontradas, quantas já foram atualizadas e quantas falharam.
+- O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
+- Durante o reprocessamento, o painel mostra quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
 
 ## Histórico no painel

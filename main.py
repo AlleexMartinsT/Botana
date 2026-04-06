@@ -4,6 +4,7 @@ import hmac
 import json
 import secrets
 import os, re, time, gspread, threading, sys
+from email.utils import parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -100,6 +101,9 @@ _MANUAL_ACTION = {
     "progress_total": 0,
     "changed": 0,
     "failed": 0,
+    "current_email": "",
+    "current_subject": "",
+    "current_date": "",
 }
 
 
@@ -224,6 +228,9 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "progress_total": max(0, int(progress_total or 0)),
                 "changed": 0,
                 "failed": 0,
+                "current_email": "",
+                "current_subject": "",
+                "current_date": "",
             }
         )
         for key, value in extra.items():
@@ -260,6 +267,9 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["message"] = str(message or "").strip() or ("Acao concluida." if ok else "Acao concluida com erro.")
         _MANUAL_ACTION["detail"] = str(detail or "").strip()
         _MANUAL_ACTION["finished_at"] = datetime.now().isoformat()
+        _MANUAL_ACTION["current_email"] = ""
+        _MANUAL_ACTION["current_subject"] = ""
+        _MANUAL_ACTION["current_date"] = ""
         for key, value in extra.items():
             _MANUAL_ACTION[key] = value
         return dict(_MANUAL_ACTION)
@@ -337,7 +347,7 @@ def _start_run_now_background() -> tuple[bool, dict]:
     return True, snap
 
 
-def _start_reprocess_background(days: int, max_messages: int, mark_unread: bool) -> tuple[bool, dict]:
+def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[bool, dict]:
     busy = _manual_action_busy_message()
     if busy:
         snap = _manual_action_snapshot()
@@ -348,7 +358,7 @@ def _start_reprocess_background(days: int, max_messages: int, mark_unread: bool)
         "reprocess",
         "Reprocessamento",
         "Reprocessamento iniciado.",
-        detail=f"Ultimos {int(days)} dias | Limite {int(max_messages)} mensagens",
+        detail=f"Ate {int(max_messages)} mensagens mais recentes com a label do Botana.",
     )
     if not started:
         return False, snap
@@ -358,7 +368,7 @@ def _start_reprocess_background(days: int, max_messages: int, mark_unread: bool)
 
     def _worker():
         try:
-            result = _reprocess_recent(days=days, max_messages=max_messages, mark_unread=mark_unread, progress_cb=_progress)
+            result = _reprocess_recent(max_messages=max_messages, mark_unread=mark_unread, progress_cb=_progress)
             friendly = f"Reprocessamento concluido: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas."
             detail = f"Falhas: {result.get('failed', 0)} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
             _manual_action_finish(
@@ -1911,13 +1921,64 @@ def _wait_for_processing_idle(timeout: float = 30.0) -> bool:
     return not _reading_active()
 
 
-def _reprocess_recent(days: int, max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
+def _reprocess_message_preview(service, msg_id: str) -> dict:
+    preview = {"email": "", "subject": "", "date": ""}
+    if not msg_id:
+        return preview
+    try:
+        meta = service.users().messages().get(
+            userId="me",
+            id=msg_id,
+            format="metadata",
+            metadataHeaders=["From", "Subject", "Date"],
+        ).execute()
+        headers = ((meta or {}).get("payload") or {}).get("headers", []) or []
+        header_map = {}
+        for item in headers:
+            name = str((item or {}).get("name", "")).strip().lower()
+            if not name or name in header_map:
+                continue
+            header_map[name] = str((item or {}).get("value", "")).strip()
+        from_raw = str(header_map.get("from", "")).strip()
+        subject = str(header_map.get("subject", "")).strip()
+        date_raw = str(header_map.get("date", "")).strip()
+        _, email_addr = parseaddr(from_raw)
+        email_view = email_addr or from_raw
+        date_view = date_raw
+        if date_raw:
+            try:
+                dt = parsedate_to_datetime(date_raw)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone()
+                date_view = dt.strftime("%d/%m/%Y %H:%M")
+            except Exception:
+                pass
+        preview.update({"email": email_view, "subject": subject, "date": date_view})
+    except Exception as exc:
+        logger.warning("Falha ao carregar cabecalhos da mensagem %s: %s", msg_id, exc)
+    return preview
+
+
+def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
     service = _get_gmail_service_locked()
     label_id = ensure_label(service, LABEL_NAME)
-    after = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y/%m/%d")
-    query = f'after:{after} label:"{LABEL_NAME}"'
-    resp = service.users().messages().list(userId="me", q=query, maxResults=max(1, min(1000, int(max_messages)))).execute()
-    messages = resp.get("messages", []) or []
+    wanted = max(1, min(1000, int(max_messages)))
+    query = f'label:"{LABEL_NAME}"'
+    messages = []
+    page_token = None
+    while len(messages) < wanted:
+        batch_size = min(500, wanted - len(messages))
+        req_kwargs = {"userId": "me", "q": query, "maxResults": batch_size}
+        if page_token:
+            req_kwargs["pageToken"] = page_token
+        resp = service.users().messages().list(**req_kwargs).execute()
+        batch = resp.get("messages", []) or []
+        if batch:
+            messages.extend(batch)
+        page_token = str(resp.get("nextPageToken", "")).strip()
+        if not page_token or not batch:
+            break
+    messages = messages[:wanted]
     changed = 0
     failed = 0
     if callable(progress_cb):
@@ -1926,13 +1987,32 @@ def _reprocess_recent(days: int, max_messages: int, mark_unread: bool, progress_
             progress_total=len(messages),
             changed=changed,
             failed=failed,
-            message=f"{len(messages)} mensagens encontradas para reprocessar.",
-            detail="Removendo label do Botana e ajustando nao lido, quando marcado.",
+            current_email="",
+            current_subject="",
+            current_date="",
+            message=f"{len(messages)} mensagens mais recentes encontradas para reprocessar.",
+            detail="Removendo a label do Botana e exibindo o remetente/data da mensagem atual.",
         )
-    for item in messages:
+    for idx, item in enumerate(messages, start=1):
         msg_id = str(item.get("id", "")).strip()
         if not msg_id:
             continue
+        preview = _reprocess_message_preview(service, msg_id)
+        current_email = str(preview.get("email", "")).strip()
+        current_subject = str(preview.get("subject", "")).strip()
+        current_date = str(preview.get("date", "")).strip()
+        if callable(progress_cb):
+            progress_cb(
+                progress_current=changed + failed,
+                progress_total=len(messages),
+                changed=changed,
+                failed=failed,
+                current_email=current_email,
+                current_subject=current_subject,
+                current_date=current_date,
+                message=f"Analisando mensagens: {idx} de {len(messages)}.",
+                detail=(f"Assunto: {current_subject}" if current_subject else "Lendo dados da mensagem atual."),
+            )
         body = {"removeLabelIds": [label_id], "addLabelIds": ["UNREAD"] if mark_unread else []}
         try:
             service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
@@ -1945,8 +2025,11 @@ def _reprocess_recent(days: int, max_messages: int, mark_unread: bool, progress_
                 progress_total=len(messages),
                 changed=changed,
                 failed=failed,
+                current_email=current_email,
+                current_subject=current_subject,
+                current_date=current_date,
                 message=f"Reprocessando mensagens: {changed + failed} de {len(messages)}.",
-                detail=f"Atualizadas: {changed} | Falhas: {failed}",
+                detail=(f"Assunto: {current_subject}" if current_subject else f"Atualizadas: {changed} | Falhas: {failed}"),
             )
     return {
         "ok": True,
@@ -2286,14 +2369,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <h3>Reprocessar e-mails</h3>
         <div class="reproc-grid">
           <div>
-            <label>Dias para trás</label>
-            <input id="days" type="number" value="30" min="1" max="365"/>
-          </div>
-          <div>
             <label>Limite de mensagens</label>
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
+        <div class="muted" style="margin-top:6px">Usa as mensagens mais recentes que ainda estão com a label do Botana.</div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
           <button id="reprocessBtn" onclick="reprocess()">Remover labels para reprocessar</button>
@@ -2632,8 +2712,13 @@ function updManualAction(action,processing,maxMessages){
     const total=Math.max(0, Number(a.progress_total||0));
     const current=Math.max(0, Number(a.progress_current||0));
     const perc=total>0?Math.max(6,Math.min(100,Math.round((current/total)*100))):18;
+    const currentEmail=String(a.current_email||'').trim();
+    const currentDate=String(a.current_date||'').trim();
+    const currentParts=[];
+    if(currentEmail)currentParts.push(`E-mail atual: ${currentEmail}`);
+    if(currentDate)currentParts.push(`Data: ${currentDate}`);
     barEl.style.width=String(perc)+'%';
-    progressEl.textContent=`Mensagens: ${current}/${total||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+    progressEl.textContent=`Mensagens: ${current}/${total||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
     msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
     detailEl.textContent=String(a.detail||'Removendo labels do Botana para nova leitura.');
     _setManualBadge('ok','Em andamento');
@@ -2731,9 +2816,9 @@ async function reprocess(){
   const msgEl=document.getElementById('manualActionMsg');
   const detailEl=document.getElementById('manualActionDetail');
   if(msgEl)msgEl.textContent='Solicitação enviada. Buscando mensagens para reprocessar...';
-  if(detailEl)detailEl.textContent='As labels serão removidas em background e o painel mostrará o progresso.';
+  if(detailEl)detailEl.textContent='As labels serão removidas em background e o painel mostrará o remetente/data da mensagem atual.';
   try{
-    const payload={account:'principal',days:Number(document.getElementById('days').value||30),max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
+    const payload={account:'principal',max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
     const j=await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(j&&j.friendly&&msgEl)msgEl.textContent=String(j.friendly);
     await refresh();
@@ -3001,7 +3086,7 @@ async function deleteEntry(nf,parcela,at){
 }
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
-['days','limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
+['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
@@ -3249,19 +3334,15 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
                     try:
-                        days = max(1, min(365, int(data.get("days", 30))))
-                    except Exception:
-                        days = 30
-                    try:
                         max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
                     except Exception:
                         max_messages = 100
                     mark_unread = bool(data.get("mark_unread", True))
-                    started, info = _start_reprocess_background(days=days, max_messages=max_messages, mark_unread=mark_unread)
+                    started, info = _start_reprocess_background(max_messages=max_messages, mark_unread=mark_unread)
                     if not started:
                         msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
-                    friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens dos ultimos {days} dias"
+                    friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens mais recentes"
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
