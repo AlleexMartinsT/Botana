@@ -3,7 +3,7 @@ import os
 import base64
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Tuple
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -20,6 +20,7 @@ LABEL_NAME = "XML Processado Botana"
 REPROCESS_LABEL_NAME = "XML Reprocessado Botana"
 BOTANA_LABEL_PREFIXES = (LABEL_NAME, REPROCESS_LABEL_NAME)
 _LABEL_CACHE = {"at": 0.0, "labels": []}
+DEFAULT_SENT_XML_QUERY = "in:sent has:attachment filename:xml"
 
 
 def _label_date(when=None) -> str:
@@ -49,6 +50,56 @@ def list_botana_labels(service) -> List[Dict[str, Any]]:
         if any(name.startswith(prefix) for prefix in BOTANA_LABEL_PREFIXES):
             out.append(item)
     return out
+
+
+def list_botana_label_ids(service) -> List[str]:
+    ids = []
+    for item in list_botana_labels(service):
+        label_id = str(item.get("id", "")).strip()
+        if label_id:
+            ids.append(label_id)
+    return ids
+
+
+def build_period_query(mode: str = "last_30_days", when=None) -> str:
+    ref = when or datetime.now()
+    mode_norm = str(mode or "last_30_days").strip().lower()
+    today = ref.date()
+    if mode_norm == "last_15_days":
+        return "newer_than:15d"
+    if mode_norm == "last_30_days":
+        return "newer_than:30d"
+    if mode_norm == "last_45_days":
+        return "newer_than:45d"
+    if mode_norm == "last_60_days":
+        return "newer_than:60d"
+    if mode_norm == "current_week":
+        week_start = today - timedelta(days=today.weekday())
+        return f"after:{week_start.strftime('%Y/%m/%d')}"
+    first_this_month = today.replace(day=1)
+    if mode_norm == "previous_month":
+        prev_month_last = first_this_month - timedelta(days=1)
+        prev_month_start = prev_month_last.replace(day=1)
+        return (
+            f"after:{prev_month_start.strftime('%Y/%m/%d')} "
+            f"before:{first_this_month.strftime('%Y/%m/%d')}"
+        )
+    if mode_norm == "current_and_previous_month":
+        prev_month_last = first_this_month - timedelta(days=1)
+        prev_month_start = prev_month_last.replace(day=1)
+        return f"after:{prev_month_start.strftime('%Y/%m/%d')}"
+    return "newer_than:30d"
+
+
+def build_sent_xml_query(filter_mode: str = "last_30_days", extra_query: str = "") -> str:
+    parts = [DEFAULT_SENT_XML_QUERY]
+    period = build_period_query(mode=filter_mode) if str(filter_mode or "").strip() else ""
+    if period:
+        parts.append(period)
+    extra = str(extra_query or "").strip()
+    if extra:
+        parts.append(extra)
+    return " ".join(part for part in parts if str(part).strip())
 
 def _get_token_path(cred_path: str) -> str:
     return cred_path.replace(".json", "_token.json")
@@ -138,13 +189,17 @@ def buscarMessagesEnviados(service, max_results: int = 15) -> List[Dict[str, Any
 
 
 def buscarMessagesEnviadosPagina(
-    service, max_results: int = 100, page_token: str | None = None
+    service,
+    max_results: int = 100,
+    page_token: str | None = None,
+    query: str | None = None,
+    skip_label_ids=None,
 ) -> Tuple[List[Dict[str, Any]], str | None]:
     """
     Busca uma página de threads com mensagens enviadas contendo XML.
     Retorna (mensagens, next_page_token).
     """
-    q = "in:sent has:attachment filename:xml"
+    q = str(query or DEFAULT_SENT_XML_QUERY).strip() or DEFAULT_SENT_XML_QUERY
     try:
         req = service.users().threads().list(
             userId="me",
@@ -156,21 +211,27 @@ def buscarMessagesEnviadosPagina(
         threads = resp.get("threads", []) or []
         next_token = resp.get("nextPageToken")
         results: List[Dict[str, Any]] = []
+        skip_ids = {str(item).strip() for item in (skip_label_ids or []) if str(item).strip()}
 
         logger.info("Buscar página: %d threads encontradas", len(threads))
 
         for t in threads:
             thread_id = t.get("id")
             try:
-                thread = service.users().threads().get(userId="me", id=thread_id).execute()
+                thread = service.users().threads().get(userId="me", id=thread_id, format="metadata").execute()
                 msgs = thread.get("messages", [])
 
                 for msg in msgs:
+                    label_ids = [str(label_id).strip() for label_id in (msg.get("labelIds", []) or []) if str(label_id).strip()]
+                    if "SENT" not in label_ids:
+                        continue
+                    if skip_ids and any(label_id in skip_ids for label_id in label_ids):
+                        continue
                     results.append(
                         {
                             "id": msg["id"],
                             "threadId": msg["threadId"],
-                            "labelIds": msg.get("labelIds", []),
+                            "labelIds": label_ids,
                             "snippet": msg.get("snippet", ""),
                         }
                     )

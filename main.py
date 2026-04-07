@@ -1,6 +1,8 @@
 import argparse
+import csv
 import hashlib
 import hmac
+import io
 import json
 import secrets
 import os, re, time, gspread, threading, sys
@@ -16,6 +18,8 @@ from gmail_service import (
     getGmailService,
     buscarMessagesEnviadosPagina,
     baixar_anexos_de_mensagem,
+    build_sent_xml_query,
+    list_botana_label_ids,
     marcar_mensagem_com_label,
     marcar_mensagem_para_reprocessar,
     listar_mensagens_com_labels_botana,
@@ -109,6 +113,8 @@ _MANUAL_ACTION = {
     "progress_total": 0,
     "changed": 0,
     "failed": 0,
+    "matched": 0,
+    "inspected": 0,
     "current_email": "",
     "current_subject": "",
     "current_date": "",
@@ -238,6 +244,8 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "progress_total": max(0, int(progress_total or 0)),
                 "changed": 0,
                 "failed": 0,
+                "matched": 0,
+                "inspected": 0,
                 "current_email": "",
                 "current_subject": "",
                 "current_date": "",
@@ -283,6 +291,8 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["current_subject"] = ""
         _MANUAL_ACTION["current_date"] = ""
         _MANUAL_ACTION["requested_limit"] = 0
+        _MANUAL_ACTION["matched"] = 0
+        _MANUAL_ACTION["inspected"] = 0
         for key, value in extra.items():
             _MANUAL_ACTION[key] = value
         return dict(_MANUAL_ACTION)
@@ -522,7 +532,17 @@ def _load_settings():
                 "gmail_page_size": max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))),
                 "loop_interval_minutes": loop_min,
                 "interval_seconds": max(30, min(86400, loop_min * 60)),
-                "max_messages": max(1, min(1000, int(_RUNTIME_SETTINGS.get("max_messages", 100)))),
+                "max_messages": max(
+                    1,
+                    min(
+                        1000,
+                        max(
+                            int(_RUNTIME_SETTINGS.get("max_messages", 100)),
+                            max(1, min(20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3))))
+                            * max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))),
+                        ),
+                    ),
+                ),
             }
             _RUNTIME_SETTINGS.update(out)
             _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -545,13 +565,17 @@ def _load_settings():
         loop_min = max(1, min(720, int(raw.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
         max_pages = max(1, min(20, int(raw.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
         page_size = max(1, min(500, int(raw.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
+        effective_max_messages = max(
+            max_pages * page_size,
+            max(1, min(1000, int(raw.get("max_messages", max_pages * page_size)))),
+        )
         out = {
             "gmail_filter_mode": mode,
             "gmail_max_pages": max_pages,
             "gmail_page_size": page_size,
             "loop_interval_minutes": loop_min,
             "interval_seconds": max(30, min(86400, loop_min * 60)),
-            "max_messages": max(1, min(1000, int(raw.get("max_messages", max_pages * page_size)))),
+            "max_messages": max(1, min(1000, effective_max_messages)),
         }
         _RUNTIME_SETTINGS.update(out)
         global _NEXT_RUN_AT
@@ -576,13 +600,17 @@ def _save_settings(data: dict):
         max_pages = max(1, min(20, int(data.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
         page_size = max(1, min(500, int(data.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
         loop_min = max(1, min(720, int(data.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
+        effective_max_messages = max(
+            max_pages * page_size,
+            max(1, min(1000, int(data.get("max_messages", max_pages * page_size)))),
+        )
         out = {
             "gmail_filter_mode": mode,
             "gmail_max_pages": max_pages,
             "gmail_page_size": page_size,
             "loop_interval_minutes": loop_min,
             "interval_seconds": max(30, min(86400, loop_min * 60)),
-            "max_messages": max(1, min(1000, int(data.get("max_messages", max_pages * page_size)))),
+            "max_messages": max(1, min(1000, effective_max_messages)),
         }
         _RUNTIME_SETTINGS.update(out)
         _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -788,9 +816,15 @@ def processar_emails_enviados(
     global _IS_READING
     _process_start()
     service = _get_gmail_service_locked()
-    batch_size = max(1, min(1000, int(max_messages_override or _RUNTIME_SETTINGS.get("max_messages", 100))))
+    batch_limit = max(1, min(1000, int(max_messages_override or _RUNTIME_SETTINGS.get("max_messages", 100))))
+    page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    max_pages = max(1, min(50, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3)))
+    if max_messages_override:
+        max_pages = max(max_pages, (batch_limit + page_size - 1) // page_size)
+    search_query = _cycle_search_query()
     force_messages = messages_override is not None
     forced_messages = []
+    skip_botana_ids = set()
     if force_messages:
         for item in list(messages_override or []):
             if not isinstance(item, dict):
@@ -799,12 +833,19 @@ def processar_emails_enviados(
             if not msg_id:
                 continue
             forced_messages.append(dict(item))
+    else:
+        try:
+            skip_botana_ids = {str(label_id).strip() for label_id in list_botana_label_ids(service) if str(label_id).strip()}
+        except Exception as exc:
+            logger.warning("Falha ao carregar labels do Botana para o filtro de leitura: %s", exc)
     total_msgs = 0
     anexos_lidos = 0
     xmls_lidos = 0
     total_processados = 0
     page_token = None
     primeira_pagina = True
+    paginas_lidas = 0
+    vistos = set()
     interativo_cmd = bool(sys.stdin and sys.stdin.isatty())
     abort_logged = False
     def _summary() -> dict:
@@ -842,11 +883,17 @@ def processar_emails_enviados(
             next_page_token = None
             force_messages = False
         else:
+            restante = max(0, batch_limit - total_msgs)
+            if restante <= 0:
+                break
             msgs, next_page_token = buscarMessagesEnviadosPagina(
                 service,
-                max_results=batch_size,
+                max_results=min(page_size, max(1, restante)),
                 page_token=page_token,
+                query=search_query,
+                skip_label_ids=skip_botana_ids,
             )
+            paginas_lidas += 1
 
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
@@ -859,9 +906,14 @@ def processar_emails_enviados(
         for m in msgs:
             if _abort_if_requested():
                 return _summary()
+            if total_msgs >= batch_limit:
+                break
+            msg_id = str(m.get("id", "")).strip()
+            if not msg_id or msg_id in vistos:
+                continue
+            vistos.add(msg_id)
             total_msgs += 1
             _sync_progress()
-            msg_id = m.get("id")
             logger.info("Abrindo mensagem ID: %s", msg_id)
 
             arquivos = baixar_anexos_de_mensagem(service, msg_id)
@@ -1125,14 +1177,14 @@ def processar_emails_enviados(
                             logger.exception("Falha inesperada ao atualizar planilha: %s", e)
                             break
 
-        if messages_override is not None:
+        if messages_override is not None or total_msgs >= batch_limit:
             break
         skip_reached = bool(getattr(processar_emails_enviados, "_skip_reached", False))
         if SKIP_UNTIL_NF and not skip_reached and next_page_token:
             if interativo_cmd:
                 resposta = input(
-                    f"\nNF {SKIP_UNTIL_NF} nÃ£o encontrada neste lote de {batch_size}. "
-                    f"Deseja continuar com mais {batch_size}? [s/N]: "
+                    f"\nNF {SKIP_UNTIL_NF} nÃ£o encontrada neste lote de {page_size}. "
+                    f"Deseja continuar com mais {page_size}? [s/N]: "
                 ).strip().lower()
                 if resposta in ("s", "sim", "y", "yes"):
                     page_token = next_page_token
@@ -1144,6 +1196,9 @@ def processar_emails_enviados(
                     "Encerrando sem carregar prÃ³ximas pÃ¡ginas.",
                     SKIP_UNTIL_NF,
                 )
+        if next_page_token and paginas_lidas < max_pages:
+            page_token = next_page_token
+            continue
         break
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
     escreverRelatorio(
@@ -1341,6 +1396,29 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict, 
     if extra_headers:
         for k, v in extra_headers.items():
             handler.send_header(k, v)
+    handler.end_headers()
+    handler.wfile.write(raw)
+
+
+def _csv_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    filename: str,
+    rows: list[list[str]],
+    delimiter: str = ";",
+):
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL)
+    for row in rows:
+        writer.writerow(row)
+    raw = buffer.getvalue().encode("utf-8-sig")
+    safe_name = re.sub(r'[^A-Za-z0-9._-]+', "_", str(filename or "export.csv")).strip("._") or "export.csv"
+    if not safe_name.lower().endswith(".csv"):
+        safe_name += ".csv"
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/csv; charset=utf-8")
+    handler.send_header("Content-Disposition", f'attachment; filename="{safe_name}"')
+    handler.send_header("Content-Length", str(len(raw)))
     handler.end_headers()
     handler.wfile.write(raw)
 
@@ -1748,6 +1826,54 @@ def _report_base_name(path: Path) -> str:
     return name[:-4] if name.endswith(".tmp") else name
 
 
+def _format_currency_brl(value) -> str:
+    try:
+        number = float(value or 0)
+    except Exception:
+        number = 0.0
+    text = f"{number:,.2f}"
+    return "R$ " + text.replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _history_csv_rows(items: list[dict]) -> list[list[str]]:
+    rows = [[
+        "Data/Horário",
+        "Vencimento",
+        "NF",
+        "Cliente",
+        "Descrição",
+        "Parcela",
+        "Valor da Parcela",
+        "Valor Total",
+        "Valor Pago",
+        "Status",
+        "Aba",
+        "CNPJ Emitente",
+        "CNPJ Destinatário",
+        "Duplicada",
+    ]]
+    for item in items or []:
+        rows.append(
+            [
+                str(item.get("at") or ""),
+                str(item.get("vencimento") or ""),
+                str(item.get("nf") or ""),
+                str(item.get("cliente") or ""),
+                str(item.get("descricao") or ""),
+                str(item.get("parcela") or ""),
+                _format_currency_brl(item.get("valor_parcela")),
+                _format_currency_brl(item.get("valor_total")),
+                str(item.get("valor_pago") or ""),
+                str(item.get("status") or ""),
+                str(item.get("local_lancamento") or ""),
+                str(item.get("cnpj_emit") or ""),
+                str(item.get("cnpj_dest") or ""),
+                "Sim" if bool(item.get("duplicata")) else "Não",
+            ]
+        )
+    return rows
+
+
 def _report_files_for_reading(include_all_txt: bool = False) -> list[Path]:
     rel_dir = Path(RELATORIO_DIR)
     if not rel_dir.exists():
@@ -1796,9 +1922,26 @@ def _parse_report_datetime(dt_text: str):
 
 
 def _history_parcela_key(item: dict) -> str:
-    parcela = _normalize_report_text(str((item or {}).get("parcela") or "")).strip().lower()
-    if parcela:
-        return f"parcela:{parcela}"
+    parcela = _normalize_report_text(str((item or {}).get("parcela") or "")).strip()
+    parcela_key = unicodedata.normalize("NFKD", parcela).encode("ascii", "ignore").decode("ascii")
+    parcela_key = re.sub(r"\s+", " ", parcela_key).strip().upper()
+    if parcela_key:
+        patterns = (
+            r"\b(\d+)\s*(?:A|O)?\s*PARC(?:ELA)?\b",
+            r"\bPARC(?:ELA)?\s*(\d+)\b",
+            r"\b(\d+)\s*/\s*\d+\b",
+            r"\b(\d+)\s+DE\s+\d+\b",
+            r"\b(\d+)\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, parcela_key)
+            if not match:
+                continue
+            try:
+                return f"parcela:{int(match.group(1))}"
+            except Exception:
+                continue
+        return f"parcela:{parcela_key.lower()}"
     vencimento = _normalize_report_text(str((item or {}).get("vencimento") or "")).strip()
     valor = 0.0
     try:
@@ -1836,11 +1979,17 @@ _AUDIT_MONTH_MAP = {
 def _audit_safe_float(v):
     try:
         if isinstance(v, str):
-            vv = v.strip()
+            vv = v.strip().replace("\xa0", " ")
             if not vv:
                 return 0.0
+            vv = re.sub(r"[^\d,.\-]+", "", vv)
+            if not vv or vv in {"-", ",", "."}:
+                return 0.0
             if "," in vv and "." in vv:
-                vv = vv.replace(".", "").replace(",", ".")
+                if vv.rfind(",") > vv.rfind("."):
+                    vv = vv.replace(".", "").replace(",", ".")
+                else:
+                    vv = vv.replace(",", "")
             elif "," in vv:
                 vv = vv.replace(",", ".")
             return float(vv)
@@ -2129,7 +2278,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             status = "erro"
             status_label = "A mais"
         else:
-            status = "aviso"
+            status = "erro"
             status_label = "Duplicada"
 
         itens_saida.append(
@@ -2215,6 +2364,16 @@ def _sheet_watch_kind(descricao: str) -> str:
     return ""
 
 
+def _format_days_label(days: int, future: bool = False) -> str:
+    qtd = abs(int(days or 0))
+    if qtd == 0:
+        return "Hoje"
+    unidade = "dia" if qtd == 1 else "dias"
+    if future:
+        return f"Em {qtd} {unidade}"
+    return f"{qtd} {unidade} atrasado" if qtd == 1 else f"{qtd} {unidade} atrasados"
+
+
 def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
     boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
     deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
@@ -2245,7 +2404,7 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
             if dias_uteis > 0:
                 status = "aviso"
                 status_label = "A vencer"
-                dias_label = f"Em {dias_uteis} \u00fateis"
+                dias_label = _format_days_label(dias_uteis, future=True)
                 resumo["boletos_a_vencer"] += 1
             elif dias_uteis == 0:
                 status = "erro"
@@ -2256,7 +2415,7 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
                 status = "erro"
                 atraso = abs(dias_uteis)
                 status_label = "Vencido"
-                dias_label = f"{atraso} \u00fateis atrasado"
+                dias_label = _format_days_label(atraso, future=False)
                 resumo["boletos_vencidos"] += 1
             tipo_label = "Boleto"
         else:
@@ -2265,7 +2424,7 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
             atraso = abs(dias_uteis)
             status = "erro"
             status_label = "Dep\u00f3sito atrasado"
-            dias_label = f"{atraso} \u00fateis atrasado"
+            dias_label = _format_days_label(atraso, future=False)
             tipo_label = "Dep\u00f3sito"
             resumo["depositos_atrasados"] += 1
 
@@ -2492,6 +2651,104 @@ def _wait_for_processing_idle(timeout: float = 30.0) -> bool:
     return not _reading_active()
 
 
+def _parse_iso_date_input(value: str):
+    txt = str(value or "").strip()
+    if not txt:
+        return None
+    try:
+        return datetime.strptime(txt, "%Y-%m-%d").date()
+    except Exception:
+        return None
+
+
+def _join_gmail_query(*parts: str) -> str:
+    return " ".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+def _cycle_search_query() -> str:
+    return build_sent_xml_query(filter_mode=str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")))
+
+
+def _recover_nf_query_terms(nf_start: str = "", nf_end: str = "") -> str:
+    start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
+    if start_nf is None or end_nf is None:
+        return ""
+    if start_nf == end_nf:
+        return str(start_nf)
+    if end_nf - start_nf <= 20:
+        return "{" + " ".join(str(numero) for numero in range(start_nf, end_nf + 1)) + "}"
+    return ""
+
+
+def _recover_search_query(nf_start: str = "", nf_end: str = "", date_from: str = "", date_to: str = "") -> str:
+    extra_parts = []
+    start_date = _parse_iso_date_input(date_from)
+    end_date = _parse_iso_date_input(date_to)
+    if start_date:
+        extra_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
+    if end_date:
+        extra_parts.append(f"before:{(end_date + timedelta(days=1)).strftime('%Y/%m/%d')}")
+    nf_query = _recover_nf_query_terms(nf_start=nf_start, nf_end=nf_end)
+    if nf_query:
+        extra_parts.append(nf_query)
+    return _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), " ".join(extra_parts))
+
+
+def _parse_nf_filter_range(nf_start: str = "", nf_end: str = "") -> tuple[int | None, int | None]:
+    start_txt = re.sub(r"\D+", "", str(nf_start or "").strip())
+    end_txt = re.sub(r"\D+", "", str(nf_end or "").strip())
+    start_val = int(start_txt) if start_txt else None
+    end_val = int(end_txt) if end_txt else None
+    if start_val is not None and end_val is None:
+        end_val = start_val
+    elif end_val is not None and start_val is None:
+        start_val = end_val
+    if start_val is not None and end_val is not None and start_val > end_val:
+        start_val, end_val = end_val, start_val
+    return start_val, end_val
+
+
+def _extract_nf_numbers_from_text(text: str) -> list[int]:
+    values = []
+    for raw in re.findall(r"\bNF\s*0*(\d{3,})\b", str(text or "").upper()):
+        try:
+            values.append(int(raw))
+        except Exception:
+            continue
+    return sorted(set(values))
+
+
+def _preview_matches_nf_range(subject: str, nf_start: int | None, nf_end: int | None) -> bool:
+    if nf_start is None or nf_end is None:
+        return True
+    numeros = _extract_nf_numbers_from_text(subject)
+    if not numeros:
+        return False
+    return any(nf_start <= numero <= nf_end for numero in numeros)
+
+
+def _manual_scan_page_limit(wanted: int, page_size: int) -> int:
+    runtime_pages = max(1, min(50, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3)))
+    estimated = max(1, (max(1, int(wanted or 1)) + max(1, page_size) - 1) // max(1, page_size))
+    return max(runtime_pages, min(50, max(10, estimated * 4)))
+
+
+def _describe_recovery_filters(nf_start: str = "", nf_end: str = "", date_from: str = "", date_to: str = "") -> str:
+    parts = []
+    start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
+    if start_nf is not None and end_nf is not None:
+        parts.append(f"NFs {start_nf} a {end_nf}" if start_nf != end_nf else f"NF {start_nf}")
+    start_date = _parse_iso_date_input(date_from)
+    end_date = _parse_iso_date_input(date_to)
+    if start_date and end_date:
+        parts.append(f"período {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
+    elif start_date:
+        parts.append(f"a partir de {start_date.strftime('%d/%m/%Y')}")
+    elif end_date:
+        parts.append(f"até {end_date.strftime('%d/%m/%Y')}")
+    return " | ".join(parts)
+
+
 def _reprocess_message_preview(service, msg_id: str) -> dict:
     preview = {"email": "", "subject": "", "date": "", "timestamp": 0}
     if not msg_id:
@@ -2626,6 +2883,252 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
         "mark_unread": bool(mark_unread),
         "targets": targets,
     }
+
+
+def _find_missing_messages(
+    max_messages: int,
+    nf_start: str = "",
+    nf_end: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    progress_cb=None,
+) -> dict:
+    start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
+    start_date = _parse_iso_date_input(date_from)
+    end_date = _parse_iso_date_input(date_to)
+    if start_nf is None and end_nf is None and not start_date and not end_date:
+        raise ValueError("Informe uma faixa de NF e/ou um período para recuperar.")
+    service = _get_gmail_service_locked()
+    wanted = max(1, min(1000, int(max_messages)))
+    page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    page_limit = _manual_scan_page_limit(wanted, page_size)
+    query = _recover_search_query(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to)
+    skip_botana_ids = {str(label_id).strip() for label_id in list_botana_label_ids(service) if str(label_id).strip()}
+    targets = []
+    seen_ids = set()
+    inspected = 0
+    pages = 0
+    page_token = None
+    criteria_desc = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to) or "filtros informados"
+    if callable(progress_cb):
+        progress_cb(
+            phase="searching",
+            progress_current=0,
+            progress_total=wanted,
+            matched=0,
+            inspected=0,
+            current_email="",
+            current_subject="",
+            current_date="",
+            message="Varrendo Gmail em busca de mensagens sem label do Botana.",
+            detail=f"Critérios: {criteria_desc}.",
+        )
+    while pages < page_limit and len(targets) < wanted:
+        batch, next_page_token = buscarMessagesEnviadosPagina(
+            service,
+            max_results=page_size,
+            page_token=page_token,
+            query=query,
+            skip_label_ids=skip_botana_ids,
+        )
+        pages += 1
+        if not batch and not next_page_token:
+            break
+        for item in batch:
+            msg_id = str(item.get("id", "")).strip()
+            if not msg_id or msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+            preview = _reprocess_message_preview(service, msg_id)
+            inspected += 1
+            current_email = str(preview.get("email", "")).strip()
+            current_subject = str(preview.get("subject", "")).strip()
+            current_date = str(preview.get("date", "")).strip()
+            if callable(progress_cb):
+                progress_cb(
+                    phase="searching",
+                    progress_current=min(len(targets), wanted),
+                    progress_total=wanted,
+                    matched=len(targets),
+                    inspected=inspected,
+                    current_email=current_email,
+                    current_subject=current_subject,
+                    current_date=current_date,
+                    message=f"Analisando mensagens sem label: {inspected} verificadas.",
+                    detail=f"Encontradas {len(targets)} dentro dos filtros. Página {pages} de até {page_limit}.",
+                )
+            if not _preview_matches_nf_range(current_subject, start_nf, end_nf):
+                continue
+            targets.append(
+                {
+                    "id": msg_id,
+                    "threadId": str(item.get("threadId", "")).strip(),
+                    "labelIds": list(item.get("labelIds", []) or []),
+                    "snippet": str(item.get("snippet", "") or ""),
+                }
+            )
+            if callable(progress_cb):
+                progress_cb(
+                    phase="searching",
+                    progress_current=min(len(targets), wanted),
+                    progress_total=wanted,
+                    matched=len(targets),
+                    inspected=inspected,
+                    current_email=current_email,
+                    current_subject=current_subject,
+                    current_date=current_date,
+                    message=f"Mensagens encontradas: {len(targets)} de {wanted}.",
+                    detail=f"Critérios: {criteria_desc}. Página {pages} de até {page_limit}.",
+                )
+            if len(targets) >= wanted:
+                break
+        if len(targets) >= wanted or not next_page_token:
+            break
+        page_token = next_page_token
+    return {
+        "ok": True,
+        "matched": len(targets),
+        "inspected": inspected,
+        "pages": pages,
+        "query": query,
+        "criteria": criteria_desc,
+        "targets": targets,
+    }
+
+
+def _start_recover_missing_background(
+    max_messages: int,
+    nf_start: str = "",
+    nf_end: str = "",
+    date_from: str = "",
+    date_to: str = "",
+) -> tuple[bool, dict]:
+    criteria_desc = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to)
+    if not criteria_desc:
+        return False, {"message": "Informe uma faixa de NF e/ou um período para recuperar."}
+    snap = _manual_action_snapshot()
+    if bool(snap.get("active")):
+        if not snap.get("message"):
+            label = str(snap.get("label") or "Acao manual").strip() or "Acao manual"
+            snap["message"] = f"{label} ja esta em andamento."
+        return False, snap
+    started, snap = _manual_action_begin(
+        "recover_missing",
+        "Recuperação de faltantes",
+        "Recuperação iniciada.",
+        detail=f"Buscando até {int(max_messages)} mensagens sem label do Botana em {criteria_desc}.",
+        progress_total=int(max_messages),
+        requested_limit=int(max_messages),
+        matched=0,
+        inspected=0,
+    )
+    if not started:
+        return False, snap
+
+    def _progress(**kwargs):
+        _manual_action_update(**kwargs)
+
+    def _worker():
+        resume_loop = bool(running)
+        try:
+            if resume_loop:
+                _manual_action_update(
+                    message="Interrompendo ciclo automático para recuperar faltantes.",
+                    detail="O loop automático será retomado depois da recuperação.",
+                )
+                parar_verificacao(wait=True, timeout=120.0)
+                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                    _manual_action_finish(
+                        False,
+                        "Não foi possível iniciar a recuperação.",
+                        detail="O ciclo automático não liberou a leitura a tempo.",
+                        requested_limit=int(max_messages),
+                    )
+                    return
+            stop_event.clear()
+            _manual_action_update(
+                message="Recuperação em andamento.",
+                detail=f"Varrendo Gmail em busca de mensagens sem label do Botana em {criteria_desc}.",
+                phase="searching",
+                matched=0,
+                inspected=0,
+            )
+            result = _find_missing_messages(
+                max_messages=max_messages,
+                nf_start=nf_start,
+                nf_end=nf_end,
+                date_from=date_from,
+                date_to=date_to,
+                progress_cb=_progress,
+            )
+            targets = list(result.get("targets") or [])
+            matched = int(result.get("matched", 0) or 0)
+            inspected = int(result.get("inspected", 0) or 0)
+            if targets:
+                _manual_action_update(
+                    phase="processing",
+                    progress_current=0,
+                    progress_total=len(targets),
+                    matched=matched,
+                    inspected=inspected,
+                    current_email="",
+                    current_subject="",
+                    current_date="",
+                    message="Mensagens encontradas. Iniciando leitura.",
+                    detail=f"O Botana vai reler {len(targets)} mensagens sem label do Botana em {criteria_desc}.",
+                )
+                ok, msg = executar_um_ciclo(
+                    max_messages_override=len(targets),
+                    messages_override=targets,
+                )
+                proc = _process_snapshot().get("last", {})
+                detail = (
+                    f"Encontradas: {matched} | "
+                    f"Analisadas: {inspected} | "
+                    f"E-mails: {int(proc.get('messages', 0) or 0)} | "
+                    f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
+                    f"XML: {int(proc.get('xmls', 0) or 0)} | "
+                    f"Lançamentos: {int(proc.get('launched', 0) or 0)}"
+                )
+                if resume_loop:
+                    restarted = iniciar_verificacao()
+                    detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
+                _manual_action_finish(
+                    ok,
+                    msg,
+                    detail=detail,
+                    progress_current=int(proc.get("messages", 0) or 0),
+                    progress_total=len(targets),
+                    matched=matched,
+                    inspected=inspected,
+                    requested_limit=int(max_messages),
+                )
+                return
+            detail = f"Nenhuma mensagem sem label do Botana combinou com {criteria_desc}. Analisadas: {inspected}."
+            if resume_loop:
+                restarted = iniciar_verificacao()
+                detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
+            _manual_action_finish(
+                True,
+                "Nenhuma mensagem pendente foi encontrada para os filtros informados.",
+                detail=detail,
+                progress_current=matched,
+                progress_total=int(max_messages),
+                matched=matched,
+                inspected=inspected,
+                requested_limit=int(max_messages),
+            )
+        except Exception as exc:
+            logger.exception("Falha na recuperação de faltantes em background: %s", exc)
+            if resume_loop:
+                try:
+                    iniciar_verificacao()
+                except Exception:
+                    logger.exception("Falha ao retomar loop automatico apos erro na recuperação.")
+            _manual_action_finish(False, "Erro na recuperação de faltantes.", detail=str(exc), requested_limit=int(max_messages))
+
+    threading.Thread(target=_worker, daemon=True, name="botana-recover-missing").start()
+    return True, snap
 
 
 def _reauthenticate_gmail() -> dict:
@@ -2787,6 +3290,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
+.recover-card h3{text-align:center}
+.recover-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;align-items:end}
+.recover-grid > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.recover-grid > div label{width:100%;text-align:center}
+.recover-grid > div input{width:min(180px,100%);text-align:center}
+.recover-note{margin-top:8px;text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
 .action-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -2844,10 +3353,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-erro{background:rgba(220,53,69,.14)!important}
 .audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
 .watch-title{text-align:center}
-.watch-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
+.watch-filters{display:grid;grid-template-columns:1fr;gap:8px;align-items:center;justify-items:center}
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .watch-filters > div label{width:100%;text-align:center}
-.watch-filters > div input{width:min(150px,100%);text-align:center}
+.watch-filters > div input{width:min(88px,100%);text-align:center}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .watch-note{max-width:900px;text-align:center}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -2891,9 +3400,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .ov.show{display:flex}
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
-@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -3024,6 +3533,36 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
       </article>
     </section>
+
+    <section class="card recover-card" style="margin-top:10px">
+      <h3>Recuperar e-mails sem leitura</h3>
+      <div class="recover-grid">
+        <div>
+          <label>Data inicial</label>
+          <input id="recoverDateFrom" type="date"/>
+        </div>
+        <div>
+          <label>Data final</label>
+          <input id="recoverDateTo" type="date"/>
+        </div>
+        <div>
+          <label>NF inicial</label>
+          <input id="recoverNfStart" type="text" placeholder="20247"/>
+        </div>
+        <div>
+          <label>NF final</label>
+          <input id="recoverNfEnd" type="text" placeholder="20481"/>
+        </div>
+        <div>
+          <label>Limite de mensagens</label>
+          <input id="recoverLimit" type="number" value="200" min="1" max="1000"/>
+        </div>
+        <div style="display:flex;align-items:end;justify-content:center">
+          <button id="recoverBtn" onclick="recoverMissing()">Recuperar faltantes</button>
+        </div>
+      </div>
+      <div class="muted recover-note">Busca apenas mensagens enviadas com XML que ainda não têm label do Botana. Use período e/ou faixa de NF; o progresso aparece em Ações manuais.</div>
+    </section>
   </section>
 
   <section id="tabHist" class="tab-panel hidden">
@@ -3040,7 +3579,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       </div>
       <div class="hist-toolbar">
         <div class="muted hist-note">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada. Arraste a divisória do cabeçalho para reajustar as colunas.</div>
-        <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <button type="button" class="sec hist-reset-btn" onclick="exportHistoryCsv()">Exportar CSV</button>
+          <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
+        </div>
       </div>
       <div class="table-wrap" style="margin-top:10px">
         <table class="hist-table">
@@ -3155,7 +3697,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <label>Depósitos há pelo menos</label>
           <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
         </div>
-        <div style="display:flex;align-items:end"><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
+        <div style="display:flex;align-items:end;justify-content:center"><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
       </div>
       <div class="watch-toolbar">
         <div class="muted watch-note">A relação lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</div>
@@ -3411,6 +3953,49 @@ function updProcessing(proc,maxMessages,action){
     barLabel.textContent=`Relancamento: ${curV}/${currentLimit} (${perc}%) | XML ${Number(cur.xmls||0)} | Lancamentos ${Number(cur.launched||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
     return;
   }
+  if(active&&kind==='recover_missing'&&phase!=='processing'){
+    const wanted=Math.max(1, Number(a.requested_limit||a.progress_total||maxMessages||100));
+    const matched=Math.max(0, Number(a.matched||0));
+    const inspected=Math.max(0, Number(a.inspected||0));
+    const perc=Math.max(0,Math.min(100,Math.round((Math.min(matched,wanted)/Math.max(1,wanted))*100)));
+    const detailParts=[];
+    if(String(a.current_email||'').trim())detailParts.push(`E-mail atual ${String(a.current_email||'').trim()}`);
+    if(String(a.current_date||'').trim())detailParts.push(`Data ${String(a.current_date||'').trim()}`);
+    if(String(a.current_subject||'').trim())detailParts.push(`Assunto ${String(a.current_subject||'').trim()}`);
+    runEl.textContent='Loop: recuperação manual em andamento';
+    nowEl.textContent=detailParts.length?`Mensagem atual: ${detailParts.join(' | ')}`:'Mensagem atual: varrendo e-mails sem label do Botana';
+    const last=p.last||{};
+    const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
+    let statusTxt='-';
+    if(last.ok===true) statusTxt='OK';
+    else if(last.ok===false) statusTxt='Erro';
+    lastEl.textContent=`Último ciclo automático: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+    barFill.style.width=String(perc)+'%';
+    barLabel.textContent=`Recuperação: ${matched}/${wanted} encontradas | ${inspected} analisadas`;
+    return;
+  }
+  if(active&&kind==='recover_missing'&&phase==='processing'){
+    const cur=p.current||{};
+    const currentLimit=Math.max(1, Number(a.progress_total||_manualRequestedLimit(a,maxMessages)));
+    const matched=Math.max(0, Number(a.matched||0));
+    const inspected=Math.max(0, Number(a.inspected||0));
+    const curStart=cur.started_at?_fmtDateTime(cur.started_at):'-';
+    runEl.textContent='Loop: executando leitura da recuperação';
+    nowEl.textContent=`Ciclo atual: inicio ${curStart} | ${_fmtCycleShort(cur)}`;
+    const last=p.last||{};
+    const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
+    let statusTxt='-';
+    if(last.ok===true) statusTxt='OK';
+    else if(last.ok===false) statusTxt='Erro';
+    lastEl.textContent=`Último ciclo automático: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+    let curV=Number(cur.messages||0);
+    if(!Number.isFinite(curV)||curV<0)curV=0;
+    if(curV>currentLimit)curV=currentLimit;
+    const perc=Math.max(0,Math.min(100,Math.round((curV/Math.max(1,currentLimit))*100)));
+    barFill.style.width=String(perc)+'%';
+    barLabel.textContent=`Recuperação: ${curV}/${currentLimit} (${perc}%) | Encontradas ${matched} | Analisadas ${inspected} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+    return;
+  }
   const reading=!!p.reading;
   const running=!!p.running;
   if(reading) runEl.textContent='Loop: executando ciclo agora';
@@ -3453,6 +4038,7 @@ function updManualAction(action,processing,maxMessages){
   const barEl=document.getElementById('manualActionBar');
   const progressEl=document.getElementById('manualActionProgress');
   const repBtn=document.getElementById('reprocessBtn');
+  const recoverBtn=document.getElementById('recoverBtn');
   if(!msgEl||!detailEl||!titleEl||!barEl||!progressEl)return;
   const active=!!a.active;
   const kind=String(a.kind||'').trim();
@@ -3493,6 +4079,32 @@ function updManualAction(action,processing,maxMessages){
       detailEl.textContent=String(a.detail||'Atualizando a label do Botana para Reprocessado.');
       _setManualBadge('ok','Remarcando');
     }
+  }else if(active&&kind==='recover_missing'){
+    const matched=Math.max(0, Number(a.matched||0));
+    const inspected=Math.max(0, Number(a.inspected||0));
+    if(phase==='processing'){
+      const cur=((processing||{}).current)||{};
+      const maxV=Math.max(1, Number(a.progress_total||_manualRequestedLimit(a,maxMessages)));
+      let curV=Number(cur.messages||0);
+      if(!Number.isFinite(curV)||curV<0)curV=0;
+      const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/Math.max(1,maxV))*100)));
+      barEl.style.width=String(perc)+'%';
+      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Encontradas ${matched} | Analisadas ${inspected} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+      msgEl.textContent=String(a.message||'Recuperação em andamento.');
+      detailEl.textContent=String(a.detail||'Leitura e lançamento das mensagens encontradas em andamento.');
+      _setManualBadge('ok','Lendo');
+    }else{
+      const wanted=Math.max(1, Number(a.requested_limit||a.progress_total||maxMessages||100));
+      const perc=Math.max(8,Math.min(95,Math.round((Math.min(matched,wanted)/Math.max(1,wanted))*100)));
+      const currentParts=[];
+      if(String(a.current_email||'').trim())currentParts.push(`E-mail atual: ${String(a.current_email||'').trim()}`);
+      if(String(a.current_date||'').trim())currentParts.push(`Data: ${String(a.current_date||'').trim()}`);
+      barEl.style.width=String(perc)+'%';
+      progressEl.textContent=`Encontradas ${matched}/${wanted} | Analisadas ${inspected}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
+      msgEl.textContent=String(a.message||'Recuperação em andamento.');
+      detailEl.textContent=String(a.detail||'Varrendo e-mails sem label do Botana.');
+      _setManualBadge('ok','Varrendo');
+    }
   }else{
     const status=String(a.status||'idle');
     const finished=String(a.finished_at||'').trim();
@@ -3510,6 +4122,10 @@ function updManualAction(action,processing,maxMessages){
   if(repBtn){
     repBtn.disabled=active;
     repBtn.textContent=active&&kind==='reprocess'?(phase==='processing'?'Lendo...':'Reprocessando...'):'Reprocessar agora';
+  }
+  if(recoverBtn){
+    recoverBtn.disabled=active;
+    recoverBtn.textContent=active&&kind==='recover_missing'?(phase==='processing'?'Lendo...':'Varrendo...'):'Recuperar faltantes';
   }
 }
 async function refresh(){
@@ -3593,6 +4209,31 @@ async function reprocess(){
     if(msgEl)msgEl.textContent='Falha ao iniciar o reprocessamento.';
     if(detailEl)detailEl.textContent=String(err&&err.message||err);
     alert('Erro ao reprocessar: '+(err&&err.message||err));
+    await refresh();
+  }
+}
+async function recoverMissing(){
+  const btn=document.getElementById('recoverBtn');
+  if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
+  const msgEl=document.getElementById('manualActionMsg');
+  const detailEl=document.getElementById('manualActionDetail');
+  if(msgEl)msgEl.textContent='Solicitação enviada. Varrendo Gmail em busca de mensagens sem label do Botana...';
+  if(detailEl)detailEl.textContent='O Botana vai procurar mensagens dentro do período e/ou faixa de NF informados e reler somente as que ainda não foram marcadas.';
+  try{
+    const payload={
+      max_messages:Number(document.getElementById('recoverLimit').value||200),
+      nf_start:String(document.getElementById('recoverNfStart').value||'').trim(),
+      nf_end:String(document.getElementById('recoverNfEnd').value||'').trim(),
+      date_from:String(document.getElementById('recoverDateFrom').value||'').trim(),
+      date_to:String(document.getElementById('recoverDateTo').value||'').trim(),
+    };
+    const j=await api('/api/recover-missing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    if(j&&j.friendly&&msgEl)msgEl.textContent=String(j.friendly);
+    await refresh();
+  }catch(err){
+    if(msgEl)msgEl.textContent='Falha ao iniciar a recuperação.';
+    if(detailEl)detailEl.textContent=String(err&&err.message||err);
+    alert('Erro ao recuperar faltantes: '+(err&&err.message||err));
     await refresh();
   }
 }
@@ -3755,21 +4396,33 @@ function _setSort(key){
 }
 _initHistoryColumnResize();
 document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventListener('click',()=>_setSort(th.dataset.key));});
+function _historyParams(){
+  const p=new URLSearchParams();
+  const vAt=((document.getElementById('hAt')||{}).value||'').trim();
+  const vVenc=((document.getElementById('hVenc')||{}).value||'').trim();
+  const vNf=((document.getElementById('hNf')||{}).value||'').trim();
+  const vCliente=((document.getElementById('hCliente')||{}).value||'').trim();
+  const vAba=((document.getElementById('hAba')||{}).value||'').trim();
+  const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
+  if(vAt)p.set('at',vAt);
+  if(vVenc)p.set('venc',vVenc);
+  if(vNf)p.set('nf',vNf);
+  if(vCliente)p.set('cliente',vCliente);
+  if(vAba)p.set('aba',vAba);
+  p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
+  return p;
+}
+function exportHistoryCsv(){
+  try{
+    const p=_historyParams();
+    window.location.assign(_url('/api/history/export?'+p.toString()));
+  }catch(err){
+    console.warn('Erro ao exportar histÃ³rico:',err);
+  }
+}
 async function loadHistory(silent=false){
   try{
-    const p=new URLSearchParams();
-    const vAt=((document.getElementById('hAt')||{}).value||'').trim();
-    const vVenc=((document.getElementById('hVenc')||{}).value||'').trim();
-    const vNf=((document.getElementById('hNf')||{}).value||'').trim();
-    const vCliente=((document.getElementById('hCliente')||{}).value||'').trim();
-    const vAba=((document.getElementById('hAba')||{}).value||'').trim();
-    const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
-    if(vAt)p.set('at',vAt);
-    if(vVenc)p.set('venc',vVenc);
-    if(vNf)p.set('nf',vNf);
-    if(vCliente)p.set('cliente',vCliente);
-    if(vAba)p.set('aba',vAba);
-    p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
+    const p=_historyParams();
     const j=await api('/api/history?'+p.toString());
     const items=(j&&Array.isArray(j.items))?j.items:[];
     _renderHistory(items);
@@ -3892,6 +4545,9 @@ function _setWatchSummary(summary){
     if(el)el.textContent=String(s[key]||0);
   });
 }
+function _resetWatchSummary(){
+  _setWatchSummary({total_itens:0,boletos_a_vencer:0,boletos_vencidos:0,depositos_atrasados:0});
+}
 function _setWatchStatus(message,loading=false){
   const el=document.getElementById('watchStatus');
   if(!el)return;
@@ -3935,6 +4591,7 @@ async function loadDueWatch(silent=false){
   if(boletoInput)boletoInput.value=String(boletoDays);
   if(depositoInput)depositoInput.value=String(depositoDays);
   if(showLoading){
+    _resetWatchSummary();
     _setWatchLoading(true,'Lendo planilhas...');
     const body=document.getElementById('wBody');
     if(body)body.innerHTML='<tr><td colspan="8">Lendo planilhas...</td></tr>';
@@ -3976,6 +4633,7 @@ async function deleteEntry(nf,parcela,at){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
+['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverLimit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverMissing();}});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
@@ -4191,6 +4849,37 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     cnpj_dest=cnpj_dest,
                 )
                 return _json_response(self, 200, {"items": items})
+            if parsed.path == "/api/history/export":
+                qs = parse_qs(parsed.query or "")
+                at_filter = (qs.get("at", [""])[0] or "").strip()
+                venc_filter = (qs.get("venc", [""])[0] or "").strip()
+                nf_filter = (qs.get("nf", [""])[0] or "").strip()
+                cliente_filter = (qs.get("cliente", [""])[0] or "").strip()
+                aba_filter = (qs.get("aba", [""])[0] or "").strip()
+                dt_from = (qs.get("from", [""])[0] or "").strip()
+                dt_to = (qs.get("to", [""])[0] or "").strip()
+                cnpj_emit = (qs.get("cnpj_emit", [""])[0] or "").strip()
+                cnpj_dest = (qs.get("cnpj_dest", [""])[0] or "").strip()
+                query = (qs.get("q", [""])[0] or "").strip()
+                try:
+                    limit = int((qs.get("limit", ["300"])[0] or "300").strip())
+                except Exception:
+                    limit = 300
+                items = _history_from_reports(
+                    limit=max(10, min(limit, 2000)),
+                    query=query,
+                    at_filter=at_filter,
+                    venc_filter=venc_filter,
+                    nf_filter=nf_filter,
+                    cliente_filter=cliente_filter,
+                    aba_filter=aba_filter,
+                    dt_from=dt_from,
+                    dt_to=dt_to,
+                    cnpj_emit=cnpj_emit,
+                    cnpj_dest=cnpj_dest,
+                )
+                file_name = f"historico_botana_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                return _csv_response(self, 200, file_name, _history_csv_rows(items))
             return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
 
         def do_POST(self):
@@ -4256,6 +4945,33 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
                     friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens mais recentes; a leitura sera executada em seguida."
+                    return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
+                if parsed.path == "/api/recover-missing":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
+                    try:
+                        max_messages = max(1, min(1000, int(data.get("max_messages", 200))))
+                    except Exception:
+                        max_messages = 200
+                    nf_start = str(data.get("nf_start", "") or "").strip()
+                    nf_end = str(data.get("nf_end", "") or "").strip()
+                    date_from = str(data.get("date_from", "") or "").strip()
+                    date_to = str(data.get("date_to", "") or "").strip()
+                    started, info = _start_recover_missing_background(
+                        max_messages=max_messages,
+                        nf_start=nf_start,
+                        nf_end=nf_end,
+                        date_from=date_from,
+                        date_to=date_to,
+                    )
+                    if not started:
+                        msg = str((info or {}).get("message") or "").strip()
+                        if not msg:
+                            msg = _manual_action_busy_message() or "Nao foi possivel iniciar a recuperacao."
+                        status_code = 400 if "Informe" in msg else 409
+                        return _json_response(self, status_code, {"ok": False, "message": msg, "action": info})
+                    filtros = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to) or "os filtros informados"
+                    friendly = f"Recuperacao iniciada para ate {max_messages} mensagens sem label do Botana em {filtros}."
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):

@@ -40,6 +40,7 @@ Sem iniciar o loop automático:
 - `POST /api/stop`
 - `POST /api/run-now`
 - `POST /api/reprocess`
+- `POST /api/recover-missing`
 - `GET /api/conferencia-parcelas`
 - `GET /api/prazos`
 
@@ -58,16 +59,25 @@ No `instances.json` do Hub, use:
 ## Ações manuais no painel
 
 - O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
+- O card `Recuperar e-mails sem leitura` busca mensagens enviadas com XML que ainda não tenham label do Botana, usando período e/ou faixa de NF, e já relê essas mensagens na sequência.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
+- A recuperação de faltantes usa os mesmos contadores visuais de `Ações manuais`, mostrando quantas mensagens foram analisadas, quantas combinaram com os filtros e qual e-mail está sendo varrido no momento.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
 - Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
 - As duas barras de progresso passam a refletir o reprocessamento ativo, incluindo o limite pedido no painel.
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
+
+## Leitura do Gmail
+
+- O ciclo normal agora aplica de verdade o `Período` configurado no painel ao montar a busca do Gmail.
+- A leitura automática passou a usar paginação real, respeitando `Máx páginas` e `Tamanho da página`, em vez de ficar presa ao primeiro lote retornado pela API.
+- Mensagens que já tenham qualquer label do Botana são puladas no ciclo normal, evitando releitura desnecessária e liberando espaço para e-mails ainda não tratados.
+- O limite efetivo de leitura automática fica alinhado ao menos ao produto de `Máx páginas x Tamanho da página`, para não manter um corte antigo menor do que o configurado na UI.
 
 ## Histórico no painel
 
@@ -97,3 +107,20 @@ No `instances.json` do Hub, use:
 - Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
 - A aba atualiza ao abrir, mostra estado de carregamento e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
+
+## Exportação do histórico
+
+- A aba `Histórico` agora tem um botão `Exportar CSV`.
+- A exportação respeita os mesmos filtros e o mesmo limite aplicados na consulta atual da grade.
+
+## Ajustes de Prazos
+
+- A coluna `Valor` prioriza `Valor da Parcela` e aceita células formatadas como moeda no Google Sheets; se vier vazio, cai para `Valor Total`.
+- Os filtros da aba `Prazos` ficam empilhados, centralizados e com campos menores.
+- Ao recarregar a aba `Prazos`, os totais são zerados antes da nova leitura para não manter números antigos na tela.
+
+## Duplicidade estrutural
+
+- O writer do Botana agora bloqueia novo lançamento quando a NF já tem todas as parcelas esperadas preenchidas, mesmo que a nova descrição venha como `DEP` em vez de `BLT`.
+- A conferência também normaliza o número da parcela (`2ª`, `2º`, `Parcela 2`, `2/2`) para não deixar duplicidades estruturais passarem só por diferença de texto.
+- Na aba `Conferência`, casos marcados como `Duplicada` passam a aparecer como divergência em vermelho.
