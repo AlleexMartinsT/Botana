@@ -92,6 +92,7 @@ _PROCESS_STATS = {
         "attachments": 0,
         "xmls": 0,
         "launched": 0,
+        "duplicates": 0,
     },
     "last": {
         "ok": None,
@@ -101,6 +102,7 @@ _PROCESS_STATS = {
         "attachments": 0,
         "xmls": 0,
         "launched": 0,
+        "duplicates": 0,
         "error": "",
     },
 }
@@ -138,10 +140,17 @@ def _process_start():
             "attachments": 0,
             "xmls": 0,
             "launched": 0,
+            "duplicates": 0,
         }
 
 
-def _process_update(messages: int | None = None, attachments: int | None = None, xmls: int | None = None, launched: int | None = None):
+def _process_update(
+    messages: int | None = None,
+    attachments: int | None = None,
+    xmls: int | None = None,
+    launched: int | None = None,
+    duplicates: int | None = None,
+):
     with _PROCESS_STATS_LOCK:
         cur = _PROCESS_STATS.get("current", {})
         if messages is not None:
@@ -152,6 +161,8 @@ def _process_update(messages: int | None = None, attachments: int | None = None,
             cur["xmls"] = max(0, int(xmls))
         if launched is not None:
             cur["launched"] = max(0, int(launched))
+        if duplicates is not None:
+            cur["duplicates"] = max(0, int(duplicates))
 
 
 def _process_finish(ok: bool, error: str = ""):
@@ -166,6 +177,7 @@ def _process_finish(ok: bool, error: str = ""):
             "attachments": int(cur.get("attachments", 0) or 0),
             "xmls": int(cur.get("xmls", 0) or 0),
             "launched": int(cur.get("launched", 0) or 0),
+            "duplicates": int(cur.get("duplicates", 0) or 0),
             "error": str(error or ""),
         }
         cur["active"] = False
@@ -366,7 +378,8 @@ def _start_run_now_background(max_messages_override: int | None = None) -> tuple
                 f"E-mails: {int(proc.get('messages', 0) or 0)} | "
                 f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
                 f"XML: {int(proc.get('xmls', 0) or 0)} | "
-                f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)}"
+                f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)} | "
+                f"Duplicadas: {int(proc.get('duplicates', 0) or 0)}"
             )
             if resume_loop:
                 restarted = iniciar_verificacao()
@@ -466,7 +479,8 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                     f"E-mails: {int(proc.get('messages', 0) or 0)} | "
                     f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
                     f"XML: {int(proc.get('xmls', 0) or 0)} | "
-                    f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)}"
+                    f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)} | "
+                    f"Duplicadas: {int(proc.get('duplicates', 0) or 0)}"
                 )
                 if resume_loop:
                     restarted = iniciar_verificacao()
@@ -1061,6 +1075,7 @@ def processar_emails_enviados(
     anexos_lidos = 0
     xmls_lidos = 0
     total_processados = 0
+    total_duplicados = 0
     page_token = None
     primeira_pagina = True
     paginas_lidas = 0
@@ -1073,6 +1088,7 @@ def processar_emails_enviados(
             "attachments": int(anexos_lidos),
             "xmls": int(xmls_lidos),
             "launched": int(total_processados),
+            "duplicates": int(total_duplicados),
         }
 
     def _sync_progress():
@@ -1081,6 +1097,7 @@ def processar_emails_enviados(
             attachments=anexos_lidos,
             xmls=xmls_lidos,
             launched=total_processados,
+            duplicates=total_duplicados,
         )
 
     def _abort_if_requested() -> bool:
@@ -1357,6 +1374,9 @@ def processar_emails_enviados(
                                 total_processados += 1
                                 _write_history_launch_event(dados_xml, dados_parcela, resultado)
                                 _sync_progress()
+                            elif isinstance(resultado, dict) and bool(resultado.get("duplicate")):
+                                total_duplicados += 1
+                                _sync_progress()
                             # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para anÃ¡lise isolada.
                             if NF_ALVO and STOP_AFTER_NF and isinstance(resultado, dict) and bool(resultado.get("inserted")):
                                 logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execuÃ§Ã£o.")
@@ -1453,12 +1473,7 @@ def executar_um_ciclo(
                 preserve_reprocess_label=preserve_reprocess_label,
             )
         _process_finish(ok=True, error="")
-        msg = (
-            f"ExecuÃ§Ã£o manual concluÃ­da: {int((summary or {}).get('messages', 0))} e-mails, "
-            f"{int((summary or {}).get('attachments', 0))} anexos, "
-            f"{int((summary or {}).get('xmls', 0))} XML, "
-            f"{int((summary or {}).get('launched', 0))} lanÃ§amentos."
-        )
+        msg = _format_cycle_status("Execução manual concluída", summary)
         last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return True, msg
@@ -1478,7 +1493,8 @@ def _format_cycle_status(prefix: str, summary: dict | None) -> str:
         f"{prefix}: {int(item.get('messages', 0) or 0)} e-mails, "
         f"{int(item.get('attachments', 0) or 0)} anexos, "
         f"{int(item.get('xmls', 0) or 0)} XML, "
-        f"{int(item.get('launched', 0) or 0)} lan\u00e7amentos."
+        f"{int(item.get('launched', 0) or 0)} lan\u00e7amentos, "
+        f"{int(item.get('duplicates', 0) or 0)} duplicadas."
     )
 
 
@@ -3510,7 +3526,8 @@ def _start_recover_missing_background(
                     f"E-mails: {int(proc.get('messages', 0) or 0)} | "
                     f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
                     f"XML: {int(proc.get('xmls', 0) or 0)} | "
-                    f"Lançamentos: {int(proc.get('launched', 0) or 0)}"
+                    f"Lançamentos: {int(proc.get('launched', 0) or 0)} | "
+                    f"Duplicadas: {int(proc.get('duplicates', 0) or 0)}"
                 )
                 if resume_loop:
                     restarted = iniciar_verificacao()
@@ -4354,7 +4371,8 @@ function _fmtCycleShort(c){
   const a=Number(it.attachments||0);
   const x=Number(it.xmls||0);
   const l=Number(it.launched||0);
-  return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l}`;
+  const d=Number(it.duplicates||0);
+  return `E-mails ${m} | Anexos ${a} | XML ${x} | Lançamentos ${l} | Duplicadas ${d}`;
 }
 function _reprocessView(action){
   const a=action||{};
@@ -4421,7 +4439,7 @@ function updProcessing(proc,maxMessages,action){
     if(curV>currentLimit)curV=currentLimit;
     const perc=Math.max(0,Math.min(100,Math.round((curV/Math.max(1,currentLimit))*100)));
     barFill.style.width=String(perc)+'%';
-    barLabel.textContent=`Relancamento: ${curV}/${currentLimit} (${perc}%) | XML ${Number(cur.xmls||0)} | Lancamentos ${Number(cur.launched||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+    barLabel.textContent=`Relancamento: ${curV}/${currentLimit} (${perc}%) | XML ${Number(cur.xmls||0)} | Lancamentos ${Number(cur.launched||0)} | Duplicadas ${Number(cur.duplicates||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
     return;
   }
   if(active&&kind==='recover_missing'&&phase!=='processing'){
@@ -4464,7 +4482,7 @@ function updProcessing(proc,maxMessages,action){
     if(curV>currentLimit)curV=currentLimit;
     const perc=Math.max(0,Math.min(100,Math.round((curV/Math.max(1,currentLimit))*100)));
     barFill.style.width=String(perc)+'%';
-    barLabel.textContent=`Recuperação: ${curV}/${currentLimit} (${perc}%) | Encontradas ${matched} | Analisadas ${inspected} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+    barLabel.textContent=`Recuperação: ${curV}/${currentLimit} (${perc}%) | Encontradas ${matched} | Analisadas ${inspected} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Duplicadas ${Number(cur.duplicates||0)}`;
     return;
   }
   const reading=!!p.reading;
@@ -4523,7 +4541,7 @@ function updManualAction(action,processing,maxMessages){
     if(!Number.isFinite(curV)||curV<0)curV=0;
     const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/maxV)*100)));
     barEl.style.width=String(perc)+'%';
-    progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+    progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Duplicadas ${Number(cur.duplicates||0)}`;
     msgEl.textContent=String(a.message||'Execução manual em andamento.');
     detailEl.textContent=String(a.detail||'Leitura de e-mails e lançamentos em andamento.');
     _setManualBadge('ok','Em andamento');
@@ -4535,7 +4553,7 @@ function updManualAction(action,processing,maxMessages){
       if(!Number.isFinite(curV)||curV<0)curV=0;
       const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/Math.max(1,maxV))*100)));
       barEl.style.width=String(perc)+'%';
-      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Duplicadas ${Number(cur.duplicates||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
       msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
       detailEl.textContent=String(a.detail||'Leitura e relançamento em andamento.');
       _setManualBadge('ok','Lendo');
@@ -4560,7 +4578,7 @@ function updManualAction(action,processing,maxMessages){
       if(!Number.isFinite(curV)||curV<0)curV=0;
       const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/Math.max(1,maxV))*100)));
       barEl.style.width=String(perc)+'%';
-      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Encontradas ${matched} | Analisadas ${inspected} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)}`;
+      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Encontradas ${matched} | Analisadas ${inspected} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Duplicadas ${Number(cur.duplicates||0)}`;
       msgEl.textContent=String(a.message||'Recuperação em andamento.');
       detailEl.textContent=String(a.detail||'Leitura e lançamento das mensagens encontradas em andamento.');
       _setManualBadge('ok','Lendo');

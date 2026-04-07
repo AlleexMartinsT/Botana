@@ -63,6 +63,7 @@ No `instances.json` do Hub, use:
 - O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
 - O card `Recuperar e-mails sem leitura` busca mensagens enviadas com XML que ainda não tenham label do Botana, usando período e/ou faixa de NF, e já relê essas mensagens na sequência.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
+- Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar faltantes` mostram também quantas parcelas caíram como `Duplicadas`, para diferenciar releitura bem-sucedida de lançamento realmente novo.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
