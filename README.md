@@ -80,6 +80,7 @@ No `instances.json` do Hub, use:
 - A leitura automática passou a usar paginação real, respeitando `Máx páginas` e `Tamanho da página`, em vez de ficar presa ao primeiro lote retornado pela API.
 - Mensagens que já tenham qualquer label do Botana são puladas no ciclo normal, evitando releitura desnecessária e liberando espaço para e-mails ainda não tratados.
 - O limite efetivo de leitura automática fica alinhado ao menos ao produto de `Máx páginas x Tamanho da página`, para não manter um corte antigo menor do que o configurado na UI.
+- Quando o XML vier só com a fatura total (`fat`) mas o e-mail trouxer vários boletos PDF, o Botana tenta extrair vencimento e valor de cada boleto para reconstruir as parcelas antes de lançar no financeiro.
 
 ## Histórico no painel
 
@@ -112,8 +113,9 @@ No `instances.json` do Hub, use:
 - A aba atualiza ao abrir, mostra estado de carregamento e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
 - Os botões de atualização da relação e da busca por nome ficam em linhas separadas, com espaçamento próprio no card da aba `Prazos`.
 - O botão `Buscar boletos em aberto` abre um popup próprio, fora do front-end nativo do navegador, para consultar por nome do cliente.
+- O campo `Nome do cliente` do popup fica centralizado e usa uma lista própria de sugestões dentro do modal, em vez do `datalist` nativo do navegador.
 - Se não houver pendências para o nome buscado, o popup mostra apenas a mensagem informando que não existem boletos em aberto.
-- Os nomes pesquisados e os nomes encontrados ficam salvos localmente em `%APPDATA%\\Botana\\watch_search_names.txt`, alimentando o autocomplete do campo nas próximas consultas.
+- O autocomplete mistura os nomes salvos localmente em `%APPDATA%\\Botana\\watch_search_names.txt` com os nomes de clientes que ainda têm boletos em aberto nas planilhas, então buscas parciais como `LOCAR` passam a sugerir nomes maiores correspondentes.
 
 ## Exportação do histórico
 

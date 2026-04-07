@@ -32,6 +32,10 @@ try:
     from tray_icon import run_tray
 except Exception:
     run_tray = None
+try:
+    from PyPDF2 import PdfReader
+except Exception:
+    PdfReader = None
 
 # -----------------------
 # FILTROS PARA DEBUG / ANÃLISE ISOLADA
@@ -779,6 +783,219 @@ def _normalize_report_text(text: str) -> str:
     return out.strip()
 
 
+def _safe_money_text(value: str) -> float:
+    try:
+        txt = str(value or "").strip().replace("\xa0", " ")
+        if not txt:
+            return 0.0
+        txt = re.sub(r"[^\d,.\-]+", "", txt)
+        if not txt or txt in {"-", ",", "."}:
+            return 0.0
+        if "," in txt and "." in txt:
+            if txt.rfind(",") > txt.rfind("."):
+                txt = txt.replace(".", "").replace(",", ".")
+            else:
+                txt = txt.replace(",", "")
+        elif "," in txt:
+            txt = txt.replace(",", ".")
+        return float(txt)
+    except Exception:
+        return 0.0
+
+
+def _normalize_ddmmyyyy(date_raw: str) -> str:
+    if not date_raw:
+        return ""
+    candidates = [
+        str(date_raw).strip(),
+        str(date_raw).strip().replace(".", "/"),
+        str(date_raw).strip().replace("-", "/"),
+    ]
+    formats = (
+        "%d/%m/%Y",
+        "%Y/%m/%d",
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d.%m.%Y",
+    )
+    for cand in candidates:
+        for fmt in formats:
+            try:
+                return datetime.strptime(cand, fmt).strftime("%d/%m/%Y")
+            except Exception:
+                continue
+    return ""
+
+
+def _is_boleto_pdf_name(name: str) -> bool:
+    nome_upper = str(name or "").upper()
+    return bool(re.search(r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)", nome_upper))
+
+
+def _extract_boleto_number_from_name(name: str) -> str:
+    nome_upper = str(name or "").upper()
+    if not _is_boleto_pdf_name(nome_upper):
+        return ""
+    match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
+    if not match:
+        return ""
+    num_boleto = match[-1]
+    m_clean = re.search(r"0{4,}([1-9][0-9]*(-[0-9A-Z]+)?)$", num_boleto)
+    if m_clean:
+        num_boleto = m_clean.group(1)
+    if num_boleto in {"0136", "136"}:
+        num_boleto = "10136"
+    elif num_boleto.startswith("0136-"):
+        num_boleto = num_boleto.replace("0136-", "10136-", 1)
+    elif num_boleto.startswith("136-"):
+        num_boleto = num_boleto.replace("136-", "10136-", 1)
+    return num_boleto
+
+
+def _extract_nf_number(value: str) -> str:
+    txt = str(value or "").upper()
+    match = re.search(r"\bNF\s*0*([0-9]{3,})\b", txt)
+    return str(match.group(1) or "").strip() if match else ""
+
+
+def _extract_pdf_text(file_path: str) -> str:
+    if PdfReader is None:
+        return ""
+    chunks = []
+    try:
+        reader = PdfReader(file_path)
+    except Exception as exc:
+        logger.warning("Falha ao abrir PDF %s para leitura de fallback: %s", os.path.basename(file_path), exc)
+        return ""
+    for page in reader.pages[:3]:
+        try:
+            chunks.append(page.extract_text() or "")
+        except Exception:
+            continue
+    return _normalize_report_text(" ".join(chunks))
+
+
+def _extract_boleto_due_and_value(pdf_text: str) -> tuple[str, float]:
+    text = _normalize_report_text(pdf_text)
+    if not text:
+        return "", 0.0
+    upper = text.upper()
+    regions = []
+    for marker in ("VENCIMENTO", "VENCTO", "DATA DE VENCIMENTO"):
+        pos = upper.find(marker)
+        if pos >= 0:
+            regions.append(text[pos : pos + 260])
+    if not regions:
+        regions.append(text[:320])
+    for region in regions:
+        date_match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", region)
+        if not date_match:
+            continue
+        vencimento = _normalize_ddmmyyyy(date_match.group(1))
+        tail = region[date_match.end() : date_match.end() + 120]
+        value_match = re.search(r"\b(\d{1,3}(?:\.\d{3})*,\d{2})\b", tail)
+        if vencimento and value_match:
+            valor = _safe_money_text(value_match.group(1))
+            if valor > 0:
+                return vencimento, valor
+    return "", 0.0
+
+
+def _extract_boleto_pdf_info(file_path: str) -> dict | None:
+    nome_arquivo = os.path.basename(file_path)
+    if not _is_boleto_pdf_name(nome_arquivo):
+        return None
+    numero = _extract_boleto_number_from_name(nome_arquivo)
+    pdf_text = _extract_pdf_text(file_path)
+    vencimento, valor = _extract_boleto_due_and_value(pdf_text)
+    nf = _extract_nf_number(nome_arquivo) or _extract_nf_number(pdf_text)
+    sort_date = "9999-12-31"
+    try:
+        if vencimento:
+            sort_date = datetime.strptime(vencimento, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except Exception:
+        pass
+    info = {
+        "numero": numero,
+        "nf": nf,
+        "vencimento": vencimento,
+        "valor": float(valor or 0.0),
+        "arquivo": nome_arquivo,
+        "_sort_date": sort_date,
+        "_sort_num": _safe_money_text(re.sub(r"[^\d]", "", numero or "")),
+    }
+    if not info["numero"] and not info["vencimento"] and info["valor"] <= 0:
+        return None
+    return info
+
+
+def _boletos_for_xml(dados_xml: dict, boleto_infos: list[dict]) -> list[dict]:
+    nf = str(dados_xml.get("nf") or "").strip()
+    candidatos = [dict(item) for item in list(boleto_infos or []) if isinstance(item, dict)]
+    if nf:
+        matched = [item for item in candidatos if str(item.get("nf") or "").strip() == nf]
+        if matched:
+            candidatos = matched
+    candidatos.sort(
+        key=lambda item: (
+            str(item.get("_sort_date") or "9999-12-31"),
+            float(item.get("_sort_num") or 0.0),
+            str(item.get("numero") or ""),
+            str(item.get("arquivo") or ""),
+        )
+    )
+    return candidatos
+
+
+def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) -> dict:
+    payload = dict(dados_xml or {})
+    parcelas = list(payload.get("parcelas") or [])
+    if str(payload.get("parcelas_source") or "").strip().lower() != "fat":
+        return payload
+    candidatos = _boletos_for_xml(payload, boleto_infos)
+    if len(parcelas) != 1 or len(candidatos) <= 1:
+        return payload
+    if not all(str(item.get("vencimento") or "").strip() and float(item.get("valor") or 0.0) > 0 for item in candidatos):
+        return payload
+    valor_total = float(payload.get("valorTotal") or 0.0)
+    soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
+    if valor_total > 0 and abs(soma_boletos - valor_total) > 0.05:
+        logger.warning(
+            "NF %s com XML de fatura unica teve %d boletos PDF, mas a soma %.2f difere do total %.2f. Mantendo XML.",
+            payload.get("nf"),
+            len(candidatos),
+            soma_boletos,
+            valor_total,
+        )
+        return payload
+    parcelas_inferidas = []
+    for idx, boleto in enumerate(candidatos, start=1):
+        parcelas_inferidas.append(
+            {
+                "numero": idx,
+                "numParcela": f"{idx}ª Parcela",
+                "vencimento": str(boleto.get("vencimento") or "").strip(),
+                "valor": float(boleto.get("valor") or 0.0),
+            }
+        )
+    payload["parcelas"] = parcelas_inferidas
+    payload["qtdParcelas"] = len(parcelas_inferidas)
+    payload["parcelas_source"] = "pdf_fallback"
+    payload["vencimento"] = parcelas_inferidas[0]["vencimento"]
+    payload["numParcela"] = parcelas_inferidas[0]["numParcela"]
+    payload["valorParcela"] = parcelas_inferidas[0]["valor"]
+    try:
+        payload["anoVencimento"] = datetime.strptime(payload["vencimento"], "%d/%m/%Y").strftime("%Y")
+    except Exception:
+        pass
+    logger.info(
+        "NF %s inferiu %d parcelas a partir dos PDFs de boleto porque o XML veio apenas com fatura total.",
+        payload.get("nf"),
+        len(parcelas_inferidas),
+    )
+    return payload
+
+
 def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: dict):
     """Registra no relatorio um evento estruturado apenas para lancamentos validos."""
     try:
@@ -926,7 +1143,7 @@ def processar_emails_enviados(
             _sync_progress()
 
             dados_xmls = []
-            boletos = []
+            boleto_infos = []
 
             # Processa todos os anexos baixados
             for arquivo in arquivos:
@@ -976,48 +1193,18 @@ def processar_emails_enviados(
                     # PDF -> tenta identificar boleto
                     # =============================
                     elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessÃ¡rio
-                        nome_upper = nome_arquivo.upper()
-
-                        # Trata nomes parecidos com BOLETO (erros comuns tipo BOLTO, BOLETA, BOLETT, etc)
-                        padrao_boleto = r"[_\s-]?(BLT|BOLET[OA]?|BOLTO|BOLETOO|BOLETT?)"
-
-                        if re.search(padrao_boleto, nome_upper):
-                            match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
-                            if match:
-                                num_boleto = match[-1]
-                                m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
-                                if m_clean:
-                                    num_boleto = m_clean.group(1)
-                                if num_boleto == "0136" or num_boleto == "136": num_boleto = "10136"
-                                elif num_boleto.startswith("0136-"): num_boleto = num_boleto.replace("0136-", "10136-", 1)
-                                elif num_boleto.startswith("136-"): num_boleto = num_boleto.replace("136-", "10136-", 1)
-                                boletos.append(num_boleto)
-                                logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-                            else:
-                                logger.info("Nenhum nÃºmero de boleto encontrado no nome: %s", nome_arquivo)
-                        elif arquivo.lower().endswith(".pdf"):
-                            nome_upper = nome_arquivo.upper()
-
-                            # Palavras que indicam boleto (considera erros comuns)
-                            padrao_boleto = r"\b(BOLET[OA]?|BOLTO|BOLETOO|BOLETT?|BLT)\b"
-
-                            # SÃ³ tenta identificar nÃºmero se o nome realmente tiver algo prÃ³ximo de "boleto"
-                            if re.search(padrao_boleto, nome_upper):
-                                match = re.findall(r"([0-9]{2,}-?[0-9]+)", nome_upper)
-                                if match:
-                                    num_boleto = match[-1]
-                                    m_clean = re.search(r'0{4,}([1-9][0-9]*(-[0-9a-zA-Z]+)?)$', num_boleto)
-                                    if m_clean:
-                                        num_boleto = m_clean.group(1)
-                                    if num_boleto == "0136" or num_boleto == "136": num_boleto = "10136"
-                                    elif num_boleto.startswith("0136-"): num_boleto = num_boleto.replace("0136-", "10136-", 1)
-                                    elif num_boleto.startswith("136-"): num_boleto = num_boleto.replace("136-", "10136-", 1)
-                                    boletos.append(num_boleto)
-                                    logger.info("Boleto identificado no nome: %s (BLT %s)", nome_arquivo, num_boleto)
-                                else:
-                                    logger.info("PossÃ­vel boleto sem nÃºmero identificado: %s", nome_arquivo)
-                            else:
-                                logger.info("PDF ignorado (nÃ£o parece boleto): %s", nome_arquivo)
+                        boleto_info = _extract_boleto_pdf_info(arquivo)
+                        if boleto_info:
+                            boleto_infos.append(boleto_info)
+                            logger.info(
+                                "Boleto identificado: %s (BLT %s, venc %s, valor %.2f)",
+                                nome_arquivo,
+                                str(boleto_info.get("numero") or "-"),
+                                str(boleto_info.get("vencimento") or "-"),
+                                float(boleto_info.get("valor") or 0.0),
+                            )
+                        else:
+                            logger.info("PDF ignorado (nÃ£o parece boleto ou nÃ£o foi possÃ­vel extrair metadados): %s", nome_arquivo)
 
                     else:
                         logger.info("Arquivo nÃ£o identificado como boleto: %s", nome_arquivo)
@@ -1088,6 +1275,8 @@ def processar_emails_enviados(
                 # Se chegou atÃ© aqui, a NF serÃ¡ processada normalmente.
                 # Se NF_ALVO + STOP_AFTER_NF: apÃ³s processar, se encerra o loop/principal para anÃ¡lise isolada.
 
+                xml_boletos = _boletos_for_xml(dados_xml, boleto_infos)
+                dados_xml = _infer_parcelas_from_boleto_pdfs(dados_xml, xml_boletos)
                 cnpj_emit = re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or ""))
                 ano = dados_xml.get("anoVencimento")
                 planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
@@ -1099,7 +1288,7 @@ def processar_emails_enviados(
                 # Itera sobre todas as parcelas - mapeamento correto de boletos -> parcelas
                 parcelas = dados_xml.get("parcelas", [])
                 n_parcelas = len(parcelas)
-                n_boletos = len(boletos)
+                n_boletos = len(xml_boletos)
 
                 # monta lista de boletos por parcela (mesmo tamanho de parcelas)
                 if n_parcelas == 0:
@@ -1109,9 +1298,17 @@ def processar_emails_enviados(
                     boletos_map = [None] * n_parcelas
                 else:
                     # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa sÃ³ os primeiros N
-                    boletos_map = [boletos[i] if i < n_boletos else None for i in range(n_parcelas)]
+                    boletos_map = [
+                        str((xml_boletos[i] or {}).get("numero") or "").strip() if i < n_boletos else None
+                        for i in range(n_parcelas)
+                    ]
                     if n_boletos > n_parcelas:
-                        logger.info("Mais boletos (%d) que parcelas (%d). Sobraram: %s", n_boletos, n_parcelas, boletos[n_parcelas:])
+                        logger.info(
+                            "Mais boletos (%d) que parcelas (%d). Sobraram: %s",
+                            n_boletos,
+                            n_parcelas,
+                            [str((item or {}).get("numero") or "").strip() for item in xml_boletos[n_parcelas:]],
+                        )
 
                 # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
                 for idx, parcela in enumerate(parcelas):
@@ -2403,6 +2600,41 @@ def _remember_watch_search_names(*values: str):
             logger.warning("Falha ao salvar autocomplete de nomes da busca de prazos: %s", exc)
 
 
+def _load_watch_search_suggestions() -> list[str]:
+    out = []
+    seen = set()
+
+    def add_name(value: str):
+        name = _normalize_watch_search_name(value)
+        if not name:
+            return
+        key = _normalize_ascii_key(name)
+        if not key or key in seen:
+            return
+        seen.add(key)
+        out.append(name)
+
+    for raw in _load_watch_search_names():
+        add_name(raw)
+
+    try:
+        linhas, _ = _load_audit_sheet_rows()
+    except Exception as exc:
+        logger.warning("Falha ao montar catálogo de autocomplete da busca de prazos: %s", exc)
+        return out[:500]
+
+    for item in linhas:
+        if _sheet_watch_is_baixado(item):
+            continue
+        if not _sheet_status_is_pending(item.get("status_planilha")):
+            continue
+        if _sheet_watch_kind(item.get("descricao")) != "boleto":
+            continue
+        add_name(str(item.get("cliente") or item.get("descricao") or "").strip())
+
+    return out[:500]
+
+
 def _business_days_distance(from_date, to_date) -> int:
     if not from_date or not to_date or from_date == to_date:
         return 0
@@ -2567,6 +2799,22 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
     hoje = datetime.now().date()
     tokens = [item for item in termo.split(" ") if item]
     itens = []
+    suggestions = []
+    suggestions_seen = set()
+
+    def add_suggestion(value: str):
+        name = _normalize_watch_search_name(value)
+        if not name:
+            return
+        key = _normalize_ascii_key(name)
+        if not key or key in suggestions_seen:
+            return
+        suggestions_seen.add(key)
+        suggestions.append(name)
+
+    for raw in _load_watch_search_names():
+        add_suggestion(raw)
+
     for item in linhas:
         if _sheet_watch_is_baixado(item):
             continue
@@ -2574,6 +2822,7 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
             continue
         if _sheet_watch_kind(item.get("descricao")) != "boleto":
             continue
+        add_suggestion(str(item.get("cliente") or item.get("descricao") or "").strip())
         haystack = _normalize_ascii_key(
             " ".join(
                 [
@@ -2632,6 +2881,8 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
     related_names = [nome_busca]
     related_names.extend(str(item.get("cliente") or "").strip() for item in itens)
     _remember_watch_search_names(*related_names)
+    for raw in related_names:
+        add_suggestion(raw)
     if count <= 0:
         message = f"Não existem pendências para '{nome_busca}'."
     elif count == 1:
@@ -2644,7 +2895,7 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
         "message": message,
         "meta": {**meta, "loaded_at": datetime.now().isoformat()},
         "items": itens,
-        "suggestions": _load_watch_search_names(),
+        "suggestions": suggestions[:500],
     }
 
 
@@ -3560,13 +3811,19 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-pop{position:fixed;inset:0;z-index:99998;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.68);backdrop-filter:blur(3px);padding:20px}
 .watch-pop.show{display:flex}
 .watch-pop-box{width:min(920px,94vw);max-height:min(82vh,760px);overflow:hidden;display:grid;grid-template-rows:auto auto auto 1fr;background:linear-gradient(180deg,#fff9f3,#fff2e5);border:1px solid #efc9a3;border-radius:16px;box-shadow:0 18px 42px rgba(20,10,4,.22)}
-.watch-pop-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid #efd6bf}
-.watch-pop-head h4{margin:0;color:#5f341a}
-.watch-pop-close{border:1px solid #d7ab82;background:#fff7ef;color:#6d3b1a;border-radius:10px;padding:6px 10px;cursor:pointer;font-weight:700}
+.watch-pop-head{position:relative;display:flex;justify-content:center;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid #efd6bf}
+.watch-pop-head h4{margin:0;color:#5f341a;text-align:center}
+.watch-pop-close{position:absolute;right:16px;top:10px;border:1px solid #d7ab82;background:#fff7ef;color:#6d3b1a;border-radius:10px;padding:6px 10px;cursor:pointer;font-weight:700}
 .watch-pop-close:hover{background:#ffeddc}
 .watch-pop-search{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 16px 10px;align-items:end}
-.watch-pop-search label{text-align:left}
-.watch-pop-search input{margin-top:4px}
+.watch-pop-field{position:relative;display:flex;flex-direction:column;align-items:center;width:100%}
+.watch-pop-search label{text-align:center;width:100%}
+.watch-pop-search input{width:min(520px,100%);margin-top:4px;text-align:center}
+.watch-pop-suggest{display:none;width:min(520px,100%);margin-top:6px;max-height:210px;overflow:auto;border:1px solid #e7c4a5;border-radius:12px;background:#fffaf6;box-shadow:0 10px 24px rgba(20,10,4,.12)}
+.watch-pop-suggest.show{display:block}
+.watch-pop-suggest-item{display:block;width:100%;border:0;background:transparent;padding:9px 10px;text-align:center;color:#5f341a;cursor:pointer;font-size:.84rem}
+.watch-pop-suggest-item + .watch-pop-suggest-item{border-top:1px solid #f0dac6}
+.watch-pop-suggest-item:hover,.watch-pop-suggest-item.active{background:#fff0e1}
 .watch-pop-state{padding:0 16px 10px;min-height:22px;text-align:center;color:#6b4126;font-size:.84rem}
 .watch-pop-state.loading{color:#a25b18;font-weight:700}
 .watch-pop-results{padding:0 16px 16px;overflow:auto}
@@ -3593,7 +3850,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}.watch-pop-search{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -3947,10 +4204,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <button type="button" class="watch-pop-close" onclick="closeWatchSearchModal()">Fechar</button>
     </div>
     <div class="watch-pop-search">
-      <div>
+      <div class="watch-pop-field">
         <label>Nome do cliente</label>
-        <input id="watchSearchInput" type="text" list="watchSearchSuggestions" placeholder="Digite o nome completo ou parcial"/>
-        <datalist id="watchSearchSuggestions"></datalist>
+        <input id="watchSearchInput" type="text" placeholder="Digite o nome completo ou parcial"/>
+        <div id="watchSearchSuggestions" class="watch-pop-suggest"></div>
       </div>
       <button id="watchSearchBtn" type="button" onclick="searchOpenBoletos()">Buscar</button>
     </div>
@@ -4857,16 +5114,69 @@ function _renderWatchSearchResults(items,message){
   box.innerHTML=`<table class="watch-pop-table"><thead><tr><th>Cliente</th><th>NF</th><th>Vencimento</th><th>Situação</th><th>Prazo</th><th>Valor</th><th>Aba</th></tr></thead><tbody>${rows}</tbody></table>`;
   _setWatchSearchState(message||`${arr.length} boleto(s) em aberto encontrados.`,false);
 }
-function _renderWatchSearchSuggestions(items){
+let _watchSearchCatalog=[];
+function _watchSearchKey(value){
+  return String(value||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/\\s+/g,' ').trim().toUpperCase();
+}
+function _setWatchSearchCatalog(items){
+  const arr=Array.isArray(items)?items:[];
+  const unique=[];
+  const seen=new Set();
+  arr.forEach((item)=>{
+    const name=_compactSpaces(item||'');
+    const key=_watchSearchKey(name);
+    if(!key||seen.has(key))return;
+    seen.add(key);
+    unique.push(name);
+  });
+  _watchSearchCatalog=unique;
+  const input=document.getElementById('watchSearchInput');
+  _renderWatchSearchSuggestions(String((input&&input.value)||''));
+}
+function _filterWatchSearchSuggestions(query){
+  const key=_watchSearchKey(query);
+  if(!key)return [];
+  const tokens=key.split(' ').filter(Boolean);
+  return _watchSearchCatalog
+    .map((name,idx)=>({name,key:_watchSearchKey(name),idx}))
+    .filter((item)=>item.key&&tokens.every((token)=>item.key.includes(token)))
+    .sort((a,b)=>{
+      const aStart=a.key.startsWith(key)?0:1;
+      const bStart=b.key.startsWith(key)?0:1;
+      if(aStart!==bStart)return aStart-bStart;
+      const aPos=a.key.indexOf(key);
+      const bPos=b.key.indexOf(key);
+      if(aPos!==bPos)return aPos-bPos;
+      if(a.name.length!==b.name.length)return a.name.length-b.name.length;
+      return a.idx-b.idx;
+    })
+    .slice(0,12)
+    .map((item)=>item.name);
+}
+function _renderWatchSearchSuggestions(query){
   const el=document.getElementById('watchSearchSuggestions');
   if(!el)return;
-  const arr=(Array.isArray(items)?items:[]).filter(Boolean).slice(0,100);
-  el.innerHTML=arr.map((item)=>`<option value="${_esc(item)}"></option>`).join('');
+  const arr=_filterWatchSearchSuggestions(query);
+  if(!arr.length){
+    el.innerHTML='';
+    el.classList.remove('show');
+    return;
+  }
+  el.innerHTML=arr.map((item)=>`<button type="button" class="watch-pop-suggest-item" data-value="${_esc(item)}" onclick="useWatchSearchSuggestion(this.dataset.value)">${_esc(item)}</button>`).join('');
+  el.classList.add('show');
+}
+function useWatchSearchSuggestion(value){
+  const input=document.getElementById('watchSearchInput');
+  if(!input)return;
+  input.value=String(value||'');
+  _renderWatchSearchSuggestions('');
+  input.focus();
+  searchOpenBoletos();
 }
 async function loadWatchSearchSuggestions(){
   try{
     const j=await api('/api/prazos/search-suggestions');
-    _renderWatchSearchSuggestions(j&&j.items||[]);
+    _setWatchSearchCatalog(j&&j.items||[]);
   }catch(err){
     console.warn('Erro ao carregar autocomplete da busca de prazos:',err);
   }
@@ -4878,26 +5188,29 @@ function openWatchSearchModal(){
   _renderWatchSearchResults([], 'Nenhuma busca executada ainda.');
   loadWatchSearchSuggestions().catch(()=>{});
   const input=document.getElementById('watchSearchInput');
-  if(input){setTimeout(()=>input.focus(),20);}
+  if(input){setTimeout(()=>{input.focus();_renderWatchSearchSuggestions(input.value||'');},20);}
 }
 function closeWatchSearchModal(ev){
   if(ev&&ev.target&&ev.currentTarget&&ev.target!==ev.currentTarget)return;
   const modal=document.getElementById('watchSearchModal');
   if(modal)modal.classList.remove('show');
+  _renderWatchSearchSuggestions('');
 }
 async function searchOpenBoletos(){
   const input=document.getElementById('watchSearchInput');
   const btn=document.getElementById('watchSearchBtn');
   const query=String((input&&input.value)||'').trim();
   if(!query){
+    _renderWatchSearchSuggestions('');
     _renderWatchSearchResults([], 'Informe um nome para consultar.');
     return;
   }
   if(btn){btn.disabled=true;btn.textContent='Buscando...';}
+  _renderWatchSearchSuggestions('');
   _setWatchSearchState('Consultando boletos em aberto nas planilhas...',true);
   try{
     const j=await api('/api/prazos/search?nome='+encodeURIComponent(query));
-    _renderWatchSearchSuggestions(j&&j.suggestions||[]);
+    _setWatchSearchCatalog(j&&j.suggestions||[]);
     _renderWatchSearchResults(j&&j.items||[], String((j&&j.message)||'Busca concluída.'));
   }catch(err){
     _renderWatchSearchResults([], 'Falha ao consultar boletos em aberto.');
@@ -4924,6 +5237,7 @@ document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();searchOpenBoletos();}});});
+['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{_renderWatchSearchSuggestions(el.value||'');});el.addEventListener('focus',()=>{_renderWatchSearchSuggestions(el.value||'');});});
 window.addEventListener('keydown',(e)=>{
   if(e.key!=='Escape')return;
   const modal=document.getElementById('watchSearchModal');
@@ -5103,7 +5417,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
             if parsed.path == "/api/prazos/search-suggestions":
                 try:
-                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_names()})
+                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_suggestions()})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
 

@@ -64,6 +64,7 @@ def extrairDadosXML(caminhoXML):
         "cnpjDestinatario": cnpj_dest,
         "valorTotal": float(total.findtext("ns:vNF", default="0", namespaces=ns) or 0),
         "parcelas": [],
+        "parcelas_source": "none",
         "naturezaOperacao": ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper(),
     }
 
@@ -80,6 +81,7 @@ def extrairDadosXML(caminhoXML):
     fat_fatura = root.find(".//ns:fat", ns)
 
     if fat:
+        dados["parcelas_source"] = "dup"
         for i, dup in enumerate(fat, start=1):
             venc_raw = dup.findtext("ns:dVenc", default="", namespaces=ns)
             venc = _normalize_date_to_ddmmyyyy(venc_raw)
@@ -94,6 +96,7 @@ def extrairDadosXML(caminhoXML):
             )
     else:
         if fat_fatura is not None:
+            dados["parcelas_source"] = "fat"
             valor = float(fat_fatura.findtext("ns:vLiq", default="0", namespaces=ns) or 0)
             emissao = ide.findtext("ns:dhEmi", default="", namespaces=ns)
             venc = ""
