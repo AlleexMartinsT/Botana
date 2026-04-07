@@ -11,11 +11,17 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, RELATORIO_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
-from gmail_service import getGmailService, buscarMessagesEnviadosPagina, baixar_anexos_de_mensagem, ensure_label, LABEL_NAME
+from gmail_service import (
+    getGmailService,
+    buscarMessagesEnviadosPagina,
+    baixar_anexos_de_mensagem,
+    marcar_mensagem_com_label,
+    marcar_mensagem_para_reprocessar,
+    listar_mensagens_com_labels_botana,
+)
 from reporter import escreverRelatorio, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
-from gmail_service import marcar_mensagem_com_label
 from logger_config import logger, cor_ciano, reset
 try:
     from tray_icon import run_tray
@@ -297,9 +303,9 @@ def _start_run_now_background() -> tuple[bool, dict]:
         return False, snap
     started, snap = _manual_action_begin(
         "run_now",
-        "Execucao manual",
-        "Execucao manual iniciada.",
-        detail="Acompanhe os contadores de leitura e lancamentos no painel.",
+        "Execu\u00e7\u00e3o manual",
+        "Execu\u00e7\u00e3o manual iniciada.",
+        detail="Acompanhe os contadores de leitura e lan\u00e7amentos no painel.",
     )
     if not started:
         return False, snap
@@ -309,21 +315,21 @@ def _start_run_now_background() -> tuple[bool, dict]:
         try:
             if resume_loop:
                 _manual_action_update(
-                    message="Interrompendo ciclo automatico para executar agora.",
-                    detail="O loop automatico sera retomado depois da execucao manual.",
+                    message="Interrompendo ciclo autom\u00e1tico para executar agora.",
+                    detail="O loop autom\u00e1tico ser\u00e1 retomado depois da execu\u00e7\u00e3o manual.",
                 )
                 parar_verificacao(wait=True, timeout=120.0)
                 if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
                     _manual_action_finish(
                         False,
-                        "Nao foi possivel executar agora.",
-                        detail="O ciclo automatico nao liberou a leitura a tempo.",
+                        "N\u00e3o foi poss\u00edvel executar agora.",
+                        detail="O ciclo autom\u00e1tico n\u00e3o liberou a leitura a tempo.",
                     )
                     return
             stop_event.clear()
             _manual_action_update(
-                message="Execucao manual em andamento.",
-                detail="Acompanhe os contadores de leitura e lancamentos no painel.",
+                message="Execu\u00e7\u00e3o manual em andamento.",
+                detail="Acompanhe os contadores de leitura e lan\u00e7amentos no painel.",
             )
             ok, msg = executar_um_ciclo()
             proc = _process_snapshot().get("last", {})
@@ -331,11 +337,11 @@ def _start_run_now_background() -> tuple[bool, dict]:
                 f"E-mails: {int(proc.get('messages', 0) or 0)} | "
                 f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
                 f"XML: {int(proc.get('xmls', 0) or 0)} | "
-                f"Lancamentos: {int(proc.get('launched', 0) or 0)}"
+                f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)}"
             )
             if resume_loop:
                 restarted = iniciar_verificacao()
-                detail = f"{detail} | Loop automatico {'retomado' if restarted else 'nao retomado'}."
+                detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
             _manual_action_finish(ok, msg, detail=detail)
         except Exception as exc:
             logger.exception("Falha na execução manual em background: %s", exc)
@@ -344,24 +350,24 @@ def _start_run_now_background() -> tuple[bool, dict]:
                     iniciar_verificacao()
                 except Exception:
                     logger.exception("Falha ao retomar loop automatico apos erro na execucao manual.")
-            _manual_action_finish(False, "Erro na execucao manual.", detail=str(exc))
+            _manual_action_finish(False, "Erro na execu\u00e7\u00e3o manual.", detail=str(exc))
 
     threading.Thread(target=_worker, daemon=True, name="botana-run-now").start()
     return True, snap
 
 
 def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[bool, dict]:
-    busy = _manual_action_busy_message()
-    if busy:
-        snap = _manual_action_snapshot()
+    snap = _manual_action_snapshot()
+    if bool(snap.get("active")):
         if not snap.get("message"):
-            snap["message"] = busy
+            label = str(snap.get("label") or "Acao manual").strip() or "Acao manual"
+            snap["message"] = f"{label} ja esta em andamento."
         return False, snap
     started, snap = _manual_action_begin(
         "reprocess",
         "Reprocessamento",
         "Reprocessamento iniciado.",
-        detail=f"Ate {int(max_messages)} mensagens mais recentes com a label do Botana.",
+        detail=f"At\u00e9 {int(max_messages)} mensagens mais recentes com label do Botana ser\u00e3o atualizadas para Reprocessado.",
         progress_total=int(max_messages),
         requested_limit=int(max_messages),
     )
@@ -372,10 +378,33 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
         _manual_action_update(**kwargs)
 
     def _worker():
+        resume_loop = bool(running)
         try:
+            if resume_loop:
+                _manual_action_update(
+                    message="Interrompendo ciclo autom\u00e1tico para reprocessar.",
+                    detail="O loop autom\u00e1tico ser\u00e1 retomado depois do reprocessamento.",
+                )
+                parar_verificacao(wait=True, timeout=120.0)
+                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                    _manual_action_finish(
+                        False,
+                        "N\u00e3o foi poss\u00edvel iniciar o reprocessamento.",
+                        detail="O ciclo autom\u00e1tico n\u00e3o liberou a leitura a tempo.",
+                        requested_limit=int(max_messages),
+                    )
+                    return
+            stop_event.clear()
+            _manual_action_update(
+                message="Reprocessamento em andamento.",
+                detail="Atualizando a label do Botana nas mensagens mais recentes.",
+            )
             result = _reprocess_recent(max_messages=max_messages, mark_unread=mark_unread, progress_cb=_progress)
             friendly = f"Reprocessamento concluido: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas."
             detail = f"Falhas: {result.get('failed', 0)} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
+            if resume_loop:
+                restarted = iniciar_verificacao()
+                detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
             _manual_action_finish(
                 True,
                 friendly,
@@ -388,6 +417,11 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
             )
         except Exception as exc:
             logger.exception("Falha no reprocessamento em background: %s", exc)
+            if resume_loop:
+                try:
+                    iniciar_verificacao()
+                except Exception:
+                    logger.exception("Falha ao retomar loop automatico apos erro no reprocessamento.")
             _manual_action_finish(False, "Erro no reprocessamento.", detail=str(exc), requested_limit=int(max_messages))
 
     threading.Thread(target=_worker, daemon=True, name="botana-reprocess").start()
@@ -860,8 +894,9 @@ def processar_emails_enviados():
             if _abort_if_requested():
                 return _summary()
             try:
-                marcar_mensagem_com_label(service, msg_id)
-                logger.info("E-mail %s marcado com 'XML Processado Botana'", msg_id)
+                label_aplicada = marcar_mensagem_com_label(service, msg_id, existing_label_ids=m.get("labelIds", []))
+                if label_aplicada:
+                    logger.info("E-mail %s marcado com '%s'", msg_id, label_aplicada)
             except Exception as e:
                 logger.exception("Falha ao aplicar rÃ³tulo: %s", e)
 
@@ -1072,6 +1107,64 @@ def executar_um_ciclo():
         logger.exception("Erro na execuÃ§Ã£o manual: %s", exc)
         _process_finish(ok=False, error=str(exc))
         last_status = {"ok": False, "message": f"Erro na execuÃ§Ã£o manual: {exc}", "at": datetime.now().isoformat()}
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        return False, str(exc)
+    finally:
+        _IS_READING = False
+
+
+def _format_cycle_status(prefix: str, summary: dict | None) -> str:
+    item = summary or {}
+    return (
+        f"{prefix}: {int(item.get('messages', 0) or 0)} e-mails, "
+        f"{int(item.get('attachments', 0) or 0)} anexos, "
+        f"{int(item.get('xmls', 0) or 0)} XML, "
+        f"{int(item.get('launched', 0) or 0)} lan\u00e7amentos."
+    )
+
+
+def main_loop():
+    global running, last_status, _NEXT_RUN_AT, _IS_READING, _LOOP_THREAD
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    running = True
+    logger.info("[Botana] Loop iniciado")
+    while not stop_event.is_set():
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        try:
+            _IS_READING = True
+            with _PROCESS_EXEC_LOCK:
+                summary = processar_emails_enviados()
+            _process_finish(ok=True, error="")
+            msg = _format_cycle_status("Ciclo conclu\u00eddo", summary)
+            last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
+        except Exception as e:
+            logger.exception("Erro no ciclo principal: %s", e)
+            _process_finish(ok=False, error=str(e))
+            last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
+        finally:
+            _IS_READING = False
+        if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
+            break
+    running = False
+    _LOOP_THREAD = None
+    logger.info("[Botana] Loop finalizado")
+
+
+def executar_um_ciclo():
+    global last_status, _NEXT_RUN_AT, _IS_READING
+    try:
+        _IS_READING = True
+        with _PROCESS_EXEC_LOCK:
+            summary = processar_emails_enviados()
+        _process_finish(ok=True, error="")
+        msg = _format_cycle_status("Execu\u00e7\u00e3o manual conclu\u00edda", summary)
+        last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
+        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        return True, msg
+    except Exception as exc:
+        logger.exception("Erro na execu\u00e7\u00e3o manual: %s", exc)
+        _process_finish(ok=False, error=str(exc))
+        last_status = {"ok": False, "message": f"Erro na execu\u00e7\u00e3o manual: {exc}", "at": datetime.now().isoformat()}
         _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
         return False, str(exc)
     finally:
@@ -1385,11 +1478,7 @@ def _history_from_reports(
         except Exception:
             return None
 
-    rel_dir = Path(RELATORIO_DIR)
-    if not rel_dir.exists():
-        return out
-
-    files = sorted(rel_dir.glob("*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = _report_files_for_reading(include_all_txt=True)
     for fp in files:
         try:
             for raw_line in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
@@ -1539,6 +1628,37 @@ def _history_from_reports(
         item["duplicata"] = bool(chave[0] and contadorChaves.get(chave, 0) > 1)
 
     return out
+
+
+def _report_base_name(path: Path) -> str:
+    name = str(path.name or "").strip()
+    return name[:-4] if name.endswith(".tmp") else name
+
+
+def _report_files_for_reading(include_all_txt: bool = False) -> list[Path]:
+    rel_dir = Path(RELATORIO_DIR)
+    if not rel_dir.exists():
+        return []
+    patterns = ("*.txt", "*.txt.tmp") if include_all_txt else ("relatorio_*.txt", "relatorio_*.txt.tmp")
+    files: list[Path] = []
+    seen = set()
+    for pattern in patterns:
+        for fp in rel_dir.glob(pattern):
+            key = str(fp.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(fp)
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def _latest_report_files() -> list[Path]:
+    files = _report_files_for_reading(include_all_txt=False)
+    if not files:
+        return []
+    latest_base = _report_base_name(files[0])
+    grouped = [fp for fp in files if _report_base_name(fp) == latest_base]
+    return sorted(grouped, key=lambda p: p.stat().st_mtime)
 
 
 def _parse_report_datetime(dt_text: str):
@@ -1761,7 +1881,7 @@ def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
     if not relDir.exists():
         return {"ok": False, "message": "Diretório de relatórios não encontrado"}
 
-    arquivos = sorted(relDir.glob("relatorio_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    arquivos = _report_files_for_reading(include_all_txt=False)
     for arquivo in arquivos:
         try:
             linhas = arquivo.read_text(encoding="utf-8", errors="ignore").splitlines()
@@ -1808,17 +1928,9 @@ def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
     return {"ok": False, "message": f"Entrada NF {nfAlvo} ({parcelaAlvo}) não encontrada nos relatórios"}
 
 
-def _latest_report_file() -> Path | None:
-    rel_dir = Path(RELATORIO_DIR)
-    if not rel_dir.exists():
-        return None
-    files = sorted(rel_dir.glob("relatorio_*.txt"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return files[0] if files else None
-
-
 def _daily_report_data() -> dict:
-    report_file = _latest_report_file()
-    if not report_file:
+    report_files = _latest_report_files()
+    if not report_files:
         return {
             "exists": False,
             "path": "",
@@ -1829,10 +1941,12 @@ def _daily_report_data() -> dict:
             "avisos": [],
         }
 
-    try:
-        lines = report_file.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except Exception:
-        lines = []
+    lines = []
+    for report_file in report_files:
+        try:
+            lines.extend(report_file.read_text(encoding="utf-8", errors="ignore").splitlines())
+        except Exception:
+            continue
 
     processados: list[str] = []
     ignorados: list[str] = []
@@ -1870,10 +1984,11 @@ def _daily_report_data() -> dict:
         "avisos_ciclo": len(avisos),
         "avisos_dia": len(avisos),
     }
-    updated_at = datetime.fromtimestamp(report_file.stat().st_mtime).strftime("%d/%m/%Y, %H:%M:%S")
+    latest_mtime = max(fp.stat().st_mtime for fp in report_files)
+    updated_at = datetime.fromtimestamp(latest_mtime).strftime("%d/%m/%Y, %H:%M:%S")
     return {
         "exists": True,
-        "path": str(report_file),
+        "path": " | ".join(str(fp) for fp in report_files),
         "updated_at": updated_at,
         "totals": totals,
         "processados": processados[-8:],
@@ -1928,7 +2043,7 @@ def _wait_for_processing_idle(timeout: float = 30.0) -> bool:
 
 
 def _reprocess_message_preview(service, msg_id: str) -> dict:
-    preview = {"email": "", "subject": "", "date": ""}
+    preview = {"email": "", "subject": "", "date": "", "timestamp": 0}
     if not msg_id:
         return preview
     try:
@@ -1948,18 +2063,22 @@ def _reprocess_message_preview(service, msg_id: str) -> dict:
         from_raw = str(header_map.get("from", "")).strip()
         subject = str(header_map.get("subject", "")).strip()
         date_raw = str(header_map.get("date", "")).strip()
+        internal_ts = int(str(meta.get("internalDate", "0") or "0").strip() or "0")
         _, email_addr = parseaddr(from_raw)
         email_view = email_addr or from_raw
         date_view = date_raw
+        stamp = int(internal_ts or 0)
         if date_raw:
             try:
                 dt = parsedate_to_datetime(date_raw)
                 if dt.tzinfo is not None:
                     dt = dt.astimezone()
                 date_view = dt.strftime("%d/%m/%Y %H:%M")
+                if not stamp:
+                    stamp = int(dt.timestamp() * 1000)
             except Exception:
                 pass
-        preview.update({"email": email_view, "subject": subject, "date": date_view})
+        preview.update({"email": email_view, "subject": subject, "date": date_view, "timestamp": stamp})
     except Exception as exc:
         logger.warning("Falha ao carregar cabecalhos da mensagem %s: %s", msg_id, exc)
     return preview
@@ -1967,24 +2086,24 @@ def _reprocess_message_preview(service, msg_id: str) -> dict:
 
 def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
     service = _get_gmail_service_locked()
-    label_id = ensure_label(service, LABEL_NAME)
     wanted = max(1, min(1000, int(max_messages)))
-    query = f'label:"{LABEL_NAME}"'
-    messages = []
-    page_token = None
-    while len(messages) < wanted:
-        batch_size = min(500, wanted - len(messages))
-        req_kwargs = {"userId": "me", "q": query, "maxResults": batch_size}
-        if page_token:
-            req_kwargs["pageToken"] = page_token
-        resp = service.users().messages().list(**req_kwargs).execute()
-        batch = resp.get("messages", []) or []
-        if batch:
-            messages.extend(batch)
-        page_token = str(resp.get("nextPageToken", "")).strip()
-        if not page_token or not batch:
-            break
-    messages = messages[:wanted]
+    messages_raw = listar_mensagens_com_labels_botana(service, max_results=1000)
+    mensagens_com_meta = []
+    for item in messages_raw:
+        msg_id = str(item.get("id", "")).strip()
+        if not msg_id:
+            continue
+        preview = _reprocess_message_preview(service, msg_id)
+        mensagens_com_meta.append(
+            {
+                "id": msg_id,
+                "threadId": str(item.get("threadId", "")).strip(),
+                "botana_label": str(item.get("botana_label", "")).strip(),
+                "preview": preview,
+            }
+        )
+    mensagens_com_meta.sort(key=lambda item: int((item.get("preview") or {}).get("timestamp", 0) or 0), reverse=True)
+    messages = mensagens_com_meta[:wanted]
     changed = 0
     failed = 0
     if callable(progress_cb):
@@ -1997,16 +2116,17 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
             current_subject="",
             current_date="",
             message=f"{len(messages)} mensagens mais recentes encontradas para reprocessar.",
-            detail="Removendo a label do Botana e exibindo o remetente/data da mensagem atual.",
+            detail="Atualizando a label do Botana e exibindo o remetente/data da mensagem atual.",
         )
     for idx, item in enumerate(messages, start=1):
         msg_id = str(item.get("id", "")).strip()
         if not msg_id:
             continue
-        preview = _reprocess_message_preview(service, msg_id)
+        preview = dict(item.get("preview") or {})
         current_email = str(preview.get("email", "")).strip()
         current_subject = str(preview.get("subject", "")).strip()
         current_date = str(preview.get("date", "")).strip()
+        current_label = str(item.get("botana_label", "")).strip()
         if callable(progress_cb):
             progress_cb(
                 progress_current=changed + failed,
@@ -2017,11 +2137,13 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
                 current_subject=current_subject,
                 current_date=current_date,
                 message=f"Analisando mensagens: {idx} de {len(messages)}.",
-                detail=(f"Assunto: {current_subject}" if current_subject else "Lendo dados da mensagem atual."),
+                detail=(f"Label atual: {current_label} | Assunto: {current_subject}" if current_subject else f"Label atual: {current_label}"),
             )
-        body = {"removeLabelIds": [label_id], "addLabelIds": ["UNREAD"] if mark_unread else []}
+        novo_label = ""
         try:
-            service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
+            novo_label = marcar_mensagem_para_reprocessar(service, msg_id, mark_unread=mark_unread)
+            if not novo_label:
+                raise RuntimeError("Falha ao atualizar label de reprocessamento")
             changed += 1
         except Exception:
             failed += 1
@@ -2035,7 +2157,7 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
                 current_subject=current_subject,
                 current_date=current_date,
                 message=f"Reprocessando mensagens: {changed + failed} de {len(messages)}.",
-                detail=(f"Assunto: {current_subject}" if current_subject else f"Atualizadas: {changed} | Falhas: {failed}"),
+                detail=(f"Nova label: {novo_label} | Assunto: {current_subject}" if novo_label and current_subject else (f"Nova label: {novo_label}" if novo_label else f"Atualizadas: {changed} | Falhas: {failed}")),
             )
     return {
         "ok": True,
@@ -2383,7 +2505,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="muted" style="margin-top:6px">Usa as mensagens mais recentes que ainda estão com a label do Botana.</div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
-          <button id="reprocessBtn" onclick="reprocess()">Remover labels para reprocessar</button>
+          <button id="reprocessBtn" onclick="reprocess()">Marcar para reprocessar</button>
           <button id="runNowBtn" class="sec" onclick="runNow()">Executar agora</button>
         </div>
         <div class="action-box">
@@ -2392,7 +2514,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <span id="manualActionBadge" class="status-pill off"><span>•</span><span>Aguardando</span></span>
           </div>
           <div id="manualActionMsg" class="proc-line">Nenhuma ação manual em andamento.</div>
-          <div id="manualActionDetail" class="action-detail">Use os botões acima para reprocessar labels ou executar um ciclo manual.</div>
+          <div id="manualActionDetail" class="action-detail">Use os botões acima para atualizar labels de reprocessamento ou executar um ciclo manual.</div>
           <div class="proc-progress">
             <div class="proc-track"><div id="manualActionBar" class="proc-fill"></div></div>
             <div id="manualActionProgress" class="action-progress">Progresso: -</div>
@@ -2497,12 +2619,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th>Lançadas</th>
               <th>Faltando</th>
               <th>Duplicadas</th>
-              <th>Parcelas</th>
               <th>Último lançamento</th>
               <th>Aba</th>
             </tr>
           </thead>
-          <tbody id="aBody"><tr><td colspan="10">Sem dados</td></tr></tbody>
+          <tbody id="aBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -2757,12 +2878,12 @@ function updManualAction(action,processing,maxMessages){
     barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
     progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
     msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
-    detailEl.textContent=String(a.detail||'Removendo labels do Botana para nova leitura.');
+    detailEl.textContent=String(a.detail||'Atualizando a label do Botana para Reprocessado.');
     _setManualBadge('ok','Em andamento');
   }else{
     const status=String(a.status||'idle');
     const finished=String(a.finished_at||'').trim();
-    const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use os botões acima para reprocessar labels ou executar um ciclo manual.';
+    const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use os botões acima para atualizar labels de reprocessamento ou executar um ciclo manual.';
     barEl.style.width=status==='success'&&Number(a.progress_total||0)>0?'100%':'0%';
     progressEl.textContent=status==='success'||status==='error'
       ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Limite pedido ${Number(a.requested_limit||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
@@ -2779,7 +2900,7 @@ function updManualAction(action,processing,maxMessages){
   }
   if(repBtn){
     repBtn.disabled=active;
-    repBtn.textContent=active&&kind==='reprocess'?'Reprocessando...':'Remover labels para reprocessar';
+    repBtn.textContent=active&&kind==='reprocess'?'Reprocessando...':'Marcar para reprocessar';
   }
 }
 async function refresh(){
@@ -2853,7 +2974,7 @@ async function reprocess(){
   const msgEl=document.getElementById('manualActionMsg');
   const detailEl=document.getElementById('manualActionDetail');
   if(msgEl)msgEl.textContent='Solicitação enviada. Buscando mensagens para reprocessar...';
-  if(detailEl)detailEl.textContent='As labels serão removidas em background e o painel mostrará o remetente/data da mensagem atual.';
+  if(detailEl)detailEl.textContent='As labels serão atualizadas em background e o painel mostrará o remetente/data da mensagem atual.';
   try{
     const payload={account:'principal',max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
     const j=await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -3075,7 +3196,7 @@ function _renderParcelAudit(items){
   const arr=Array.isArray(items)?items:[];
   body.innerHTML='';
   if(!arr.length){
-    body.innerHTML='<tr><td colspan="10">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
+    body.innerHTML='<tr><td colspan="9">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
     return;
   }
   arr.forEach(it=>{
@@ -3083,10 +3204,9 @@ function _renderParcelAudit(items){
     if(it.status==='erro')tr.classList.add('audit-row-erro');
     else if(it.status==='aviso')tr.classList.add('audit-row-aviso');
     const clienteView=_compactClienteLabel(it.cliente,it.descricao);
-    const parcelasTxt=_fmtAuditList(it.parcelas);
     const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
     const local=_fmtLocal(it.local_lancamento||it.aba||'-');
-    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(parcelasTxt)}">${_esc(parcelasTxt)}</td><td title="${_esc(_fmtDateTime(it.ultimo_lancamento))}">${_esc(_fmtDateTime(it.ultimo_lancamento))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(_fmtDateTime(it.ultimo_lancamento))}">${_esc(_fmtDateTime(it.ultimo_lancamento))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
 }
@@ -3108,7 +3228,7 @@ async function loadParcelAudit(silent=false){
     if(!silent)console.warn('Erro ao carregar conferência:',err);
     _setAuditSummary({});
     const body=document.getElementById('aBody');
-    if(body)body.innerHTML='<tr><td colspan="10">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
 }
 async function deleteEntry(nf,parcela,at){

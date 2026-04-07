@@ -3,6 +3,7 @@ import os
 import base64
 import time
 import logging
+from datetime import datetime
 from typing import List, Dict, Any, Tuple
 from googleapiclient.discovery import build
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -16,6 +17,38 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 logger = logging.getLogger("bot.gmail_service")
 LABEL_NAME = "XML Processado Botana"
+REPROCESS_LABEL_NAME = "XML Reprocessado Botana"
+BOTANA_LABEL_PREFIXES = (LABEL_NAME, REPROCESS_LABEL_NAME)
+_LABEL_CACHE = {"at": 0.0, "labels": []}
+
+
+def _label_date(when=None) -> str:
+    ref = when or datetime.now()
+    return ref.strftime("%d/%m/%Y")
+
+
+def build_botana_label_name(reprocessed: bool = False, when=None) -> str:
+    prefix = REPROCESS_LABEL_NAME if reprocessed else LABEL_NAME
+    return f"{prefix} - {_label_date(when)}"
+
+
+def _list_labels(service, force: bool = False) -> List[Dict[str, Any]]:
+    now = time.time()
+    if not force and _LABEL_CACHE.get("labels") and (now - float(_LABEL_CACHE.get("at", 0.0)) < 60):
+        return list(_LABEL_CACHE.get("labels") or [])
+    labels = service.users().labels().list(userId="me").execute().get("labels", [])
+    _LABEL_CACHE.update({"at": now, "labels": list(labels or [])})
+    return list(labels or [])
+
+
+def list_botana_labels(service) -> List[Dict[str, Any]]:
+    labels = _list_labels(service)
+    out = []
+    for item in labels:
+        name = str(item.get("name", "")).strip()
+        if any(name.startswith(prefix) for prefix in BOTANA_LABEL_PREFIXES):
+            out.append(item)
+    return out
 
 def _get_token_path(cred_path: str) -> str:
     return cred_path.replace(".json", "_token.json")
@@ -50,6 +83,9 @@ def ensure_label(service, label_name: str = LABEL_NAME) -> str:
 
     body = {"name": label_name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
     created = service.users().labels().create(userId="me", body=body).execute()
+    fresh = list(labels)
+    fresh.append(created)
+    _LABEL_CACHE.update({"at": time.time(), "labels": fresh})
     logger.info("Rótulo criado: %s (%s)", label_name, created.get("id"))
     return created.get("id")
 
@@ -263,10 +299,94 @@ def _decode_base64_fixed(data: str) -> bytes:
         data += "=" * (4 - missing_padding)
     return base64.b64decode(data, validate=False)
 
-def marcar_mensagem_com_label(service, msg_id: str, label_name: str = LABEL_NAME):
+
+def _botana_label_ids(service) -> Tuple[Dict[str, str], List[str]]:
+    labels = _list_labels(service)
+    id_to_name = {}
+    botana_ids = []
+    for item in labels:
+        label_id = str(item.get("id", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if not label_id or not name:
+            continue
+        id_to_name[label_id] = name
+        if any(name.startswith(prefix) for prefix in BOTANA_LABEL_PREFIXES):
+            botana_ids.append(label_id)
+    return id_to_name, botana_ids
+
+
+def listar_mensagens_com_labels_botana(service, max_results: int = 1000) -> List[Dict[str, Any]]:
+    labels = list_botana_labels(service)
+    if not labels:
+        return []
+    wanted = max(1, min(1000, int(max_results or 1000)))
+    seen = set()
+    out: List[Dict[str, Any]] = []
+    for label in labels:
+        label_id = str(label.get("id", "")).strip()
+        label_name = str(label.get("name", "")).strip()
+        if not label_id:
+            continue
+        page_token = None
+        while len(out) < wanted:
+            batch_size = min(500, wanted - len(out))
+            req_kwargs = {"userId": "me", "labelIds": [label_id], "maxResults": batch_size}
+            if page_token:
+                req_kwargs["pageToken"] = page_token
+            resp = service.users().messages().list(**req_kwargs).execute()
+            batch = resp.get("messages", []) or []
+            for item in batch:
+                msg_id = str(item.get("id", "")).strip()
+                if not msg_id or msg_id in seen:
+                    continue
+                seen.add(msg_id)
+                out.append({"id": msg_id, "threadId": item.get("threadId", ""), "botana_label": label_name})
+                if len(out) >= wanted:
+                    break
+            page_token = str(resp.get("nextPageToken", "")).strip()
+            if not page_token or not batch:
+                break
+        if len(out) >= wanted:
+            break
+    return out
+
+
+def marcar_mensagem_com_label(service, msg_id: str, label_name: str | None = None, existing_label_ids=None, reprocessed: bool | None = None, when=None):
     try:
-        label_id = ensure_label(service, label_name)
-        body = {"addLabelIds": [label_id]}
+        id_to_name, botana_ids = _botana_label_ids(service)
+        if reprocessed is None:
+            existing = set(existing_label_ids or [])
+            reprocessed = any(
+                str(id_to_name.get(label_id, "")).startswith(REPROCESS_LABEL_NAME)
+                for label_id in existing
+            )
+        target_name = str(label_name or build_botana_label_name(reprocessed=bool(reprocessed), when=when)).strip()
+        target_id = ensure_label(service, target_name)
+        remove_ids = [label_id for label_id in botana_ids if label_id != target_id]
+        body = {"addLabelIds": [target_id]}
+        if remove_ids:
+            body["removeLabelIds"] = remove_ids
         service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
+        return target_name
     except Exception as e:
         logger.exception("Falha ao marcar mensagem %s com label: %s", msg_id, e)
+        return None
+
+
+def marcar_mensagem_para_reprocessar(service, msg_id: str, when=None, mark_unread: bool = True):
+    try:
+        _, botana_ids = _botana_label_ids(service)
+        target_name = build_botana_label_name(reprocessed=True, when=when)
+        target_id = ensure_label(service, target_name)
+        remove_ids = [label_id for label_id in botana_ids if label_id != target_id]
+        add_ids = [target_id]
+        if mark_unread:
+            add_ids.append("UNREAD")
+        body = {"addLabelIds": add_ids}
+        if remove_ids:
+            body["removeLabelIds"] = remove_ids
+        service.users().messages().modify(userId="me", id=msg_id, body=body).execute()
+        return target_name
+    except Exception as e:
+        logger.exception("Falha ao marcar mensagem %s para reprocessamento: %s", msg_id, e)
+        return None
