@@ -41,6 +41,7 @@ Sem iniciar o loop automático:
 - `POST /api/run-now`
 - `POST /api/reprocess`
 - `GET /api/conferencia-parcelas`
+- `GET /api/prazos`
 
 ## Integração com FinanceHub
 
@@ -88,3 +89,11 @@ No `instances.json` do Hub, use:
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento e informa quando a leitura das planilhas terminou.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
+
+## Prazos no painel
+
+- A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.
+- O painel separa boletos próximos do vencimento e depósitos atrasados, usando dias úteis e filtros customizáveis de `1` a `7`.
+- Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
+- Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
+- A aba atualiza ao abrir, mostra estado de carregamento e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.

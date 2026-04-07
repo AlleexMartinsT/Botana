@@ -2180,6 +2180,144 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
     }
 
 
+def _normalize_ascii_key(value: str) -> str:
+    txt = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    txt = re.sub(r"\s+", " ", txt).strip().upper()
+    return txt
+
+
+def _business_days_distance(from_date, to_date) -> int:
+    if not from_date or not to_date or from_date == to_date:
+        return 0
+    step = 1 if to_date > from_date else -1
+    cur = from_date
+    total = 0
+    while cur != to_date:
+        cur += timedelta(days=step)
+        if cur.weekday() < 5:
+            total += step
+    return total
+
+
+def _sheet_status_is_pending(status_value: str) -> bool:
+    key = _normalize_ascii_key(status_value)
+    return not key or key == "A RECEBER"
+
+
+def _sheet_watch_kind(descricao: str) -> str:
+    key = _normalize_ascii_key(descricao)
+    if not key:
+        return ""
+    if "BLT" in key or "BOLETO" in key:
+        return "boleto"
+    if re.search(r"\bDEP\b", key):
+        return "deposito"
+    return ""
+
+
+def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
+    boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
+    deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
+    linhas, meta = _load_audit_sheet_rows()
+    hoje = datetime.now().date()
+    itens = []
+    resumo = {
+        "total_itens": 0,
+        "boletos_a_vencer": 0,
+        "boletos_vencidos": 0,
+        "depositos_atrasados": 0,
+    }
+
+    for item in linhas:
+        if not _sheet_status_is_pending(item.get("status_planilha")):
+            continue
+        tipo = _sheet_watch_kind(item.get("descricao"))
+        if not tipo:
+            continue
+        venc_dt = _parse_audit_date(str(item.get("vencimento") or "").strip())
+        if not venc_dt:
+            continue
+        venc_date = venc_dt.date()
+        dias_uteis = _business_days_distance(hoje, venc_date)
+        if tipo == "boleto":
+            if dias_uteis > boleto_limit:
+                continue
+            if dias_uteis > 0:
+                status = "aviso"
+                status_label = "A vencer"
+                dias_label = f"Em {dias_uteis} \u00fateis"
+                resumo["boletos_a_vencer"] += 1
+            elif dias_uteis == 0:
+                status = "erro"
+                status_label = "Vence hoje"
+                dias_label = "Hoje"
+                resumo["boletos_vencidos"] += 1
+            else:
+                status = "erro"
+                atraso = abs(dias_uteis)
+                status_label = "Vencido"
+                dias_label = f"{atraso} \u00fateis atrasado"
+                resumo["boletos_vencidos"] += 1
+            tipo_label = "Boleto"
+        else:
+            if dias_uteis > -deposito_limit:
+                continue
+            atraso = abs(dias_uteis)
+            status = "erro"
+            status_label = "Dep\u00f3sito atrasado"
+            dias_label = f"{atraso} \u00fateis atrasado"
+            tipo_label = "Dep\u00f3sito"
+            resumo["depositos_atrasados"] += 1
+
+        valor_base = _audit_safe_float(item.get("valor_parcela"))
+        if valor_base <= 0:
+            valor_base = _audit_safe_float(item.get("valor_total"))
+        nf = str(item.get("nf") or "").strip()
+        local = " - ".join(
+            [x for x in (str(item.get("sheet_type") or "").strip(), str(item.get("aba") or "").strip()) if x]
+        )
+        itens.append(
+            {
+                "tipo": tipo,
+                "tipo_label": tipo_label,
+                "status": status,
+                "status_label": status_label,
+                "dias_uteis": dias_uteis,
+                "dias_label": dias_label,
+                "vencimento": str(item.get("vencimento") or "").strip(),
+                "descricao": _normalize_report_text(str(item.get("descricao") or "").strip()),
+                "cliente": _normalize_report_text(str(item.get("cliente") or "").strip()),
+                "nf": nf,
+                "valor": valor_base,
+                "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
+                "local": _normalize_report_text(local),
+                "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
+                "_sort_date": venc_date.toordinal(),
+                "_sort_nf": _audit_safe_int(nf, 0),
+            }
+        )
+        resumo["total_itens"] += 1
+
+    itens.sort(
+        key=lambda row: (
+            0 if row.get("status") == "erro" else 1,
+            int(row.get("_sort_date") or 0),
+            0 if row.get("tipo") == "boleto" else 1,
+            -int(row.get("_sort_nf") or 0),
+        )
+    )
+    for row in itens:
+        row.pop("_sort_date", None)
+        row.pop("_sort_nf", None)
+
+    return {
+        "summary": resumo,
+        "meta": {**meta, "loaded_at": datetime.now().isoformat()},
+        "limits": {"boletos_dias": boleto_limit, "depositos_dias": deposito_limit},
+        "items": itens,
+    }
+
+
 def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
     """I remove a specific HIST_JSON entry from the report files.
     # Eu removo uma entrada HIST_JSON especifica dos arquivos de relatorio."""
@@ -2590,7 +2728,7 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .hidden{display:none!important}
 .tab-panel.hidden{display:none!important}
 #tabMain{padding:0 10px 10px;display:grid;gap:9px}
-#tabHist,#tabDiag{padding:0 10px 10px}
+#tabHist,#tabDiag,#tabWatch{padding:0 10px 10px}
 .card{background:rgba(255,248,240,.92);border:1px solid #e7c8a8;border-radius:13px;padding:10px;box-shadow:0 8px 20px rgba(21,11,6,.06)}
 h3{margin:0 0 8px;color:var(--b);font-size:.98rem}
 label{display:block;font-weight:600;color:#5c341c;font-size:.9rem}
@@ -2705,6 +2843,39 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
 .audit-row-erro{background:rgba(220,53,69,.14)!important}
 .audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+.watch-title{text-align:center}
+.watch-filters{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-items:end}
+.watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.watch-filters > div label{width:100%;text-align:center}
+.watch-filters > div input{width:min(150px,100%);text-align:center}
+.watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
+.watch-note{max-width:900px;text-align:center}
+.watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
+.watch-state.loading{color:#a25b18;font-weight:700}
+.watch-summary{margin-top:10px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.watch-summary .k{border:1px solid #e2b58d;border-radius:10px;background:linear-gradient(180deg,#fff7ef,#fff1e3);padding:10px;text-align:center}
+.watch-summary .n{font-size:1.3rem;font-weight:800;color:#7a3d11}
+.watch-summary .t{font-size:.8rem;color:#6b4126}
+.watch-table{width:100%;min-width:980px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
+.watch-table th,.watch-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.watch-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
+.watch-col-type{width:88px}
+.watch-col-status{width:126px}
+.watch-col-date{width:110px}
+.watch-col-days{width:126px}
+.watch-col-client{width:260px}
+.watch-col-nf{width:86px}
+.watch-col-value{width:118px}
+.watch-col-aba{width:130px}
+.watch-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.watch-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.watch-row-aviso{background:rgba(255,193,7,.12)!important}
+.watch-row-aviso:hover{background:rgba(255,193,7,.2)!important}
+.watch-row-erro{background:rgba(220,53,69,.14)!important}
+.watch-row-erro:hover{background:rgba(220,53,69,.22)!important}
+.watch-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
+.watch-badge.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
+.watch-badge.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
 .cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center;width:100%}
 .cell-btn{display:block;width:100%;padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-btn:hover{text-decoration:underline}
@@ -2721,8 +2892,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -2740,6 +2911,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     <button id="tabBtnMain" type="button" class="tab-btn active" onclick="switchTab('main')">Painel</button>
     <button id="tabBtnHist" type="button" class="tab-btn" onclick="switchTab('hist')">Histórico</button>
     <button id="tabBtnAudit" type="button" class="tab-btn" onclick="switchTab('audit')">Conferência</button>
+    <button id="tabBtnWatch" type="button" class="tab-btn" onclick="switchTab('watch')">Prazos</button>
     <button id="tabBtnDiag" type="button" class="tab-btn" onclick="switchTab('diag')">Diagnóstico</button>
   </div>
 
@@ -2971,6 +3143,60 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
   </section>
 
+  <section id="tabWatch" class="tab-panel hidden">
+    <section class="card" style="margin-top:10px">
+      <h3 class="watch-title">Boletos e depósitos próximos do limite</h3>
+      <div class="watch-filters">
+        <div>
+          <label>Boletos em até</label>
+          <input id="wBoletoDays" type="number" min="1" max="7" value="7"/>
+        </div>
+        <div>
+          <label>Depósitos há pelo menos</label>
+          <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
+        </div>
+        <div style="display:flex;align-items:end"><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
+      </div>
+      <div class="watch-toolbar">
+        <div class="muted watch-note">A relação lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</div>
+        <div id="watchStatus" class="watch-state">Pronto para consultar.</div>
+      </div>
+      <div class="watch-summary">
+        <div class="k"><div id="watchK1" class="n">0</div><div class="t">Total na relação</div></div>
+        <div class="k"><div id="watchK2" class="n">0</div><div class="t">Boletos a vencer</div></div>
+        <div class="k"><div id="watchK3" class="n">0</div><div class="t">Boletos no limite</div></div>
+        <div class="k"><div id="watchK4" class="n">0</div><div class="t">Depósitos atrasados</div></div>
+      </div>
+      <div class="table-wrap" style="margin-top:10px">
+        <table class="watch-table">
+          <colgroup>
+            <col class="watch-col-type"/>
+            <col class="watch-col-status"/>
+            <col class="watch-col-date"/>
+            <col class="watch-col-days"/>
+            <col class="watch-col-client"/>
+            <col class="watch-col-nf"/>
+            <col class="watch-col-value"/>
+            <col class="watch-col-aba"/>
+          </colgroup>
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Situação</th>
+              <th>Vencimento</th>
+              <th>Dias úteis</th>
+              <th>Cliente</th>
+              <th>NF</th>
+              <th>Valor</th>
+              <th>Aba</th>
+            </tr>
+          </thead>
+          <tbody id="wBody"><tr><td colspan="8">Sem dados</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </section>
+
   <section id="tabDiag" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
       <h3>Diagnóstico</h3>
@@ -3019,26 +3245,29 @@ function _tickNext(){
 let _activeTab='main';
 function _tabFromLocation(){
   const h=String(window.location.hash||'').replace('#','').trim().toLowerCase();
-  if(h==='hist'||h==='diag'||h==='main'||h==='audit') return h;
+  if(h==='hist'||h==='diag'||h==='main'||h==='audit'||h==='watch') return h;
   const q=new URLSearchParams(window.location.search||'');
   const t=String(q.get('tab')||'').trim().toLowerCase();
-  if(t==='hist'||t==='diag'||t==='main'||t==='audit') return t;
+  if(t==='hist'||t==='diag'||t==='main'||t==='audit'||t==='watch') return t;
   return 'main';
 }
 function switchTab(tab){
-  const next=(tab==='hist'||tab==='diag'||tab==='audit')?tab:'main';
+  const next=(tab==='hist'||tab==='diag'||tab==='audit'||tab==='watch')?tab:'main';
   const changed=_activeTab!==next;
   const m=next==='main';
   const h=next==='hist';
   const a=next==='audit';
+  const w=next==='watch';
   const d=next==='diag';
   document.getElementById('tabMain').classList.toggle('hidden',!m);
   document.getElementById('tabHist').classList.toggle('hidden',!h);
   document.getElementById('tabAudit').classList.toggle('hidden',!a);
+  document.getElementById('tabWatch').classList.toggle('hidden',!w);
   document.getElementById('tabDiag').classList.toggle('hidden',!d);
   document.getElementById('tabBtnMain').classList.toggle('active',m);
   document.getElementById('tabBtnHist').classList.toggle('active',h);
   document.getElementById('tabBtnAudit').classList.toggle('active',a);
+  document.getElementById('tabBtnWatch').classList.toggle('active',w);
   document.getElementById('tabBtnDiag').classList.toggle('active',d);
   _activeTab=next;
   if(next==='hist'){
@@ -3046,6 +3275,9 @@ function switchTab(tab){
   }
   if(next==='audit'){
     loadParcelAudit(false).catch(()=>{});
+  }
+  if(next==='watch'){
+    loadDueWatch(false).catch(()=>{});
   }
   const nextHash='#'+next;
   if(window.location.hash!==nextHash){
@@ -3388,6 +3620,7 @@ const _histColStorageKey='botana.hist.colwidths.v1';
 const _histColDefaults={at:150,venc:110,doc:100,cliente:240,parcela:90,vparcela:130,vtotal:130,local:150,acao:110};
 let _histColWidths={..._histColDefaults};
 let _auditLoadSeq=0;
+let _watchLoadSeq=0;
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -3652,6 +3885,84 @@ async function loadParcelAudit(silent=false){
     _setAuditLoading(false,'Falha ao conferir as planilhas.');
   }
 }
+function _setWatchSummary(summary){
+  const s=summary||{};
+  [['watchK1','total_itens'],['watchK2','boletos_a_vencer'],['watchK3','boletos_vencidos'],['watchK4','depositos_atrasados']].forEach(([id,key])=>{
+    const el=document.getElementById(id);
+    if(el)el.textContent=String(s[key]||0);
+  });
+}
+function _setWatchStatus(message,loading=false){
+  const el=document.getElementById('watchStatus');
+  if(!el)return;
+  el.textContent=String(message||'Pronto para consultar.');
+  el.classList.toggle('loading',!!loading);
+}
+function _setWatchLoading(active,message=''){
+  const btn=document.getElementById('watchRunBtn');
+  if(btn){
+    btn.disabled=!!active;
+    btn.textContent=active?'Atualizando...':'Atualizar relação';
+  }
+  _setWatchStatus(message||(active?'Lendo planilhas...':'Pronto para consultar.'),active);
+}
+function _renderDueWatch(items){
+  const body=document.getElementById('wBody');
+  if(!body)return;
+  const arr=Array.isArray(items)?items:[];
+  body.innerHTML='';
+  if(!arr.length){
+    body.innerHTML='<tr><td colspan="8">Nenhum boleto ou depósito pendente encontrado para os limites escolhidos</td></tr>';
+    return;
+  }
+  arr.forEach(it=>{
+    const tr=document.createElement('tr');
+    if(it.status==='erro')tr.classList.add('watch-row-erro');
+    else tr.classList.add('watch-row-aviso');
+    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
+    const local=_compactSpaces(it.local||it.aba||'-');
+    tr.innerHTML=`<td>${_esc(it.tipo_label||'-')}</td><td><span class="watch-badge ${_esc(it.status||'aviso')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(_fmtAuditDate(it.vencimento))}">${_esc(_fmtAuditDate(it.vencimento))}</td><td title="${_esc(it.dias_label||'-')}">${_esc(it.dias_label||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_fmtMoney(it.valor))}">${_esc(_fmtMoney(it.valor))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    body.appendChild(tr);
+  });
+}
+async function loadDueWatch(silent=false){
+  const reqId=++_watchLoadSeq;
+  const showLoading=!silent||_activeTab==='watch';
+  const boletoInput=document.getElementById('wBoletoDays');
+  const depositoInput=document.getElementById('wDepositoDays');
+  let boletoDays=Math.max(1,Math.min(7,Number((boletoInput&&boletoInput.value)||7)||7));
+  let depositoDays=Math.max(1,Math.min(7,Number((depositoInput&&depositoInput.value)||7)||7));
+  if(boletoInput)boletoInput.value=String(boletoDays);
+  if(depositoInput)depositoInput.value=String(depositoDays);
+  if(showLoading){
+    _setWatchLoading(true,'Lendo planilhas...');
+    const body=document.getElementById('wBody');
+    if(body)body.innerHTML='<tr><td colspan="8">Lendo planilhas...</td></tr>';
+  }
+  try{
+    const p=new URLSearchParams();
+    p.set('boleto_dias',String(boletoDays));
+    p.set('deposito_dias',String(depositoDays));
+    const j=await api('/api/prazos?'+p.toString());
+    if(reqId!==_watchLoadSeq)return;
+    _setWatchSummary(j&&j.summary||{});
+    _renderDueWatch(j&&j.items||[]);
+    const meta=(j&&j.meta)||{};
+    const loadedAt=String(meta.loaded_at||'').trim();
+    const linhas=Number(meta.linhas_lidas||0);
+    const abas=Number(meta.abas_lidas||0);
+    const statusMsg=loadedAt
+      ? `Relação atualizada em ${_fmtDateTime(loadedAt)} | ${linhas} linhas lidas em ${abas} abas`
+      : 'Relação atualizada.';
+    _setWatchLoading(false,statusMsg);
+  }catch(err){
+    if(reqId!==_watchLoadSeq)return;
+    _setWatchSummary({});
+    const body=document.getElementById('wBody');
+    if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    _setWatchLoading(false,'Falha ao ler as planilhas.');
+  }
+}
 async function deleteEntry(nf,parcela,at){
   if(!nf)return;
   const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nIsso remove apenas o registro do histórico/relatório, não a linha da planilha.`;
@@ -3667,6 +3978,7 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
+document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
 const _auditMonthEl=document.getElementById('aMonth');
 if(_auditMonthEl&&!_auditMonthEl.value){
@@ -3691,7 +4003,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return user
             
             # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
-            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/clean-sheets", "/api/clean-sheets/log"]:
+            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/prazos", "/api/clean-sheets", "/api/clean-sheets/log"]:
                 return "hub_internal"
 
             if parsed_path.startswith("/api/"):
@@ -3816,6 +4128,22 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
                 try:
                     resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim)
+                    return _json_response(self, 200, {"ok": True, **resultado})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
+            if parsed.path == "/api/prazos":
+                qs = parse_qs(parsed.query or "")
+                try:
+                    boleto_dias = int((qs.get("boleto_dias", ["7"])[0] or "7").strip())
+                except Exception:
+                    boleto_dias = 7
+                try:
+                    deposito_dias = int((qs.get("deposito_dias", ["7"])[0] or "7").strip())
+                except Exception:
+                    deposito_dias = 7
+                try:
+                    resultado = _gerar_relacao_pendencias(boleto_dias, deposito_dias)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
