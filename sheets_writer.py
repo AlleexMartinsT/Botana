@@ -3,7 +3,9 @@ import logging
 from datetime import datetime
 import locale
 import os
+import re
 import time
+import unicodedata
 
 from config import PLANILHAS
 from logger_config import logger, cor_ciano, reset
@@ -50,7 +52,7 @@ def _result(ok, inserted, reason, **extra):
     return {
         "ok": bool(ok),
         "inserted": bool(inserted),
-        "duplicate": bool(reason == "duplicate"),
+        "duplicate": bool(reason in {"duplicate", "duplicate_nf_full"}),
         "reason": str(reason or ""),
         "sheet_title": str(extra.get("sheet_title", "") or ""),
         "sheet_type": str(extra.get("sheet_type", "") or ""),
@@ -65,6 +67,69 @@ def _result(ok, inserted, reason, **extra):
         "valor_pago": str(extra.get("valor_pago", "") or ""),
         "status": str(extra.get("status", "") or ""),
     }
+
+
+def _normalize_key_text(value):
+    txt = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    txt = re.sub(r"\s+", " ", txt).strip().upper()
+    return txt
+
+
+def _safe_float(value):
+    try:
+        if isinstance(value, str):
+            vv = value.strip().replace("\xa0", " ")
+            if not vv:
+                return 0.0
+            vv = re.sub(r"[^\d,.\-]+", "", vv)
+            if not vv or vv in {"-", ",", "."}:
+                return 0.0
+            if "," in vv and "." in vv:
+                if vv.rfind(",") > vv.rfind("."):
+                    vv = vv.replace(".", "").replace(",", ".")
+                else:
+                    vv = vv.replace(",", "")
+            elif "," in vv:
+                vv = vv.replace(",", ".")
+            return float(vv)
+        return float(value or 0)
+    except Exception:
+        return 0.0
+
+
+def _extract_parcela_number(value):
+    txt = _normalize_key_text(value)
+    if not txt:
+        return None
+    patterns = (
+        r"\b(\d+)\s*(?:A|O)?\s*PARC(?:ELA)?\b",
+        r"\bPARC(?:ELA)?\s*(\d+)\b",
+        r"\b(\d+)\s*/\s*\d+\b",
+        r"\b(\d+)\s+DE\s+\d+\b",
+        r"\b(\d+)\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, txt)
+        if not match:
+            continue
+        try:
+            return int(match.group(1))
+        except Exception:
+            continue
+    return None
+
+
+def _parcel_identity(parcela, vencimento="", valor_parcela=0):
+    numero = _extract_parcela_number(parcela)
+    if numero is not None:
+        return f"parcela:{numero}"
+    data = _parse_date_any(vencimento)
+    venc = data.strftime("%d/%m/%Y") if data else str(vencimento or "").strip()
+    valor = round(_safe_float(valor_parcela), 2)
+    if venc or valor:
+        return f"fallback:{venc}|{valor:.2f}"
+    raw = _normalize_key_text(parcela)
+    return f"raw:{raw}" if raw else ""
 
 
 def atualizarPlanilha(planilha, dados, gc):
@@ -163,14 +228,24 @@ def atualizarPlanilha(planilha, dados, gc):
                 continue
             raise e
 
-    duplicado = any(
-        len(linha) >= 6
-        and linha[0] == venc_str
-        and linha[2] == nf
-        and linha[5] == parcela
-        and linha[1] == descricao
-        for linha in linhas
-    )
+    incoming_identity = _parcel_identity(parcela, venc_str, valor_parcela)
+    nf_existing_identities = set()
+    duplicado = False
+
+    for linha in linhas:
+        if len(linha) < 7:
+            continue
+        nf_linha = str(linha[2] or "").strip()
+        if nf_linha != nf:
+            continue
+        existing_identity = _parcel_identity(linha[5], linha[0], linha[6])
+        if existing_identity:
+            nf_existing_identities.add(existing_identity)
+        if incoming_identity and existing_identity == incoming_identity:
+            duplicado = True
+            break
+
+    nf_completo = bool(nf and qtd_parcelas > 0 and len(nf_existing_identities) >= qtd_parcelas)
 
     base_payload = {
         "sheet_title": str(getattr(planilha, "title", "") or ""),
@@ -188,8 +263,16 @@ def atualizarPlanilha(planilha, dados, gc):
     }
 
     if duplicado:
-        logger.warning("NF %s (%s) ja existe em %s.", nf, venc_str, nomeAba)
+        logger.warning("NF %s (%s) ja existe em %s pela mesma parcela estrutural.", nf, venc_str, nomeAba)
         return _result(True, False, "duplicate", **base_payload)
+    if nf_completo:
+        logger.warning(
+            "NF %s ja possui %d parcela(s) estruturalmente registrada(s) em %s. Bloqueando novo lancamento.",
+            nf,
+            len(nf_existing_identities),
+            nomeAba,
+        )
+        return _result(True, False, "duplicate_nf_full", **base_payload)
 
     novaLinha = [
         venc_str,
