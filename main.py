@@ -84,6 +84,11 @@ _GMAIL_SERVICE_LOCK = threading.Lock()
 _IS_READING = False
 _PROCESS_STATS_LOCK = threading.Lock()
 _PROCESS_EXEC_LOCK = threading.Lock()
+_AUDIT_DELETE_CACHE_LOCK = threading.Lock()
+_AUDIT_DELETE_CACHE = {
+    "at": 0.0,
+    "items": {},
+}
 _PROCESS_STATS = {
     "current": {
         "active": False,
@@ -2450,27 +2455,104 @@ def _audit_delete_candidates(nf_items: list[dict], qtd_esperada: int) -> list[di
     return rows
 
 
-def _delete_audit_rows(audit_key: str) -> dict:
-    target_key = str(audit_key or "").strip()
-    if not target_key:
+def _audit_delete_candidate_ref(item: dict) -> dict:
+    planilha_id, worksheet_title, row_number = _audit_row_ref(item)
+    return {
+        "planilha_id": str(planilha_id or "").strip(),
+        "worksheet_title": str(worksheet_title or "").strip(),
+        "row_number": max(0, _audit_safe_int(row_number, 0)),
+        "nf": str((item or {}).get("nf") or "").strip(),
+        "parcela": str((item or {}).get("parcela") or "").strip(),
+    }
+
+
+def _audit_delete_cache_replace(entries: dict):
+    payload = {}
+    for raw_key, refs in (entries or {}).items():
+        cache_key = str(raw_key or "").strip()
+        if not cache_key:
+            continue
+        clean_refs = []
+        seen = set()
+        for ref in list(refs or []):
+            if not isinstance(ref, dict):
+                continue
+            planilha_id = str(ref.get("planilha_id") or "").strip()
+            worksheet_title = str(ref.get("worksheet_title") or "").strip()
+            row_number = max(0, _audit_safe_int(ref.get("row_number"), 0))
+            ref_key = (planilha_id, worksheet_title, row_number)
+            if not planilha_id or not worksheet_title or row_number <= 1 or ref_key in seen:
+                continue
+            seen.add(ref_key)
+            clean_refs.append(
+                {
+                    "planilha_id": planilha_id,
+                    "worksheet_title": worksheet_title,
+                    "row_number": row_number,
+                    "nf": str(ref.get("nf") or "").strip(),
+                    "parcela": str(ref.get("parcela") or "").strip(),
+                }
+            )
+        payload[cache_key] = clean_refs
+    with _AUDIT_DELETE_CACHE_LOCK:
+        current = dict(_AUDIT_DELETE_CACHE.get("items") or {})
+        current.update(payload)
+        _AUDIT_DELETE_CACHE["at"] = time.time()
+        _AUDIT_DELETE_CACHE["items"] = current
+
+
+def _audit_delete_cache_get(audit_keys: list[str]) -> tuple[list[dict], list[str], bool]:
+    with _AUDIT_DELETE_CACHE_LOCK:
+        cache_at = float(_AUDIT_DELETE_CACHE.get("at", 0.0) or 0.0)
+        cache_items = dict(_AUDIT_DELETE_CACHE.get("items") or {})
+    expired = bool(cache_at and (time.time() - cache_at > 30 * 60))
+    refs = []
+    missing = []
+    seen = set()
+    for raw_key in list(audit_keys or []):
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        items = list(cache_items.get(key) or [])
+        if not items:
+            missing.append(key)
+            continue
+        for ref in items:
+            ref_key = (
+                str(ref.get("planilha_id") or "").strip(),
+                str(ref.get("worksheet_title") or "").strip(),
+                max(0, _audit_safe_int(ref.get("row_number"), 0)),
+            )
+            if ref_key in seen:
+                continue
+            seen.add(ref_key)
+            refs.append(dict(ref))
+    return refs, missing, expired
+
+
+def _delete_audit_rows(audit_keys) -> dict:
+    keys = []
+    raw_values = [audit_keys] if isinstance(audit_keys, str) else list(audit_keys or [])
+    for raw_key in raw_values:
+        key = str(raw_key or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    if not keys:
         return {"ok": False, "message": "NF da conferência não informada."}
 
-    linhas, _ = _load_audit_sheet_rows()
-    nf_items = [item for item in linhas if str(item.get("group_key") or "").strip() == target_key]
-    if not nf_items:
-        return {"ok": False, "message": "NF não encontrada na conferência atual."}
-
-    qtd_esperada = 0
-    for item in nf_items:
-        qtd_esperada = max(qtd_esperada, max(1, _audit_safe_int(item.get("qtd_parcelas"), 1)))
-
-    candidatos = _audit_delete_candidates(nf_items, qtd_esperada)
-    if not candidatos:
-        nf = str((nf_items[0] or {}).get("nf") or "").strip()
+    refs, missing, expired = _audit_delete_cache_get(keys)
+    if expired and not refs:
         return {
             "ok": False,
-            "message": f"A NF {nf or '-'} não possui linhas pendentes removíveis automaticamente.",
+            "message": "A conferência carregada expirou. Clique em Conferir parcelas novamente antes de limpar novas linhas.",
             "deleted": 0,
+        }
+    if not refs:
+        return {
+            "ok": False,
+            "message": "As linhas removíveis não estão mais no snapshot atual da Conferência. Recarregue a aba e tente novamente.",
+            "deleted": 0,
+            "missing": missing,
         }
 
     creds = Credentials.from_service_account_file(
@@ -2483,9 +2565,12 @@ def _delete_audit_rows(audit_key: str) -> dict:
     book_cache = {}
     sheet_cache = {}
     deleted = []
+    ranges_by_sheet = {}
 
-    for item in candidatos:
-        planilha_id, worksheet_title, row_number = _audit_row_ref(item)
+    for item in refs:
+        planilha_id = str(item.get("planilha_id") or "").strip()
+        worksheet_title = str(item.get("worksheet_title") or "").strip()
+        row_number = max(0, _audit_safe_int(item.get("row_number"), 0))
         if not planilha_id or not worksheet_title or row_number <= 1:
             continue
         if planilha_id not in book_cache:
@@ -2493,18 +2578,23 @@ def _delete_audit_rows(audit_key: str) -> dict:
         cache_key = (planilha_id, worksheet_title)
         if cache_key not in sheet_cache:
             sheet_cache[cache_key] = book_cache[planilha_id].worksheet(worksheet_title)
+        ranges_by_sheet.setdefault(cache_key, []).append((row_number, item))
+
+    for cache_key, entries in ranges_by_sheet.items():
         worksheet = sheet_cache[cache_key]
+        clear_ranges = [f"A{row_number}:I{row_number}" for row_number, _ in sorted(entries, key=lambda pair: pair[0])]
         for _ in range(3):
             try:
-                worksheet.delete_rows(row_number)
-                deleted.append(
-                    {
-                        "nf": str(item.get("nf") or "").strip(),
-                        "aba": worksheet_title,
-                        "row_number": row_number,
-                        "parcela": str(item.get("parcela") or "").strip(),
-                    }
-                )
+                worksheet.batch_clear(clear_ranges)
+                for row_number, item in entries:
+                    deleted.append(
+                        {
+                            "nf": str(item.get("nf") or "").strip(),
+                            "aba": worksheet_title,
+                            "row_number": row_number,
+                            "parcela": str(item.get("parcela") or "").strip(),
+                        }
+                    )
                 break
             except gspread.exceptions.APIError as exc:
                 if "429" in str(exc):
@@ -2512,16 +2602,24 @@ def _delete_audit_rows(audit_key: str) -> dict:
                     continue
                 raise
 
-    nf = str((nf_items[0] or {}).get("nf") or "").strip()
+    nfs = sorted({str(item.get("nf") or "").strip() for item in refs if str(item.get("nf") or "").strip()})
+    nf_msg = ", ".join(nfs[:4]) + ("..." if len(nfs) > 4 else "")
+    if deleted:
+        with _AUDIT_DELETE_CACHE_LOCK:
+            cache_items = dict(_AUDIT_DELETE_CACHE.get("items") or {})
+            for key in keys:
+                cache_items.pop(key, None)
+            _AUDIT_DELETE_CACHE["items"] = cache_items
     return {
         "ok": bool(deleted),
         "message": (
-            f"{len(deleted)} linha(s) removida(s) da planilha para a NF {nf}."
+            f"{len(deleted)} linha(s) limpa(s) na planilha para {len(keys)} NF(s): {nf_msg}."
             if deleted
-            else f"Nenhuma linha foi removida para a NF {nf}."
+            else "Nenhuma linha foi limpa na planilha."
         ),
         "deleted": len(deleted),
         "items": deleted,
+        "missing": missing,
     }
 
 
@@ -2565,6 +2663,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         return any(str(entry.get("scope_month") or "").strip() == mes for entry in nf_items)
 
     itens_saida = []
+    audit_delete_cache = {}
     resumo = {
         "nfs_verificadas": 0,
         "nfs_ok": 0,
@@ -2627,6 +2726,8 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         qtd_faltando = max(0, qtd_esperada - qtd_lancada)
         qtd_excedente = max(0, qtd_lancada - qtd_esperada)
         delete_candidates = _audit_delete_candidates(nf_items, qtd_esperada)
+        audit_key = str((nf_items[0] or {}).get("group_key") or "").strip()
+        audit_delete_cache[audit_key] = [_audit_delete_candidate_ref(item) for item in delete_candidates]
         abas_view = sorted(abas, key=lambda value: (_audit_month_key_from_sheet_title(value), value))
         if len(abas_view) > 1:
             aba_view = f"{abas_view[0]} +{len(abas_view) - 1}"
@@ -2669,7 +2770,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
 
         itens_saida.append(
             {
-                "audit_key": str((nf_items[0] or {}).get("group_key") or "").strip(),
+                "audit_key": audit_key,
                 "nf": nf,
                 "cliente": _normalize_report_text(cliente),
                 "descricao": _normalize_report_text(descricao),
@@ -2706,6 +2807,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             -int(re.sub(r"\D+", "", str(item.get("nf") or "0")) or 0),
         )
     )
+    _audit_delete_cache_replace(audit_delete_cache)
 
     return {
         "filtro": filtro_normalizado,
@@ -3964,6 +4066,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
 .audit-row-erro{background:rgba(220,53,69,.14)!important}
 .audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+.audit-row-local-pending{background:rgba(240,198,79,.10)!important}
+.audit-row-local-pending:hover{background:rgba(240,198,79,.16)!important}
+.audit-row-local-pending td{border-bottom:3px dashed #f0c64f!important}
 .audit-row-local-removed{background:transparent!important}
 .audit-row-local-removed:hover{background:transparent!important}
 .audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
@@ -4927,6 +5032,10 @@ const _histColDefaults={at:150,venc:110,doc:100,cliente:240,parcela:90,vparcela:
 let _histColWidths={..._histColDefaults};
 let _auditLoadSeq=0;
 let _watchLoadSeq=0;
+let _auditDeleteQueue=new Map();
+let _auditDeleteTimer=null;
+let _auditDeleteInFlight=false;
+const _auditDeleteDelayMs=3000;
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -5165,7 +5274,7 @@ function _renderParcelAudit(items){
     const auditKey=_esc(it.audit_key||'');
     const nfValue=_esc(it.nf||'-');
     const statusCell=(it.status&&it.status!=='ok')
-      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para excluir linhas excedentes/duplicadas desta NF direto da planilha" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
+      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
       : `<span class="audit-status ${_esc(it.status||'ok')}">${statusLabel}</span>`;
     tr.innerHTML=`<td>${statusCell}</td><td title="${nfValue}">${nfValue}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
@@ -5174,12 +5283,69 @@ function _renderParcelAudit(items){
 function _markAuditRowDeletedLocal(btn,message){
   const row=btn&&btn.closest?btn.closest('tr'):null;
   if(row){
-    row.classList.remove('audit-row-erro','audit-row-aviso');
+    row.classList.remove('audit-row-erro','audit-row-aviso','audit-row-local-pending');
     row.classList.add('audit-row-local-removed');
   }
   if(btn){
     btn.disabled=true;
-    btn.title=String(message||'Linhas excedentes/duplicadas já excluídas desta NF.');
+    btn.title=String(message||'Linhas excedentes/duplicadas já limpas desta NF.');
+  }
+}
+function _markAuditRowPendingLocal(btn,message){
+  const row=btn&&btn.closest?btn.closest('tr'):null;
+  if(row){
+    row.classList.remove('audit-row-local-removed');
+    row.classList.add('audit-row-local-pending');
+  }
+  if(btn){
+    btn.disabled=true;
+    btn.title=String(message||'Limpeza em fila para envio em lote.');
+  }
+}
+function _restoreAuditRowDeleteLocal(btn,message){
+  const row=btn&&btn.closest?btn.closest('tr'):null;
+  if(row){
+    row.classList.remove('audit-row-local-pending');
+  }
+  if(btn){
+    btn.disabled=false;
+    btn.title=String(message||'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha');
+  }
+}
+function _scheduleAuditDeleteFlush(){
+  if(_auditDeleteTimer)clearTimeout(_auditDeleteTimer);
+  _auditDeleteTimer=window.setTimeout(()=>{
+    _auditDeleteTimer=null;
+    _flushAuditDeleteQueue().catch((err)=>console.warn('Falha no lote de limpeza da conferência:',err));
+  },_auditDeleteDelayMs);
+}
+async function _flushAuditDeleteQueue(){
+  if(_auditDeleteInFlight){
+    if(_auditDeleteQueue.size)_scheduleAuditDeleteFlush();
+    return;
+  }
+  const queued=Array.from(_auditDeleteQueue.values());
+  if(!queued.length)return;
+  _auditDeleteQueue.clear();
+  _auditDeleteInFlight=true;
+  _setAuditStatus(`Aplicando ${queued.length} limpeza(s) em lote na planilha...`,true);
+  try{
+    const payload={audit_keys:queued.map(item=>item.auditKey)};
+    const r=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const successMsg=String((r&&r.message)||`${queued.length} limpeza(s) aplicadas com sucesso.`);
+    queued.forEach(item=>_markAuditRowDeletedLocal(item.btn,successMsg));
+    _setAuditStatus(successMsg,false);
+    alert(successMsg);
+  }catch(e){
+    queued.forEach(item=>_restoreAuditRowDeleteLocal(item.btn));
+    _setAuditStatus('Falha ao aplicar a limpeza em lote da conferência.',false);
+    alert('Erro ao limpar na planilha: '+e.message);
+  }finally{
+    _auditDeleteInFlight=false;
+    if(_auditDeleteQueue.size){
+      _setAuditStatus(`${_auditDeleteQueue.size} limpeza(s) ainda estão na fila. Novo envio em até 3s.`,true);
+      _scheduleAuditDeleteFlush();
+    }
   }
 }
 async function deleteAuditRows(btn,auditKey,nf,statusLabel,deleteCandidates){
@@ -5195,26 +5361,23 @@ async function deleteAuditRows(btn,auditKey,nf,statusLabel,deleteCandidates){
     alert(`A NF ${nfView} está com status ${statusView}, mas não há linhas pendentes removíveis automaticamente na planilha.`);
     return;
   }
-  const msg=`Tem certeza que deseja excluir ${count} linha(s) excedente(s)/duplicada(s) da NF ${nfView} direto da planilha?\nEssa ação remove apenas as linhas identificadas como sobra na Conferência.`;
+  const msg=`Tem certeza que deseja limpar ${count} linha(s) excedente(s)/duplicada(s) da NF ${nfView} direto na planilha?\nEssa ação apaga apenas o conteúdo das linhas identificadas como sobra na Conferência, sem reordenar o restante.`;
   if(!confirm(msg))return;
-  try{
-    if(btn)btn.disabled=true;
-    const r=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audit_key:key})});
-    const successMsg=String((r&&r.message)||'Linhas removidas com sucesso.');
-    _markAuditRowDeletedLocal(btn,successMsg);
-    alert(successMsg);
-  }catch(e){
-    if(btn)btn.disabled=false;
-    alert('Erro ao excluir na planilha: '+e.message);
+  if(_auditDeleteQueue.has(key)){
+    if(btn)_markAuditRowPendingLocal(btn,'Essa NF já está na fila de limpeza em lote.');
+    _setAuditStatus(`${_auditDeleteQueue.size} limpeza(s) em fila. Envio em até 3s.`,true);
+    return;
   }
+  _auditDeleteQueue.set(key,{auditKey:key,btn:btn,nf:nfView});
+  _markAuditRowPendingLocal(btn,`NF ${nfView} adicionada à fila de limpeza em lote.`);
+  _setAuditStatus(`${_auditDeleteQueue.size} limpeza(s) em fila. Envio em até 3s.`,true);
+  _scheduleAuditDeleteFlush();
 }
 async function loadParcelAudit(silent=false){
   const reqId=++_auditLoadSeq;
   const showLoading=!silent||_activeTab==='audit';
   if(showLoading){
     _setAuditLoading(true,'Conferindo planilhas...');
-    const body=document.getElementById('aBody');
-    if(body)body.innerHTML='<tr><td colspan="9">Conferindo planilhas...</td></tr>';
   }
   try{
     const p=new URLSearchParams();
@@ -5302,8 +5465,6 @@ async function loadDueWatch(silent=false){
   if(showLoading){
     _resetWatchSummary();
     _setWatchLoading(true,'Lendo planilhas...');
-    const body=document.getElementById('wBody');
-    if(body)body.innerHTML='<tr><td colspan="8">Lendo planilhas...</td></tr>';
   }
   try{
     const p=new URLSearchParams();
@@ -5888,10 +6049,17 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 if parsed.path == "/api/conferencia-parcelas/delete":
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    auditKeys = []
+                    for rawKey in list(data.get("audit_keys") or []):
+                        key = str(rawKey or "").strip()
+                        if key and key not in auditKeys:
+                            auditKeys.append(key)
                     auditKey = str(data.get("audit_key", "") or "").strip()
-                    if not auditKey:
+                    if auditKey and auditKey not in auditKeys:
+                        auditKeys.append(auditKey)
+                    if not auditKeys:
                         return _json_response(self, 400, {"ok": False, "message": "NF da conferência não informada"})
-                    resultado = _delete_audit_rows(auditKey)
+                    resultado = _delete_audit_rows(auditKeys)
                     statusCode = 200 if resultado.get("ok") else 400
                     return _json_response(self, statusCode, resultado)
 

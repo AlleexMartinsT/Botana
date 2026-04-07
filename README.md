@@ -100,10 +100,11 @@ No `instances.json` do Hub, use:
 - A varredura pode ser feita por `Mês do lançamento`, por `Faixa de NF` ou em `Tudo`.
 - No filtro por mês, a aba seleciona as NFs relacionadas ao mês escolhido e confere a NF inteira nas planilhas, em vez de depender do histórico.
 - O painel destaca NFs com parcelas faltando, duplicadas ou acima da quantidade esperada, com totais agregados no topo.
-- Ao clicar no badge de `Status` de uma NF com divergência, o Botana pede confirmação e pode excluir direto da planilha apenas as linhas excedentes/duplicadas identificadas automaticamente para aquela NF.
+- Ao clicar no badge de `Status` de uma NF com divergência, o Botana pede confirmação e limpa direto na planilha apenas as linhas excedentes/duplicadas identificadas automaticamente para aquela NF, sem reordenar as demais linhas.
 - Depois da exclusão pela `Conferência`, a linha não é recarregada imediatamente; ela fica marcada localmente com um sublinhado amarelo para evitar nova varredura pesada logo após a remoção.
+- Cliques em sequência no `Status` da Conferência entram em uma fila de até `3s` e são enviados em lote, usando o snapshot recém-carregado da aba em vez de reler todas as planilhas a cada exclusão.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
-- A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento e informa quando a leitura das planilhas terminou.
+- A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
 
 ## Prazos no painel
@@ -113,7 +114,7 @@ No `instances.json` do Hub, use:
 - O painel separa boletos próximos do vencimento e depósitos atrasados, usando dias úteis e filtros customizáveis de `1` a `7`.
 - Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
-- A aba atualiza ao abrir, mostra estado de carregamento e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
+- A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
 - Os botões de atualização da relação e da busca por nome ficam em linhas separadas, com espaçamento próprio no card da aba `Prazos`.
 - O botão `Buscar boletos em aberto` abre um popup próprio, fora do front-end nativo do navegador, para consultar por nome do cliente.
 - O campo `Nome do cliente` do popup fica centralizado e usa uma lista própria de sugestões dentro do modal, em vez do `datalist` nativo do navegador.
