@@ -4,6 +4,7 @@ import hmac
 import json
 import secrets
 import os, re, time, gspread, threading, sys
+import unicodedata
 from email.utils import parseaddr, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -97,6 +98,7 @@ _MANUAL_ACTION_LOCK = threading.Lock()
 _MANUAL_ACTION = {
     "active": False,
     "kind": "",
+    "phase": "",
     "label": "",
     "status": "idle",
     "message": "Nenhuma acao manual em andamento.",
@@ -225,6 +227,7 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
             {
                 "active": True,
                 "kind": str(kind or "").strip(),
+                "phase": "",
                 "label": str(label or "").strip(),
                 "status": "running",
                 "message": str(message or "").strip() or "Acao manual em andamento.",
@@ -275,6 +278,7 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["message"] = str(message or "").strip() or ("Acao concluida." if ok else "Acao concluida com erro.")
         _MANUAL_ACTION["detail"] = str(detail or "").strip()
         _MANUAL_ACTION["finished_at"] = datetime.now().isoformat()
+        _MANUAL_ACTION["phase"] = ""
         _MANUAL_ACTION["current_email"] = ""
         _MANUAL_ACTION["current_subject"] = ""
         _MANUAL_ACTION["current_date"] = ""
@@ -294,7 +298,7 @@ def _manual_action_busy_message() -> str:
     return ""
 
 
-def _start_run_now_background() -> tuple[bool, dict]:
+def _start_run_now_background(max_messages_override: int | None = None) -> tuple[bool, dict]:
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -305,7 +309,12 @@ def _start_run_now_background() -> tuple[bool, dict]:
         "run_now",
         "Execu\u00e7\u00e3o manual",
         "Execu\u00e7\u00e3o manual iniciada.",
-        detail="Acompanhe os contadores de leitura e lan\u00e7amentos no painel.",
+        detail=(
+            f"O ciclo manual vai ler at\u00e9 {int(max_messages_override)} mensagens."
+            if max_messages_override
+            else "Acompanhe os contadores de leitura e lan\u00e7amentos no painel."
+        ),
+        requested_limit=int(max_messages_override or 0),
     )
     if not started:
         return False, snap
@@ -329,9 +338,13 @@ def _start_run_now_background() -> tuple[bool, dict]:
             stop_event.clear()
             _manual_action_update(
                 message="Execu\u00e7\u00e3o manual em andamento.",
-                detail="Acompanhe os contadores de leitura e lan\u00e7amentos no painel.",
+                detail=(
+                    f"Leitura manual em andamento com limite de {int(max_messages_override)} mensagens."
+                    if max_messages_override
+                    else "Acompanhe os contadores de leitura e lan\u00e7amentos no painel."
+                ),
             )
-            ok, msg = executar_um_ciclo()
+            ok, msg = executar_um_ciclo(max_messages_override=max_messages_override)
             proc = _process_snapshot().get("last", {})
             detail = (
                 f"E-mails: {int(proc.get('messages', 0) or 0)} | "
@@ -342,7 +355,14 @@ def _start_run_now_background() -> tuple[bool, dict]:
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
-            _manual_action_finish(ok, msg, detail=detail)
+            _manual_action_finish(
+                ok,
+                msg,
+                detail=detail,
+                progress_current=int(proc.get("messages", 0) or 0),
+                progress_total=int(max_messages_override or 0),
+                requested_limit=int(max_messages_override or 0),
+            )
         except Exception as exc:
             logger.exception("Falha na execução manual em background: %s", exc)
             if resume_loop:
@@ -367,7 +387,7 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
         "reprocess",
         "Reprocessamento",
         "Reprocessamento iniciado.",
-        detail=f"At\u00e9 {int(max_messages)} mensagens mais recentes com label do Botana ser\u00e3o atualizadas para Reprocessado.",
+        detail=f"At\u00e9 {int(max_messages)} mensagens mais recentes com label do Botana ser\u00e3o remarcadas e relidas neste ciclo.",
         progress_total=int(max_messages),
         requested_limit=int(max_messages),
     )
@@ -397,22 +417,73 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
             stop_event.clear()
             _manual_action_update(
                 message="Reprocessamento em andamento.",
-                detail="Atualizando a label do Botana nas mensagens mais recentes.",
+                detail="Atualizando a label do Botana nas mensagens mais recentes antes de reler os e-mails.",
+                phase="marking",
             )
             result = _reprocess_recent(max_messages=max_messages, mark_unread=mark_unread, progress_cb=_progress)
-            friendly = f"Reprocessamento concluido: {result.get('changed', 0)} de {result.get('matched', 0)} mensagens atualizadas."
-            detail = f"Falhas: {result.get('failed', 0)} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
+            targets = list(result.get("targets") or [])
+            changed = int(result.get("changed", 0) or 0)
+            failed = int(result.get("failed", 0) or 0)
+            matched = int(result.get("matched", 0) or 0)
+            if targets:
+                _manual_action_update(
+                    phase="processing",
+                    progress_current=0,
+                    progress_total=len(targets),
+                    changed=changed,
+                    failed=failed,
+                    current_email="",
+                    current_subject="",
+                    current_date="",
+                    message="Labels atualizadas. Iniciando leitura dos e-mails reprocessados.",
+                    detail=f"O Botana vai reler at\u00e9 {len(targets)} mensagens reprocessadas para tentar relan\u00e7ar na planilha.",
+                )
+                ok, msg = executar_um_ciclo(
+                    max_messages_override=len(targets),
+                    messages_override=targets,
+                    preserve_reprocess_label=True,
+                )
+                proc = _process_snapshot().get("last", {})
+                detail = (
+                    f"Labels atualizadas: {changed}/{matched} | "
+                    f"Falhas ao marcar: {failed} | "
+                    f"E-mails: {int(proc.get('messages', 0) or 0)} | "
+                    f"Anexos: {int(proc.get('attachments', 0) or 0)} | "
+                    f"XML: {int(proc.get('xmls', 0) or 0)} | "
+                    f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)}"
+                )
+                if resume_loop:
+                    restarted = iniciar_verificacao()
+                    detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
+                _manual_action_finish(
+                    ok,
+                    msg,
+                    detail=detail,
+                    progress_current=int(proc.get("messages", 0) or 0),
+                    progress_total=len(targets),
+                    changed=changed,
+                    failed=failed,
+                    requested_limit=int(max_messages),
+                )
+                return
+            if matched <= 0:
+                friendly = "Nenhuma mensagem com label do Botana foi encontrada para reprocessar."
+            elif changed <= 0:
+                friendly = "Nenhuma mensagem foi marcada para reprocessar."
+            else:
+                friendly = f"Reprocessamento concluido: {changed} de {matched} mensagens atualizadas."
+            detail = f"Falhas: {failed} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
             _manual_action_finish(
-                True,
+                changed > 0 or matched == 0,
                 friendly,
                 detail=detail,
-                progress_current=int(result.get("matched", 0) or 0),
-                progress_total=int(result.get("matched", 0) or 0),
-                changed=int(result.get("changed", 0) or 0),
-                failed=int(result.get("failed", 0) or 0),
+                progress_current=matched,
+                progress_total=matched,
+                changed=changed,
+                failed=failed,
                 requested_limit=int(max_messages),
             )
         except Exception as exc:
@@ -709,11 +780,25 @@ def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: di
     except Exception as exc:
         logger.warning("Falha ao registrar evento estruturado no historico: %s", exc)
 
-def processar_emails_enviados():
+def processar_emails_enviados(
+    max_messages_override: int | None = None,
+    messages_override: list[dict] | None = None,
+    preserve_reprocess_label: bool = False,
+):
     global _IS_READING
     _process_start()
     service = _get_gmail_service_locked()
-    batch_size = int(_RUNTIME_SETTINGS.get("max_messages", 100))
+    batch_size = max(1, min(1000, int(max_messages_override or _RUNTIME_SETTINGS.get("max_messages", 100))))
+    force_messages = messages_override is not None
+    forced_messages = []
+    if force_messages:
+        for item in list(messages_override or []):
+            if not isinstance(item, dict):
+                continue
+            msg_id = str(item.get("id", "")).strip()
+            if not msg_id:
+                continue
+            forced_messages.append(dict(item))
     total_msgs = 0
     anexos_lidos = 0
     xmls_lidos = 0
@@ -752,11 +837,16 @@ def processar_emails_enviados():
     while True:
         if _abort_if_requested():
             return _summary()
-        msgs, next_page_token = buscarMessagesEnviadosPagina(
-            service,
-            max_results=batch_size,
-            page_token=page_token,
-        )
+        if force_messages:
+            msgs = list(forced_messages)
+            next_page_token = None
+            force_messages = False
+        else:
+            msgs, next_page_token = buscarMessagesEnviadosPagina(
+                service,
+                max_results=batch_size,
+                page_token=page_token,
+            )
 
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
@@ -894,7 +984,12 @@ def processar_emails_enviados():
             if _abort_if_requested():
                 return _summary()
             try:
-                label_aplicada = marcar_mensagem_com_label(service, msg_id, existing_label_ids=m.get("labelIds", []))
+                label_aplicada = marcar_mensagem_com_label(
+                    service,
+                    msg_id,
+                    existing_label_ids=m.get("labelIds", []),
+                    reprocessed=True if preserve_reprocess_label else None,
+                )
                 if label_aplicada:
                     logger.info("E-mail %s marcado com '%s'", msg_id, label_aplicada)
             except Exception as e:
@@ -1030,6 +1125,8 @@ def processar_emails_enviados():
                             logger.exception("Falha inesperada ao atualizar planilha: %s", e)
                             break
 
+        if messages_override is not None:
+            break
         skip_reached = bool(getattr(processar_emails_enviados, "_skip_reached", False))
         if SKIP_UNTIL_NF and not skip_reached and next_page_token:
             if interativo_cmd:
@@ -1087,12 +1184,20 @@ def main_loop():
     logger.info("[Botana] Loop finalizado")
 
 
-def executar_um_ciclo():
+def executar_um_ciclo(
+    max_messages_override: int | None = None,
+    messages_override: list[dict] | None = None,
+    preserve_reprocess_label: bool = False,
+):
     global last_status, _NEXT_RUN_AT, _IS_READING
     try:
         _IS_READING = True
         with _PROCESS_EXEC_LOCK:
-            summary = processar_emails_enviados()
+            summary = processar_emails_enviados(
+                max_messages_override=max_messages_override,
+                messages_override=messages_override,
+                preserve_reprocess_label=preserve_reprocess_label,
+            )
         _process_finish(ok=True, error="")
         msg = (
             f"ExecuÃ§Ã£o manual concluÃ­da: {int((summary or {}).get('messages', 0))} e-mails, "
@@ -1150,12 +1255,20 @@ def main_loop():
     logger.info("[Botana] Loop finalizado")
 
 
-def executar_um_ciclo():
+def executar_um_ciclo(
+    max_messages_override: int | None = None,
+    messages_override: list[dict] | None = None,
+    preserve_reprocess_label: bool = False,
+):
     global last_status, _NEXT_RUN_AT, _IS_READING
     try:
         _IS_READING = True
         with _PROCESS_EXEC_LOCK:
-            summary = processar_emails_enviados()
+            summary = processar_emails_enviados(
+                max_messages_override=max_messages_override,
+                messages_override=messages_override,
+                preserve_reprocess_label=preserve_reprocess_label,
+            )
         _process_finish(ok=True, error="")
         msg = _format_cycle_status("Execu\u00e7\u00e3o manual conclu\u00edda", summary)
         last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
@@ -1697,18 +1810,198 @@ def _history_parcela_key(item: dict) -> str:
     return f"raw:{_normalize_report_text(str((item or {}).get('at') or '')).strip()}"
 
 
+_AUDIT_MONTH_MAP = {
+    "jan": 1,
+    "fev": 2,
+    "feb": 2,
+    "mar": 3,
+    "abr": 4,
+    "apr": 4,
+    "mai": 5,
+    "may": 5,
+    "jun": 6,
+    "jul": 7,
+    "ago": 8,
+    "aug": 8,
+    "set": 9,
+    "sep": 9,
+    "out": 10,
+    "oct": 10,
+    "nov": 11,
+    "dez": 12,
+    "dec": 12,
+}
+
+
+def _audit_safe_float(v):
+    try:
+        if isinstance(v, str):
+            vv = v.strip()
+            if not vv:
+                return 0.0
+            if "," in vv and "." in vv:
+                vv = vv.replace(".", "").replace(",", ".")
+            elif "," in vv:
+                vv = vv.replace(",", ".")
+            return float(vv)
+        return float(v or 0)
+    except Exception:
+        return 0.0
+
+
+def _audit_safe_int(v, default=0):
+    try:
+        if isinstance(v, str):
+            vv = re.sub(r"[^\d-]+", "", v)
+            return int(vv) if vv else int(default)
+        return int(v)
+    except Exception:
+        return int(default)
+
+
+def _parse_audit_date(dt_text: str):
+    t = str(dt_text or "").strip()
+    if not t:
+        return None
+    candidates = [
+        (t[:10], "%d/%m/%Y"),
+        (t[:10], "%Y-%m-%d"),
+        (t[:10], "%d-%m-%Y"),
+        (t[:10], "%d.%m.%Y"),
+        (t[:19], "%Y-%m-%d %H:%M:%S"),
+        (t[:19], "%Y-%m-%dT%H:%M:%S"),
+    ]
+    for cand, fmt in candidates:
+        try:
+            return datetime.strptime(cand, fmt)
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _audit_month_key_from_value(value: str) -> str:
+    dt = _parse_audit_date(value)
+    return dt.strftime("%Y-%m") if dt else ""
+
+
+def _audit_month_key_from_sheet_title(title: str) -> str:
+    txt = str(title or "").strip()
+    if not txt:
+        return ""
+    m = re.match(r"^\s*([^/]+?)\s*/\s*(\d{4})\s*$", txt)
+    if not m:
+        return ""
+    month_token = unicodedata.normalize("NFKD", m.group(1)).encode("ascii", "ignore").decode("ascii").strip().lower()
+    month_num = _AUDIT_MONTH_MAP.get(month_token[:3]) or _AUDIT_MONTH_MAP.get(month_token)
+    if not month_num:
+        return ""
+    return f"{int(m.group(2)):04d}-{month_num:02d}"
+
+
+def _audit_sheet_values(worksheet) -> list[list[str]]:
+    from sheets_writer import apiCooldown
+
+    for _ in range(3):
+        try:
+            return worksheet.get_all_values()
+        except gspread.exceptions.APIError as exc:
+            if "429" in str(exc):
+                apiCooldown()
+                continue
+            raise
+    return []
+
+
+def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDENTIALS_SHEETS,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    gc = gspread.authorize(creds)
+    rows = []
+    planilhas_lidas = 0
+    abas_lidas = 0
+
+    for tipo_empresa, anos in PLANILHAS.items():
+        for ano, planilha_id in (anos or {}).items():
+            if not planilha_id:
+                continue
+            try:
+                planilha = gc.open_by_key(planilha_id)
+                planilhas_lidas += 1
+            except Exception as exc:
+                logger.warning("Falha ao abrir planilha %s %s para conferencia: %s", tipo_empresa, ano, exc)
+                continue
+            for worksheet in planilha.worksheets():
+                abas_lidas += 1
+                try:
+                    linhas = _audit_sheet_values(worksheet)
+                except Exception as exc:
+                    logger.warning("Falha ao ler aba %s/%s: %s", getattr(planilha, "title", tipo_empresa), worksheet.title, exc)
+                    continue
+                worksheet_month = _audit_month_key_from_sheet_title(worksheet.title)
+                for idx, linha in enumerate(linhas):
+                    if idx == 0:
+                        continue
+                    row = list(linha or [])
+                    if len(row) < 3:
+                        continue
+                    row += [""] * max(0, 9 - len(row))
+                    nf_raw = str(row[2] or "").strip()
+                    if not nf_raw:
+                        continue
+                    nf_digits = re.sub(r"\D+", "", nf_raw)
+                    if not nf_digits:
+                        continue
+                    vencimento = str(row[0] or "").strip()
+                    descricao = _normalize_report_text(str(row[1] or "").strip())
+                    parcela = _normalize_report_text(str(row[5] or "").strip())
+                    rows.append(
+                        {
+                            "group_key": f"{tipo_empresa}:{ano}:{nf_digits}",
+                            "sheet_type": str(tipo_empresa or "").strip(),
+                            "sheet_year": str(ano or "").strip(),
+                            "sheet_title": _normalize_report_text(str(getattr(planilha, "title", "") or "").strip()),
+                            "aba": _normalize_report_text(str(worksheet.title or "").strip()),
+                            "scope_month": _audit_month_key_from_value(vencimento) or worksheet_month,
+                            "vencimento": _normalize_report_text(vencimento),
+                            "descricao": descricao,
+                            "cliente": descricao,
+                            "nf": nf_digits,
+                            "nf_num": _audit_safe_int(nf_digits, 0),
+                            "valor_total": _audit_safe_float(row[3]),
+                            "qtd_parcelas": max(1, _audit_safe_int(row[4], 1)),
+                            "parcela": parcela,
+                            "valor_parcela": _audit_safe_float(row[6]),
+                            "valor_pago": _normalize_report_text(str(row[7] or "").strip()),
+                            "status_planilha": _normalize_report_text(str(row[8] or "").strip()),
+                        }
+                    )
+
+    meta = {
+        "loaded_at": datetime.now().isoformat(),
+        "planilhas_lidas": planilhas_lidas,
+        "abas_lidas": abas_lidas,
+        "linhas_lidas": len(rows),
+        "source": "planilhas",
+    }
+    return rows, meta
+
+
 def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> dict:
     filtro_normalizado = str(filtro or "mes").strip().lower()
     if filtro_normalizado not in {"mes", "nfs", "todos"}:
         filtro_normalizado = "mes"
-
-    itens = _history_from_reports(limit=1000000)
+    linhas, meta = _load_audit_sheet_rows()
     grupos = {}
-    for item in itens:
-        nf = str(item.get("nf") or "").strip()
-        if not nf:
+    for item in linhas:
+        group_key = str(item.get("group_key") or "").strip()
+        if not group_key:
             continue
-        grupos.setdefault(nf, []).append(item)
+        grupos.setdefault(group_key, []).append(item)
 
     try:
         nf_inicio_num = int(re.sub(r"\D+", "", str(nf_inicio or ""))) if str(nf_inicio or "").strip() else None
@@ -1721,14 +2014,13 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
     if nf_inicio_num is not None and nf_fim_num is not None and nf_inicio_num > nf_fim_num:
         nf_inicio_num, nf_fim_num = nf_fim_num, nf_inicio_num
 
-    def _matches_scope(nf: str, nf_items: list[dict]) -> bool:
+    def _matches_scope(nf_items: list[dict]) -> bool:
+        if not nf_items:
+            return False
+        nf_num = _audit_safe_int((nf_items[0] or {}).get("nf_num"), 0)
         if filtro_normalizado == "todos":
             return True
         if filtro_normalizado == "nfs":
-            try:
-                nf_num = int(re.sub(r"\D+", "", str(nf or "")))
-            except Exception:
-                return False
             if nf_inicio_num is not None and nf_num < nf_inicio_num:
                 return False
             if nf_fim_num is not None and nf_num > nf_fim_num:
@@ -1736,11 +2028,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             return True
         if not mes:
             return True
-        for entry in nf_items:
-            at = _parse_report_datetime(entry.get("at"))
-            if at and at.strftime("%Y-%m") == mes:
-                return True
-        return False
+        return any(str(entry.get("scope_month") or "").strip() == mes for entry in nf_items)
 
     itens_saida = []
     resumo = {
@@ -1752,57 +2040,81 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "parcelas_duplicadas": 0,
     }
 
-    for nf, nf_items in grupos.items():
-        if not _matches_scope(nf, nf_items):
+    for _, nf_items in grupos.items():
+        if not _matches_scope(nf_items):
             continue
 
+        nf = str((nf_items[0] or {}).get("nf") or "").strip()
         parcelas_contagem = {}
         cliente = ""
         descricao = ""
-        aba = ""
+        aba_principal = ""
         local = ""
-        ultimo_at = ""
+        abas = []
         vencimentos = set()
+        ultimo_venc_dt = None
         qtd_esperada = 0
 
         for item in nf_items:
             chave_parcela = _history_parcela_key(item)
             parcelas_contagem[chave_parcela] = parcelas_contagem.get(chave_parcela, 0) + 1
-            try:
-                qtd_item = int(item.get("qtd_parcelas") or 1)
-            except Exception:
-                qtd_item = 1
+            qtd_item = max(1, _audit_safe_int(item.get("qtd_parcelas"), 1))
             qtd_esperada = max(qtd_esperada, qtd_item)
             if not cliente:
                 cliente = str(item.get("cliente") or "").strip()
             if not descricao:
                 descricao = str(item.get("descricao") or "").strip()
-            if not aba:
-                aba = str(item.get("aba") or "").strip()
+            aba_item = str(item.get("aba") or "").strip()
+            if aba_item and aba_item not in abas:
+                abas.append(aba_item)
+            if not aba_principal:
+                aba_principal = aba_item
             if not local:
-                local = str(item.get("local_lancamento") or "").strip()
+                local = "/".join(
+                    [
+                        x
+                        for x in (
+                            str(item.get("sheet_type") or "").strip(),
+                            aba_item,
+                        )
+                        if x
+                    ]
+                )
             venc = str(item.get("vencimento") or "").strip()
             if venc:
                 vencimentos.add(venc)
-            at_text = str(item.get("at") or "").strip()
-            if at_text and at_text > ultimo_at:
-                ultimo_at = at_text
+                venc_dt = _parse_audit_date(venc)
+                if venc_dt and (ultimo_venc_dt is None or venc_dt > ultimo_venc_dt):
+                    ultimo_venc_dt = venc_dt
 
         qtd_lancada = len(parcelas_contagem)
         qtd_bruta = sum(parcelas_contagem.values())
         qtd_duplicada = max(0, qtd_bruta - qtd_lancada)
         qtd_faltando = max(0, qtd_esperada - qtd_lancada)
         qtd_excedente = max(0, qtd_lancada - qtd_esperada)
+        abas_view = sorted(abas, key=lambda value: (_audit_month_key_from_sheet_title(value), value))
+        if len(abas_view) > 1:
+            aba_view = f"{abas_view[0]} +{len(abas_view) - 1}"
+        else:
+            aba_view = abas_view[0] if abas_view else aba_principal
+        local_view = " - ".join(
+            [
+                x
+                for x in (
+                    str((nf_items[0] or {}).get("sheet_type") or "").strip(),
+                    aba_view,
+                )
+                if x
+            ]
+        ) or local
+        ultimo_vencimento = ultimo_venc_dt.strftime("%Y-%m-%d") if ultimo_venc_dt else ""
 
         duplicadas = []
-        parcelas = []
         for item in nf_items:
             chave_parcela = _history_parcela_key(item)
             label = _normalize_report_text(str(item.get("parcela") or item.get("vencimento") or "-")).strip() or "-"
             if parcelas_contagem.get(chave_parcela, 0) > 1 and label not in duplicadas:
                 duplicadas.append(label)
-            if label not in parcelas:
-                parcelas.append(label)
 
         if qtd_faltando == 0 and qtd_excedente == 0 and qtd_duplicada == 0:
             status = "ok"
@@ -1831,12 +2143,11 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
                 "qtd_faltando": qtd_faltando,
                 "qtd_excedente": qtd_excedente,
                 "qtd_duplicada": qtd_duplicada,
-                "parcelas": parcelas,
                 "parcelas_duplicadas": duplicadas,
                 "vencimentos": sorted(vencimentos),
-                "ultimo_lancamento": ultimo_at,
-                "aba": _normalize_report_text(aba),
-                "local_lancamento": _normalize_report_text(local),
+                "ultimo_vencimento": ultimo_vencimento,
+                "aba": _normalize_report_text(aba_view),
+                "local_lancamento": _normalize_report_text(local_view),
                 "status": status,
                 "status_label": status_label,
             }
@@ -1864,6 +2175,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "nf_inicio": nf_inicio_num,
         "nf_fim": nf_fim_num,
         "summary": resumo,
+        "meta": meta,
         "items": itens_saida,
     }
 
@@ -2106,6 +2418,7 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
     messages = mensagens_com_meta[:wanted]
     changed = 0
     failed = 0
+    targets = []
     if callable(progress_cb):
         progress_cb(
             progress_current=0,
@@ -2145,6 +2458,14 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
             if not novo_label:
                 raise RuntimeError("Falha ao atualizar label de reprocessamento")
             changed += 1
+            targets.append(
+                {
+                    "id": msg_id,
+                    "threadId": str(item.get("threadId", "")).strip(),
+                    "labelIds": [],
+                    "snippet": "",
+                }
+            )
         except Exception:
             failed += 1
         if callable(progress_cb):
@@ -2165,6 +2486,7 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
         "changed": changed,
         "failed": failed,
         "mark_unread": bool(mark_unread),
+        "targets": targets,
     }
 
 
@@ -2355,15 +2677,24 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .audit-filters > div label{width:100%;text-align:center}
 .audit-filters > div input,.audit-filters > div select{width:100%;text-align:center}
-.audit-toolbar{margin-top:8px;display:flex;justify-content:center}
+.audit-title{text-align:center}
+.audit-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .audit-note{max-width:900px;text-align:center}
+.audit-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
+.audit-state.loading{color:#a25b18;font-weight:700}
 .audit-summary{margin-top:10px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
 .audit-summary .k{border:1px solid #e2b58d;border-radius:10px;background:linear-gradient(180deg,#fff7ef,#fff1e3);padding:10px;text-align:center}
 .audit-summary .n{font-size:1.3rem;font-weight:800;color:#7a3d11}
 .audit-summary .t{font-size:.8rem;color:#6b4126}
-.audit-table{width:100%;min-width:1340px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
+.audit-table{width:100%;min-width:1080px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
 .audit-table th,.audit-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .audit-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
+.audit-col-status{width:92px}
+.audit-col-nf{width:86px}
+.audit-col-cliente{width:260px}
+.audit-col-sm{width:78px}
+.audit-col-date{width:126px}
+.audit-col-aba{width:136px}
 .audit-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
 .audit-table tbody tr:hover{background:rgba(238,155,47,.08)}
 .audit-status{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
@@ -2502,11 +2833,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <div class="muted" style="margin-top:6px">Usa as mensagens mais recentes que ainda estão com a label do Botana.</div>
+        <div class="muted" style="margin-top:6px">Usa as mensagens mais recentes com label do Botana, remarca para reprocessamento e já executa a leitura em seguida.</div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
-          <button id="reprocessBtn" onclick="reprocess()">Marcar para reprocessar</button>
-          <button id="runNowBtn" class="sec" onclick="runNow()">Executar agora</button>
+          <button id="reprocessBtn" onclick="reprocess()">Reprocessar agora</button>
         </div>
         <div class="action-box">
           <div class="action-head">
@@ -2514,7 +2844,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <span id="manualActionBadge" class="status-pill off"><span>•</span><span>Aguardando</span></span>
           </div>
           <div id="manualActionMsg" class="proc-line">Nenhuma ação manual em andamento.</div>
-          <div id="manualActionDetail" class="action-detail">Use os botões acima para atualizar labels de reprocessamento ou executar um ciclo manual.</div>
+          <div id="manualActionDetail" class="action-detail">Use o botão acima para remarcar as mensagens e executar a leitura no mesmo fluxo.</div>
           <div class="proc-progress">
             <div class="proc-track"><div id="manualActionBar" class="proc-fill"></div></div>
             <div id="manualActionProgress" class="action-progress">Progresso: -</div>
@@ -2574,7 +2904,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabAudit" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>Conferência de parcelas lançadas</h3>
+      <h3 class="audit-title">Conferência de parcelas lançadas</h3>
       <div class="audit-filters">
         <div>
           <label>Modo</label>
@@ -2596,10 +2926,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <label>NF final</label>
           <input id="aNfEnd" type="text" placeholder="49100"/>
         </div>
-        <div style="display:flex;align-items:end"><button onclick="loadParcelAudit()">Conferir parcelas</button></div>
+        <div style="display:flex;align-items:end"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
       </div>
       <div class="audit-toolbar">
-        <div class="muted audit-note">A conferência compara a quantidade esperada de parcelas do XML com as parcelas efetivamente lançadas no histórico, mostrando faltas e duplicidades por NF.</div>
+        <div class="muted audit-note">A conferência lê diretamente as planilhas, seleciona as NFs pelo filtro escolhido e compara o total esperado da NF com as parcelas registradas nas abas.</div>
+        <div id="auditStatus" class="audit-state">Pronto para conferir.</div>
       </div>
       <div class="audit-summary">
         <div class="k"><div id="auditK1" class="n">0</div><div class="t">NFs verificadas</div></div>
@@ -2610,6 +2941,17 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       </div>
       <div class="table-wrap" style="margin-top:10px">
         <table class="audit-table">
+          <colgroup>
+            <col class="audit-col-status"/>
+            <col class="audit-col-nf"/>
+            <col class="audit-col-cliente"/>
+            <col class="audit-col-sm"/>
+            <col class="audit-col-sm"/>
+            <col class="audit-col-sm"/>
+            <col class="audit-col-sm"/>
+            <col class="audit-col-date"/>
+            <col class="audit-col-aba"/>
+          </colgroup>
           <thead>
             <tr>
               <th>Status</th>
@@ -2619,7 +2961,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th>Lançadas</th>
               <th>Faltando</th>
               <th>Duplicadas</th>
-              <th>Último lançamento</th>
+              <th>Últ. venc.</th>
               <th>Aba</th>
             </tr>
           </thead>
@@ -2703,7 +3045,7 @@ function switchTab(tab){
     loadHistory().catch(()=>{});
   }
   if(next==='audit'){
-    loadParcelAudit(true).catch(()=>{});
+    loadParcelAudit(false).catch(()=>{});
   }
   const nextHash='#'+next;
   if(window.location.hash!==nextHash){
@@ -2782,6 +3124,11 @@ function _reprocessView(action){
   const currentSubject=String(a.current_subject||'').trim();
   return {requested,total,current,visibleTotal,perc,currentEmail,currentDate,currentSubject};
 }
+function _manualRequestedLimit(action,fallback){
+  const requested=Math.max(0, Number(((action||{}).requested_limit)||0));
+  if(requested>0)return requested;
+  return Math.max(1, Number(fallback||100));
+}
 function updProcessing(proc,maxMessages,action){
   const runEl=document.getElementById('procRun');
   const nowEl=document.getElementById('procNow');
@@ -2793,7 +3140,8 @@ function updProcessing(proc,maxMessages,action){
   const a=action||{};
   const active=!!a.active;
   const kind=String(a.kind||'').trim();
-  if(active&&kind==='reprocess'){
+  const phase=String(a.phase||'').trim();
+  if(active&&kind==='reprocess'&&phase!=='processing'){
     const view=_reprocessView(a);
     const detailParts=[];
     if(view.currentEmail)detailParts.push(`E-mail atual ${view.currentEmail}`);
@@ -2809,6 +3157,26 @@ function updProcessing(proc,maxMessages,action){
     lastEl.textContent=`Último ciclo automático: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
     barFill.style.width=String(view.perc)+'%';
     barLabel.textContent=`Reprocessamento: ${view.current}/${view.visibleTotal||'-'} (${view.perc}%) | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+    return;
+  }
+  if(active&&kind==='reprocess'&&phase==='processing'){
+    const cur=p.current||{};
+    const currentLimit=Math.max(1, Number(a.progress_total||_manualRequestedLimit(a,maxMessages)));
+    const curStart=cur.started_at?_fmtDateTime(cur.started_at):'-';
+    runEl.textContent='Loop: executando leitura do reprocessamento';
+    nowEl.textContent=`Ciclo atual: inicio ${curStart} | ${_fmtCycleShort(cur)}`;
+    const last=p.last||{};
+    const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
+    let statusTxt='-';
+    if(last.ok===true) statusTxt='OK';
+    else if(last.ok===false) statusTxt='Erro';
+    lastEl.textContent=`Ultimo ciclo automatico: ${statusTxt} em ${lastEnd} | ${_fmtCycleShort(last)}`;
+    let curV=Number(cur.messages||0);
+    if(!Number.isFinite(curV)||curV<0)curV=0;
+    if(curV>currentLimit)curV=currentLimit;
+    const perc=Math.max(0,Math.min(100,Math.round((curV/Math.max(1,currentLimit))*100)));
+    barFill.style.width=String(perc)+'%';
+    barLabel.textContent=`Relancamento: ${curV}/${currentLimit} (${perc}%) | XML ${Number(cur.xmls||0)} | Lancamentos ${Number(cur.launched||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
     return;
   }
   const reading=!!p.reading;
@@ -2852,11 +3220,11 @@ function updManualAction(action,processing,maxMessages){
   const titleEl=document.getElementById('manualActionTitle');
   const barEl=document.getElementById('manualActionBar');
   const progressEl=document.getElementById('manualActionProgress');
-  const runBtn=document.getElementById('runNowBtn');
   const repBtn=document.getElementById('reprocessBtn');
   if(!msgEl||!detailEl||!titleEl||!barEl||!progressEl)return;
   const active=!!a.active;
   const kind=String(a.kind||'').trim();
+  const phase=String(a.phase||'').trim();
   const label=String(a.label||'Ações manuais').trim()||'Ações manuais';
   titleEl.textContent=label;
   if(active&&kind==='run_now'){
@@ -2871,19 +3239,32 @@ function updManualAction(action,processing,maxMessages){
     detailEl.textContent=String(a.detail||'Leitura de e-mails e lançamentos em andamento.');
     _setManualBadge('ok','Em andamento');
   }else if(active&&kind==='reprocess'){
-    const view=_reprocessView(a);
-    const currentParts=[];
-    if(view.currentEmail)currentParts.push(`E-mail atual: ${view.currentEmail}`);
-    if(view.currentDate)currentParts.push(`Data: ${view.currentDate}`);
-    barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
-    progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
-    msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
-    detailEl.textContent=String(a.detail||'Atualizando a label do Botana para Reprocessado.');
-    _setManualBadge('ok','Em andamento');
+    if(phase==='processing'){
+      const cur=((processing||{}).current)||{};
+      const maxV=Math.max(1, Number(a.progress_total||_manualRequestedLimit(a,maxMessages)));
+      let curV=Number(cur.messages||0);
+      if(!Number.isFinite(curV)||curV<0)curV=0;
+      const perc=Math.max(8,Math.min(95,Math.round((Math.min(curV,maxV)/Math.max(1,maxV))*100)));
+      barEl.style.width=String(perc)+'%';
+      progressEl.textContent=`Mensagens lidas: ${curV}/${maxV} | Anexos ${Number(cur.attachments||0)} | XML ${Number(cur.xmls||0)} | Lançamentos ${Number(cur.launched||0)} | Labels atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`;
+      msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
+      detailEl.textContent=String(a.detail||'Leitura e relançamento em andamento.');
+      _setManualBadge('ok','Lendo');
+    }else{
+      const view=_reprocessView(a);
+      const currentParts=[];
+      if(view.currentEmail)currentParts.push(`E-mail atual: ${view.currentEmail}`);
+      if(view.currentDate)currentParts.push(`Data: ${view.currentDate}`);
+      barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
+      progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
+      msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
+      detailEl.textContent=String(a.detail||'Atualizando a label do Botana para Reprocessado.');
+      _setManualBadge('ok','Remarcando');
+    }
   }else{
     const status=String(a.status||'idle');
     const finished=String(a.finished_at||'').trim();
-    const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use os botões acima para atualizar labels de reprocessamento ou executar um ciclo manual.';
+    const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use o botão acima para reprocessar as mensagens e executar a leitura no mesmo fluxo.';
     barEl.style.width=status==='success'&&Number(a.progress_total||0)>0?'100%':'0%';
     progressEl.textContent=status==='success'||status==='error'
       ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Limite pedido ${Number(a.requested_limit||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
@@ -2894,13 +3275,9 @@ function updManualAction(action,processing,maxMessages){
     else if(status==='error')_setManualBadge('err','Com erro');
     else _setManualBadge('off','Aguardando');
   }
-  if(runBtn){
-    runBtn.disabled=active;
-    runBtn.textContent=active&&kind==='run_now'?'Executando...':'Executar agora';
-  }
   if(repBtn){
     repBtn.disabled=active;
-    repBtn.textContent=active&&kind==='reprocess'?'Reprocessando...':'Marcar para reprocessar';
+    repBtn.textContent=active&&kind==='reprocess'?(phase==='processing'?'Lendo...':'Reprocessando...'):'Reprocessar agora';
   }
 }
 async function refresh(){
@@ -2973,8 +3350,8 @@ async function reprocess(){
   if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
   const msgEl=document.getElementById('manualActionMsg');
   const detailEl=document.getElementById('manualActionDetail');
-  if(msgEl)msgEl.textContent='Solicitação enviada. Buscando mensagens para reprocessar...';
-  if(detailEl)detailEl.textContent='As labels serão atualizadas em background e o painel mostrará o remetente/data da mensagem atual.';
+  if(msgEl)msgEl.textContent='Solicitacao enviada. Buscando mensagens para reprocessar...';
+  if(detailEl)detailEl.textContent='As labels serao atualizadas primeiro; em seguida o Botana vai reler essas mensagens e tentar relancar na planilha.';
   try{
     const payload={account:'principal',max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
     const j=await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -3010,6 +3387,7 @@ let _histSort={key:'at',dir:'desc'};
 const _histColStorageKey='botana.hist.colwidths.v1';
 const _histColDefaults={at:150,venc:110,doc:100,cliente:240,parcela:90,vparcela:130,vtotal:130,local:150,acao:110};
 let _histColWidths={..._histColDefaults};
+let _auditLoadSeq=0;
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -3183,6 +3561,30 @@ function _fmtAuditList(values){
   const arr=(Array.isArray(values)?values:[]).map(v=>_compactSpaces(v)).filter(Boolean);
   return arr.length?arr.join(', '):'-';
 }
+function _fmtAuditDate(v){
+  const txt=String(v||'').trim();
+  if(!txt)return '-';
+  if(/^\\d{4}-\\d{2}-\\d{2}$/.test(txt)){
+    const [y,m,d]=txt.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt))return txt;
+  return _fmtDateTime(txt);
+}
+function _setAuditStatus(message,loading=false){
+  const el=document.getElementById('auditStatus');
+  if(!el)return;
+  el.textContent=String(message||'Pronto para conferir.');
+  el.classList.toggle('loading',!!loading);
+}
+function _setAuditLoading(active,message=''){
+  const btn=document.getElementById('auditRunBtn');
+  if(btn){
+    btn.disabled=!!active;
+    btn.textContent=active?'Conferindo...':'Conferir parcelas';
+  }
+  _setAuditStatus(message|| (active?'Conferindo planilhas...':'Pronto para conferir.'),active);
+}
 function _setAuditSummary(summary){
   const s=summary||{};
   [['auditK1','nfs_verificadas'],['auditK2','nfs_com_divergencia'],['auditK3','parcelas_esperadas'],['auditK4','parcelas_lancadas'],['auditK5','parcelas_duplicadas']].forEach(([id,key])=>{
@@ -3206,11 +3608,19 @@ function _renderParcelAudit(items){
     const clienteView=_compactClienteLabel(it.cliente,it.descricao);
     const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
     const local=_fmtLocal(it.local_lancamento||it.aba||'-');
-    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(_fmtDateTime(it.ultimo_lancamento))}">${_esc(_fmtDateTime(it.ultimo_lancamento))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    const ultimoVenc=_fmtAuditDate(it.ultimo_vencimento||it.ultimo_lancamento);
+    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
 }
 async function loadParcelAudit(silent=false){
+  const reqId=++_auditLoadSeq;
+  const showLoading=!silent||_activeTab==='audit';
+  if(showLoading){
+    _setAuditLoading(true,'Conferindo planilhas...');
+    const body=document.getElementById('aBody');
+    if(body)body.innerHTML='<tr><td colspan="9">Conferindo planilhas...</td></tr>';
+  }
   try{
     const p=new URLSearchParams();
     const mode=((document.getElementById('aMode')||{}).value||'mes').trim()||'mes';
@@ -3222,13 +3632,24 @@ async function loadParcelAudit(silent=false){
     if(mode==='nfs'&&nfStart)p.set('nf_inicio',nfStart);
     if(mode==='nfs'&&nfEnd)p.set('nf_fim',nfEnd);
     const j=await api('/api/conferencia-parcelas?'+p.toString());
+    if(reqId!==_auditLoadSeq)return;
     _setAuditSummary(j&&j.summary||{});
     _renderParcelAudit(j&&j.items||[]);
+    const meta=(j&&j.meta)||{};
+    const loadedAt=String(meta.loaded_at||'').trim();
+    const linhas=Number(meta.linhas_lidas||0);
+    const abas=Number(meta.abas_lidas||0);
+    const statusMsg=loadedAt
+      ? `Conferência atualizada em ${_fmtDateTime(loadedAt)} | ${linhas} linhas lidas em ${abas} abas`
+      : 'Conferência atualizada.';
+    _setAuditLoading(false,statusMsg);
   }catch(err){
+    if(reqId!==_auditLoadSeq)return;
     if(!silent)console.warn('Erro ao carregar conferência:',err);
     _setAuditSummary({});
     const body=document.getElementById('aBody');
     if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    _setAuditLoading(false,'Falha ao conferir as planilhas.');
   }
 }
 async function deleteEntry(nf,parcela,at){
@@ -3252,7 +3673,7 @@ if(_auditMonthEl&&!_auditMonthEl.value){
   try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
 }
 toggleAuditFilters();
-refresh();loadHistory();loadParcelAudit(true);switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(()=>{if(_activeTab==='hist')loadHistory(true);if(_activeTab==='audit')loadParcelAudit(true);},10000);
+refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(()=>{if(_activeTab==='hist')loadHistory(true);},10000);
 initHubBackButton();
 </script></body></html>"""
 
@@ -3322,7 +3743,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Lendo os e-mails agora"
                 elif not running:
                     acc_status = "waiting"
-                    friendly = "Monitoramento pausado. Use Executar agora ou inicie o loop."
+                    friendly = "Monitoramento pausado. Use o painel para reprocessar mensagens ou inicie o loop."
                 elif (last_status or {}).get("ok", True):
                     acc_status = "waiting"
                     friendly = "Aguardando a próxima verificação automática"
@@ -3482,11 +3903,18 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
                 if parsed.path == "/api/run-now":
                     _ = str(data.get("account", "principal"))
-                    started, info = _start_run_now_background()
+                    try:
+                        max_messages = max(1, min(1000, int(data.get("max_messages", 0) or 0)))
+                    except Exception:
+                        max_messages = 0
+                    started, info = _start_run_now_background(max_messages_override=max_messages or None)
                     if not started:
                         msg = _manual_action_busy_message() or str((info or {}).get("message") or "Não foi possível iniciar a execução manual.")
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
-                    return _json_response(self, 202, {"ok": True, "started": True, "message": "Execução manual iniciada.", "action": info})
+                    friendly = "Execucao manual iniciada."
+                    if max_messages:
+                        friendly = f"Execucao manual iniciada com limite de {max_messages} mensagens."
+                    return _json_response(self, 202, {"ok": True, "started": True, "message": friendly, "action": info})
                 if parsed.path == "/api/reprocess":
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
@@ -3499,7 +3927,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if not started:
                         msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
-                    friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens mais recentes"
+                    friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens mais recentes; a leitura sera executada em seguida."
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):

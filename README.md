@@ -56,15 +56,14 @@ No `instances.json` do Hub, use:
 
 ## Ações manuais no painel
 
-- Os botões `Executar agora` e `Marcar para reprocessar` agora iniciam a ação em background e devolvem resposta visual imediata.
+- O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
-- Durante uma ação manual, os dois botões ficam desabilitados para evitar execuções concorrentes.
-- A execução manual usa os contadores de leitura/lotes já exibidos no painel para mostrar avanço do ciclo.
-- Se o loop automático estiver ativo, `Executar agora` interrompe esse ciclo, roda a execução manual e retoma o monitoramento no fim.
-- Se o loop automático estiver ativo, `Marcar para reprocessar` também interrompe esse ciclo, reprocessa e retoma o monitoramento no fim.
+- Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
+- Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
+- Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
-- Durante o reprocessamento, o painel mostra quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
+- Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
 - As duas barras de progresso passam a refletir o reprocessamento ativo, incluindo o limite pedido no painel.
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
@@ -82,9 +81,10 @@ No `instances.json` do Hub, use:
 
 ## Conferência de parcelas
 
-- A aba `Conferência` resume por NF se a quantidade de parcelas lançadas bate com a quantidade esperada registrada no XML.
+- A aba `Conferência` lê diretamente as planilhas e resume por NF se a quantidade registrada bate com a quantidade esperada nas parcelas.
 - A varredura pode ser feita por `Mês do lançamento`, por `Faixa de NF` ou em `Tudo`.
-- A conferência passa a ler também o fallback `relatorio_*.txt.tmp`, então a busca reflete lançamentos recém-gravados mesmo quando o arquivo principal está ocupado.
+- No filtro por mês, a aba seleciona as NFs relacionadas ao mês escolhido e confere a NF inteira nas planilhas, em vez de depender do histórico.
 - O painel destaca NFs com parcelas faltando, duplicadas ou acima da quantidade esperada, com totais agregados no topo.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
-- A conferência usa os eventos `HIST_JSON` gravados em `relatorios/relatorio_*.txt`, sem apagar ou regravar linhas da planilha.
+- A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento e informa quando a leitura das planilhas terminou.
+- O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
