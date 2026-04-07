@@ -3956,6 +3956,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-status{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
 .audit-status-btn{cursor:pointer;transition:transform .15s ease, box-shadow .15s ease}
 .audit-status-btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(92,52,28,.12)}
+.audit-status-btn[disabled]{cursor:default;opacity:.78;box-shadow:none;transform:none}
 .audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
 .audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
@@ -3963,6 +3964,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
 .audit-row-erro{background:rgba(220,53,69,.14)!important}
 .audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+.audit-row-local-removed{background:transparent!important}
+.audit-row-local-removed:hover{background:transparent!important}
+.audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
 .watch-filters{display:grid;grid-template-columns:1fr;gap:8px;align-items:center;justify-items:center}
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
@@ -5161,13 +5165,24 @@ function _renderParcelAudit(items){
     const auditKey=_esc(it.audit_key||'');
     const nfValue=_esc(it.nf||'-');
     const statusCell=(it.status&&it.status!=='ok')
-      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para excluir linhas excedentes/duplicadas desta NF direto da planilha" onclick="deleteAuditRows('${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
+      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para excluir linhas excedentes/duplicadas desta NF direto da planilha" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
       : `<span class="audit-status ${_esc(it.status||'ok')}">${statusLabel}</span>`;
     tr.innerHTML=`<td>${statusCell}</td><td title="${nfValue}">${nfValue}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
 }
-async function deleteAuditRows(auditKey,nf,statusLabel,deleteCandidates){
+function _markAuditRowDeletedLocal(btn,message){
+  const row=btn&&btn.closest?btn.closest('tr'):null;
+  if(row){
+    row.classList.remove('audit-row-erro','audit-row-aviso');
+    row.classList.add('audit-row-local-removed');
+  }
+  if(btn){
+    btn.disabled=true;
+    btn.title=String(message||'Linhas excedentes/duplicadas já excluídas desta NF.');
+  }
+}
+async function deleteAuditRows(btn,auditKey,nf,statusLabel,deleteCandidates){
   const key=String(auditKey||'').trim();
   const nfView=String(nf||'-').trim()||'-';
   const statusView=String(statusLabel||'-').trim()||'-';
@@ -5183,10 +5198,13 @@ async function deleteAuditRows(auditKey,nf,statusLabel,deleteCandidates){
   const msg=`Tem certeza que deseja excluir ${count} linha(s) excedente(s)/duplicada(s) da NF ${nfView} direto da planilha?\nEssa ação remove apenas as linhas identificadas como sobra na Conferência.`;
   if(!confirm(msg))return;
   try{
+    if(btn)btn.disabled=true;
     const r=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audit_key:key})});
-    alert(String((r&&r.message)||'Linhas removidas com sucesso.'));
-    await loadParcelAudit(false);
+    const successMsg=String((r&&r.message)||'Linhas removidas com sucesso.');
+    _markAuditRowDeletedLocal(btn,successMsg);
+    alert(successMsg);
   }catch(e){
+    if(btn)btn.disabled=false;
     alert('Erro ao excluir na planilha: '+e.message);
   }
 }

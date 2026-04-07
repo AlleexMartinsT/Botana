@@ -101,6 +101,7 @@ No `instances.json` do Hub, use:
 - No filtro por mês, a aba seleciona as NFs relacionadas ao mês escolhido e confere a NF inteira nas planilhas, em vez de depender do histórico.
 - O painel destaca NFs com parcelas faltando, duplicadas ou acima da quantidade esperada, com totais agregados no topo.
 - Ao clicar no badge de `Status` de uma NF com divergência, o Botana pede confirmação e pode excluir direto da planilha apenas as linhas excedentes/duplicadas identificadas automaticamente para aquela NF.
+- Depois da exclusão pela `Conferência`, a linha não é recarregada imediatamente; ela fica marcada localmente com um sublinhado amarelo para evitar nova varredura pesada logo após a remoção.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento e informa quando a leitura das planilhas terminou.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
