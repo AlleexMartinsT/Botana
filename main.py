@@ -2327,10 +2327,13 @@ def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
                     rows.append(
                         {
                             "group_key": f"{tipo_empresa}:{ano}:{nf_digits}",
+                            "planilha_id": str(planilha_id or "").strip(),
                             "sheet_type": str(tipo_empresa or "").strip(),
                             "sheet_year": str(ano or "").strip(),
                             "sheet_title": _normalize_report_text(str(getattr(planilha, "title", "") or "").strip()),
                             "aba": _normalize_report_text(str(worksheet.title or "").strip()),
+                            "worksheet_title": _normalize_report_text(str(worksheet.title or "").strip()),
+                            "row_number": int(idx + 1),
                             "scope_month": _audit_month_key_from_value(vencimento) or worksheet_month,
                             "vencimento": _normalize_report_text(vencimento),
                             "descricao": descricao,
@@ -2357,6 +2360,169 @@ def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
         "source": "planilhas",
     }
     return rows, meta
+
+
+def _audit_row_ref(item: dict) -> tuple[str, str, int]:
+    return (
+        str((item or {}).get("planilha_id") or "").strip(),
+        str((item or {}).get("worksheet_title") or (item or {}).get("aba") or "").strip(),
+        max(0, _audit_safe_int((item or {}).get("row_number"), 0)),
+    )
+
+
+def _audit_row_is_safe_delete(item: dict) -> bool:
+    row_number = max(0, _audit_safe_int((item or {}).get("row_number"), 0))
+    if row_number <= 1:
+        return False
+    if _sheet_watch_is_baixado(item):
+        return False
+    return _sheet_status_is_pending(str((item or {}).get("status_planilha") or ""))
+
+
+def _audit_row_keep_key(item: dict):
+    raw_cells = list((item or {}).get("raw_cells") or [])
+    filled_cells = sum(1 for cell in raw_cells if str(cell or "").strip())
+    descricao_len = len(str((item or {}).get("descricao") or "").strip())
+    row_number = max(0, _audit_safe_int((item or {}).get("row_number"), 0)) or 999999
+    safe_delete = _audit_row_is_safe_delete(item)
+    status_value = str((item or {}).get("status_planilha") or "").strip()
+    valor_pago = str((item or {}).get("valor_pago") or "").strip()
+    return (
+        0 if not safe_delete else 1,
+        -filled_cells,
+        -len(status_value),
+        -len(valor_pago),
+        row_number,
+        -descricao_len,
+    )
+
+
+def _audit_identity_order_key(item: dict):
+    identity = str(_history_parcela_key(item) or "").strip()
+    parcela_num = 999999
+    if identity.startswith("parcela:"):
+        try:
+            parcela_num = int(identity.split(":", 1)[1])
+        except Exception:
+            parcela_num = 999999
+    venc_dt = _parse_audit_date(str((item or {}).get("vencimento") or "").strip())
+    venc_key = venc_dt.strftime("%Y-%m-%d") if venc_dt else "9999-12-31"
+    row_number = max(0, _audit_safe_int((item or {}).get("row_number"), 0)) or 999999
+    return (parcela_num, venc_key, row_number, identity)
+
+
+def _audit_delete_candidates(nf_items: list[dict], qtd_esperada: int) -> list[dict]:
+    identities = {}
+    removable = {}
+    for item in list(nf_items or []):
+        identity = str(_history_parcela_key(item) or "").strip()
+        if not identity:
+            continue
+        identities.setdefault(identity, []).append(item)
+
+    keepers = {}
+    for identity, rows in identities.items():
+        ordered = sorted(rows, key=_audit_row_keep_key)
+        if not ordered:
+            continue
+        keepers[identity] = ordered[0]
+        for extra in ordered[1:]:
+            if _audit_row_is_safe_delete(extra):
+                removable[_audit_row_ref(extra)] = extra
+
+    if qtd_esperada > 0 and len(keepers) > qtd_esperada:
+        ordered_identities = sorted(keepers.items(), key=lambda pair: _audit_identity_order_key(pair[1]))
+        keep_identity_keys = {identity for identity, _ in ordered_identities[:qtd_esperada]}
+        for identity, keeper in ordered_identities[qtd_esperada:]:
+            if identity in keep_identity_keys:
+                continue
+            if _audit_row_is_safe_delete(keeper):
+                removable[_audit_row_ref(keeper)] = keeper
+
+    rows = list(removable.values())
+    rows.sort(
+        key=lambda item: (
+            str(item.get("planilha_id") or "").strip(),
+            str(item.get("worksheet_title") or item.get("aba") or "").strip(),
+            -max(0, _audit_safe_int(item.get("row_number"), 0)),
+        )
+    )
+    return rows
+
+
+def _delete_audit_rows(audit_key: str) -> dict:
+    target_key = str(audit_key or "").strip()
+    if not target_key:
+        return {"ok": False, "message": "NF da conferência não informada."}
+
+    linhas, _ = _load_audit_sheet_rows()
+    nf_items = [item for item in linhas if str(item.get("group_key") or "").strip() == target_key]
+    if not nf_items:
+        return {"ok": False, "message": "NF não encontrada na conferência atual."}
+
+    qtd_esperada = 0
+    for item in nf_items:
+        qtd_esperada = max(qtd_esperada, max(1, _audit_safe_int(item.get("qtd_parcelas"), 1)))
+
+    candidatos = _audit_delete_candidates(nf_items, qtd_esperada)
+    if not candidatos:
+        nf = str((nf_items[0] or {}).get("nf") or "").strip()
+        return {
+            "ok": False,
+            "message": f"A NF {nf or '-'} não possui linhas pendentes removíveis automaticamente.",
+            "deleted": 0,
+        }
+
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDENTIALS_SHEETS,
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    gc = gspread.authorize(creds)
+    from sheets_writer import apiCooldown
+
+    book_cache = {}
+    sheet_cache = {}
+    deleted = []
+
+    for item in candidatos:
+        planilha_id, worksheet_title, row_number = _audit_row_ref(item)
+        if not planilha_id or not worksheet_title or row_number <= 1:
+            continue
+        if planilha_id not in book_cache:
+            book_cache[planilha_id] = gc.open_by_key(planilha_id)
+        cache_key = (planilha_id, worksheet_title)
+        if cache_key not in sheet_cache:
+            sheet_cache[cache_key] = book_cache[planilha_id].worksheet(worksheet_title)
+        worksheet = sheet_cache[cache_key]
+        for _ in range(3):
+            try:
+                worksheet.delete_rows(row_number)
+                deleted.append(
+                    {
+                        "nf": str(item.get("nf") or "").strip(),
+                        "aba": worksheet_title,
+                        "row_number": row_number,
+                        "parcela": str(item.get("parcela") or "").strip(),
+                    }
+                )
+                break
+            except gspread.exceptions.APIError as exc:
+                if "429" in str(exc):
+                    apiCooldown()
+                    continue
+                raise
+
+    nf = str((nf_items[0] or {}).get("nf") or "").strip()
+    return {
+        "ok": bool(deleted),
+        "message": (
+            f"{len(deleted)} linha(s) removida(s) da planilha para a NF {nf}."
+            if deleted
+            else f"Nenhuma linha foi removida para a NF {nf}."
+        ),
+        "deleted": len(deleted),
+        "items": deleted,
+    }
 
 
 def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> dict:
@@ -2460,6 +2626,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         qtd_duplicada = max(0, qtd_bruta - qtd_lancada)
         qtd_faltando = max(0, qtd_esperada - qtd_lancada)
         qtd_excedente = max(0, qtd_lancada - qtd_esperada)
+        delete_candidates = _audit_delete_candidates(nf_items, qtd_esperada)
         abas_view = sorted(abas, key=lambda value: (_audit_month_key_from_sheet_title(value), value))
         if len(abas_view) > 1:
             aba_view = f"{abas_view[0]} +{len(abas_view) - 1}"
@@ -2502,6 +2669,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
 
         itens_saida.append(
             {
+                "audit_key": str((nf_items[0] or {}).get("group_key") or "").strip(),
                 "nf": nf,
                 "cliente": _normalize_report_text(cliente),
                 "descricao": _normalize_report_text(descricao),
@@ -2518,6 +2686,8 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
                 "local_lancamento": _normalize_report_text(local_view),
                 "status": status,
                 "status_label": status_label,
+                "delete_candidates": len(delete_candidates),
+                "can_delete_rows": bool(delete_candidates),
             }
         )
 
@@ -3784,6 +3954,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
 .audit-table tbody tr:hover{background:rgba(238,155,47,.08)}
 .audit-status{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
+.audit-status-btn{cursor:pointer;transition:transform .15s ease, box-shadow .15s ease}
+.audit-status-btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(92,52,28,.12)}
 .audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
 .audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
@@ -4984,9 +5156,39 @@ function _renderParcelAudit(items){
     const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
     const local=_fmtLocal(it.local_lancamento||it.aba||'-');
     const ultimoVenc=_fmtAuditDate(it.ultimo_vencimento||it.ultimo_lancamento);
-    tr.innerHTML=`<td><span class="audit-status ${_esc(it.status||'ok')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    const deleteCandidates=Number(it.delete_candidates||0);
+    const statusLabel=_esc(it.status_label||'-');
+    const auditKey=_esc(it.audit_key||'');
+    const nfValue=_esc(it.nf||'-');
+    const statusCell=(it.status&&it.status!=='ok')
+      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para excluir linhas excedentes/duplicadas desta NF direto da planilha" onclick="deleteAuditRows('${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
+      : `<span class="audit-status ${_esc(it.status||'ok')}">${statusLabel}</span>`;
+    tr.innerHTML=`<td>${statusCell}</td><td title="${nfValue}">${nfValue}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
+}
+async function deleteAuditRows(auditKey,nf,statusLabel,deleteCandidates){
+  const key=String(auditKey||'').trim();
+  const nfView=String(nf||'-').trim()||'-';
+  const statusView=String(statusLabel||'-').trim()||'-';
+  const count=Math.max(0, Number(deleteCandidates||0));
+  if(!key){
+    alert('Não foi possível identificar a NF selecionada.');
+    return;
+  }
+  if(count<=0){
+    alert(`A NF ${nfView} está com status ${statusView}, mas não há linhas pendentes removíveis automaticamente na planilha.`);
+    return;
+  }
+  const msg=`Tem certeza que deseja excluir ${count} linha(s) excedente(s)/duplicada(s) da NF ${nfView} direto da planilha?\nEssa ação remove apenas as linhas identificadas como sobra na Conferência.`;
+  if(!confirm(msg))return;
+  try{
+    const r=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audit_key:key})});
+    alert(String((r&&r.message)||'Linhas removidas com sucesso.'));
+    await loadParcelAudit(false);
+  }catch(e){
+    alert('Erro ao excluir na planilha: '+e.message);
+  }
 }
 async function loadParcelAudit(silent=false){
   const reqId=++_auditLoadSeq;
@@ -5663,6 +5865,16 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         return _json_response(self, 400, {"ok": False, "message": "NF não informada"})
                     resultado = _delete_history_entry(nf=nfDel, parcela=parcelaDel, at=atDel)
                     statusCode = 200 if resultado.get("ok") else 404
+                    return _json_response(self, statusCode, resultado)
+
+                if parsed.path == "/api/conferencia-parcelas/delete":
+                    if not _can_operate(user):
+                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                    auditKey = str(data.get("audit_key", "") or "").strip()
+                    if not auditKey:
+                        return _json_response(self, 400, {"ok": False, "message": "NF da conferência não informada"})
+                    resultado = _delete_audit_rows(auditKey)
+                    statusCode = 200 if resultado.get("ok") else 400
                     return _json_response(self, statusCode, resultado)
 
                 return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
