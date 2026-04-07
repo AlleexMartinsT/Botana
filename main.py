@@ -58,8 +58,10 @@ APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
 _SETTINGS_FILE = APPDATA_BASE / "panel_settings.json"
 _AUTH_FILE = APPDATA_BASE / "panel_auth.json"
+_WATCH_SEARCH_NAMES_FILE = APPDATA_BASE / "watch_search_names.txt"
 _SETTINGS_LOCK = threading.RLock()
 _AUTH_LOCK = threading.Lock()
+_WATCH_SEARCH_NAMES_LOCK = threading.Lock()
 _SESSIONS = {}
 _SESSIONS_LOCK = threading.Lock()
 _COOKIE_SESSION = "botana_session"
@@ -2335,6 +2337,68 @@ def _normalize_ascii_key(value: str) -> str:
     return txt
 
 
+def _normalize_watch_search_name(value: str) -> str:
+    txt = _normalize_report_text(str(value or "").strip())
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt[:160]
+
+
+def _load_watch_search_names() -> list[str]:
+    with _WATCH_SEARCH_NAMES_LOCK:
+        if not _WATCH_SEARCH_NAMES_FILE.exists():
+            return []
+        try:
+            lines = _WATCH_SEARCH_NAMES_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            return []
+        out = []
+        seen = set()
+        for raw in lines:
+            name = _normalize_watch_search_name(raw)
+            if not name:
+                continue
+            key = _normalize_ascii_key(name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            out.append(name)
+        return out
+
+
+def _remember_watch_search_names(*values: str):
+    incoming = []
+    for raw in values:
+        name = _normalize_watch_search_name(raw)
+        if name:
+            incoming.append(name)
+    if not incoming:
+        return
+    with _WATCH_SEARCH_NAMES_LOCK:
+        current = []
+        if _WATCH_SEARCH_NAMES_FILE.exists():
+            try:
+                current = _WATCH_SEARCH_NAMES_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            except Exception:
+                current = []
+        merged = []
+        seen = set()
+        for raw in incoming + current:
+            name = _normalize_watch_search_name(raw)
+            if not name:
+                continue
+            key = _normalize_ascii_key(name)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            merged.append(name)
+            if len(merged) >= 200:
+                break
+        try:
+            _WATCH_SEARCH_NAMES_FILE.write_text("\n".join(merged) + ("\n" if merged else ""), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Falha ao salvar autocomplete de nomes da busca de prazos: %s", exc)
+
+
 def _business_days_distance(from_date, to_date) -> int:
     if not from_date or not to_date or from_date == to_date:
         return 0
@@ -2351,6 +2415,14 @@ def _business_days_distance(from_date, to_date) -> int:
 def _sheet_status_is_pending(status_value: str) -> bool:
     key = _normalize_ascii_key(status_value)
     return not key or key == "A RECEBER"
+
+
+def _sheet_watch_is_baixado(item: dict) -> bool:
+    for field in ("descricao", "cliente", "parcela", "valor_pago", "status_planilha"):
+        key = _normalize_ascii_key((item or {}).get(field, ""))
+        if "BAIXADO" in key or "BAIXADA" in key:
+            return True
+    return False
 
 
 def _sheet_watch_kind(descricao: str) -> str:
@@ -2374,6 +2446,15 @@ def _format_days_label(days: int, future: bool = False) -> str:
     return f"{qtd} {unidade} atrasado" if qtd == 1 else f"{qtd} {unidade} atrasados"
 
 
+def _watch_boleto_status_payload(dias_uteis: int) -> tuple[str, str, str]:
+    if dias_uteis > 0:
+        return "aviso", "A vencer", _format_days_label(dias_uteis, future=True)
+    if dias_uteis == 0:
+        return "erro", "Vence hoje", "Hoje"
+    atraso = abs(dias_uteis)
+    return "erro", "Vencido", _format_days_label(atraso, future=False)
+
+
 def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
     boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
     deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
@@ -2388,6 +2469,8 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
     }
 
     for item in linhas:
+        if _sheet_watch_is_baixado(item):
+            continue
         if not _sheet_status_is_pending(item.get("status_planilha")):
             continue
         tipo = _sheet_watch_kind(item.get("descricao"))
@@ -2401,21 +2484,10 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
         if tipo == "boleto":
             if dias_uteis > boleto_limit:
                 continue
+            status, status_label, dias_label = _watch_boleto_status_payload(dias_uteis)
             if dias_uteis > 0:
-                status = "aviso"
-                status_label = "A vencer"
-                dias_label = _format_days_label(dias_uteis, future=True)
                 resumo["boletos_a_vencer"] += 1
-            elif dias_uteis == 0:
-                status = "erro"
-                status_label = "Vence hoje"
-                dias_label = "Hoje"
-                resumo["boletos_vencidos"] += 1
             else:
-                status = "erro"
-                atraso = abs(dias_uteis)
-                status_label = "Vencido"
-                dias_label = _format_days_label(atraso, future=False)
                 resumo["boletos_vencidos"] += 1
             tipo_label = "Boleto"
         else:
@@ -2474,6 +2546,96 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
         "meta": {**meta, "loaded_at": datetime.now().isoformat()},
         "limits": {"boletos_dias": boleto_limit, "depositos_dias": deposito_limit},
         "items": itens,
+    }
+
+
+def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
+    nome_busca = _normalize_report_text(str(nome or "").strip())
+    termo = _normalize_ascii_key(nome_busca)
+    if not termo:
+        raise ValueError("Informe um nome para buscar.")
+    linhas, meta = _load_audit_sheet_rows()
+    hoje = datetime.now().date()
+    tokens = [item for item in termo.split(" ") if item]
+    itens = []
+    for item in linhas:
+        if _sheet_watch_is_baixado(item):
+            continue
+        if not _sheet_status_is_pending(item.get("status_planilha")):
+            continue
+        if _sheet_watch_kind(item.get("descricao")) != "boleto":
+            continue
+        haystack = _normalize_ascii_key(
+            " ".join(
+                [
+                    str(item.get("cliente") or "").strip(),
+                    str(item.get("descricao") or "").strip(),
+                    str(item.get("nf") or "").strip(),
+                ]
+            )
+        )
+        if not haystack or not all(token in haystack for token in tokens):
+            continue
+        venc_dt = _parse_audit_date(str(item.get("vencimento") or "").strip())
+        if not venc_dt:
+            continue
+        venc_date = venc_dt.date()
+        dias_uteis = _business_days_distance(hoje, venc_date)
+        status, status_label, dias_label = _watch_boleto_status_payload(dias_uteis)
+        valor_base = _audit_safe_float(item.get("valor_parcela"))
+        if valor_base <= 0:
+            valor_base = _audit_safe_float(item.get("valor_total"))
+        nf = str(item.get("nf") or "").strip()
+        local = " - ".join(
+            [x for x in (str(item.get("sheet_type") or "").strip(), str(item.get("aba") or "").strip()) if x]
+        )
+        itens.append(
+            {
+                "tipo": "boleto",
+                "tipo_label": "Boleto",
+                "status": status,
+                "status_label": status_label,
+                "dias_uteis": dias_uteis,
+                "dias_label": dias_label,
+                "vencimento": str(item.get("vencimento") or "").strip(),
+                "descricao": _normalize_report_text(str(item.get("descricao") or "").strip()),
+                "cliente": _normalize_report_text(str(item.get("cliente") or "").strip()),
+                "nf": nf,
+                "valor": valor_base,
+                "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
+                "local": _normalize_report_text(local),
+                "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
+                "_sort_date": venc_date.toordinal(),
+                "_sort_nf": _audit_safe_int(nf, 0),
+            }
+        )
+    itens.sort(
+        key=lambda row: (
+            0 if row.get("status") == "erro" else 1,
+            int(row.get("_sort_date") or 0),
+            -int(row.get("_sort_nf") or 0),
+        )
+    )
+    for row in itens:
+        row.pop("_sort_date", None)
+        row.pop("_sort_nf", None)
+    count = len(itens)
+    related_names = [nome_busca]
+    related_names.extend(str(item.get("cliente") or "").strip() for item in itens)
+    _remember_watch_search_names(*related_names)
+    if count <= 0:
+        message = f"Não existem pendências para '{nome_busca}'."
+    elif count == 1:
+        message = f"Foi encontrado 1 boleto em aberto para '{nome_busca}'."
+    else:
+        message = f"Foram encontrados {count} boletos em aberto para '{nome_busca}'."
+    return {
+        "query": nome_busca,
+        "count": count,
+        "message": message,
+        "meta": {**meta, "loaded_at": datetime.now().isoformat()},
+        "items": itens,
+        "suggestions": _load_watch_search_names(),
     }
 
 
@@ -3357,6 +3519,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .watch-filters > div label{width:100%;text-align:center}
 .watch-filters > div input{width:min(88px,100%);text-align:center}
+.watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .watch-note{max-width:900px;text-align:center}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -3385,6 +3548,25 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
 .watch-badge.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .watch-badge.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
+.watch-pop{position:fixed;inset:0;z-index:99998;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.68);backdrop-filter:blur(3px);padding:20px}
+.watch-pop.show{display:flex}
+.watch-pop-box{width:min(920px,94vw);max-height:min(82vh,760px);overflow:hidden;display:grid;grid-template-rows:auto auto auto 1fr;background:linear-gradient(180deg,#fff9f3,#fff2e5);border:1px solid #efc9a3;border-radius:16px;box-shadow:0 18px 42px rgba(20,10,4,.22)}
+.watch-pop-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid #efd6bf}
+.watch-pop-head h4{margin:0;color:#5f341a}
+.watch-pop-close{border:1px solid #d7ab82;background:#fff7ef;color:#6d3b1a;border-radius:10px;padding:6px 10px;cursor:pointer;font-weight:700}
+.watch-pop-close:hover{background:#ffeddc}
+.watch-pop-search{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:14px 16px 10px;align-items:end}
+.watch-pop-search label{text-align:left}
+.watch-pop-search input{margin-top:4px}
+.watch-pop-state{padding:0 16px 10px;min-height:22px;text-align:center;color:#6b4126;font-size:.84rem}
+.watch-pop-state.loading{color:#a25b18;font-weight:700}
+.watch-pop-results{padding:0 16px 16px;overflow:auto}
+.watch-pop-empty{border:1px dashed #e0b68c;border-radius:12px;background:#fffaf6;padding:16px;text-align:center;color:#6b4126}
+.watch-pop-table{width:100%;min-width:760px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d;background:#fffdfb}
+.watch-pop-table th,.watch-pop-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.watch-pop-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
+.watch-pop-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.watch-pop-table tbody tr:hover{background:rgba(238,155,47,.08)}
 .cell-menu{position:relative;display:flex;align-items:center;gap:6px;justify-content:center;width:100%}
 .cell-btn{display:block;width:100%;padding:0;border:0;background:transparent;color:#5a311b;font-weight:700;cursor:pointer;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cell-btn:hover{text-decoration:underline}
@@ -3402,7 +3584,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}.watch-pop-search{grid-template-columns:1fr}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -3699,6 +3881,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
         <div style="display:flex;align-items:end;justify-content:center"><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
       </div>
+      <div class="watch-actions">
+        <button type="button" class="sec" onclick="openWatchSearchModal()">Buscar boletos em aberto</button>
+      </div>
       <div class="watch-toolbar">
         <div class="muted watch-note">A relação lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</div>
         <div id="watchStatus" class="watch-state">Pronto para consultar.</div>
@@ -3746,6 +3931,26 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
   </section>
 </main>
+<div id="watchSearchModal" class="watch-pop" onclick="closeWatchSearchModal(event)">
+  <div class="watch-pop-box" onclick="event.stopPropagation()">
+    <div class="watch-pop-head">
+      <h4>Buscar boletos em aberto</h4>
+      <button type="button" class="watch-pop-close" onclick="closeWatchSearchModal()">Fechar</button>
+    </div>
+    <div class="watch-pop-search">
+      <div>
+        <label>Nome do cliente</label>
+        <input id="watchSearchInput" type="text" list="watchSearchSuggestions" placeholder="Digite o nome completo ou parcial"/>
+        <datalist id="watchSearchSuggestions"></datalist>
+      </div>
+      <button id="watchSearchBtn" type="button" onclick="searchOpenBoletos()">Buscar</button>
+    </div>
+    <div id="watchSearchState" class="watch-pop-state">Digite um nome para consultar boletos em aberto.</div>
+    <div id="watchSearchResults" class="watch-pop-results">
+      <div class="watch-pop-empty">Nenhuma busca executada ainda.</div>
+    </div>
+  </div>
+</div>
 <script>
 const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store-image','favicon.ico']);
 function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
@@ -4620,6 +4825,78 @@ async function loadDueWatch(silent=false){
     _setWatchLoading(false,'Falha ao ler as planilhas.');
   }
 }
+function _setWatchSearchState(message,loading=false){
+  const el=document.getElementById('watchSearchState');
+  if(!el)return;
+  el.textContent=String(message||'Digite um nome para consultar boletos em aberto.');
+  el.classList.toggle('loading',!!loading);
+}
+function _renderWatchSearchResults(items,message){
+  const box=document.getElementById('watchSearchResults');
+  if(!box)return;
+  const arr=Array.isArray(items)?items:[];
+  if(!arr.length){
+    box.innerHTML=`<div class="watch-pop-empty">${_esc(String(message||'Não existem pendências para a busca informada.'))}</div>`;
+    return;
+  }
+  const rows=arr.map((it)=>{
+    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
+    const local=_compactSpaces(it.local||it.aba||'-');
+    const rowClass=String(it.status||'')==='erro'?'watch-row-erro':'watch-row-aviso';
+    return `<tr class="${_esc(rowClass)}"><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_fmtAuditDate(it.vencimento))}">${_esc(_fmtAuditDate(it.vencimento))}</td><td><span class="watch-badge ${_esc(it.status||'aviso')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(it.dias_label||'-')}">${_esc(it.dias_label||'-')}</td><td title="${_esc(_fmtMoney(it.valor))}">${_esc(_fmtMoney(it.valor))}</td><td title="${_esc(local)}">${_esc(local)}</td></tr>`;
+  }).join('');
+  box.innerHTML=`<table class="watch-pop-table"><thead><tr><th>Cliente</th><th>NF</th><th>Vencimento</th><th>Situação</th><th>Prazo</th><th>Valor</th><th>Aba</th></tr></thead><tbody>${rows}</tbody></table>`;
+  _setWatchSearchState(message||`${arr.length} boleto(s) em aberto encontrados.`,false);
+}
+function _renderWatchSearchSuggestions(items){
+  const el=document.getElementById('watchSearchSuggestions');
+  if(!el)return;
+  const arr=(Array.isArray(items)?items:[]).filter(Boolean).slice(0,100);
+  el.innerHTML=arr.map((item)=>`<option value="${_esc(item)}"></option>`).join('');
+}
+async function loadWatchSearchSuggestions(){
+  try{
+    const j=await api('/api/prazos/search-suggestions');
+    _renderWatchSearchSuggestions(j&&j.items||[]);
+  }catch(err){
+    console.warn('Erro ao carregar autocomplete da busca de prazos:',err);
+  }
+}
+function openWatchSearchModal(){
+  const modal=document.getElementById('watchSearchModal');
+  if(modal)modal.classList.add('show');
+  _setWatchSearchState('Digite um nome para consultar boletos em aberto.',false);
+  _renderWatchSearchResults([], 'Nenhuma busca executada ainda.');
+  loadWatchSearchSuggestions().catch(()=>{});
+  const input=document.getElementById('watchSearchInput');
+  if(input){setTimeout(()=>input.focus(),20);}
+}
+function closeWatchSearchModal(ev){
+  if(ev&&ev.target&&ev.currentTarget&&ev.target!==ev.currentTarget)return;
+  const modal=document.getElementById('watchSearchModal');
+  if(modal)modal.classList.remove('show');
+}
+async function searchOpenBoletos(){
+  const input=document.getElementById('watchSearchInput');
+  const btn=document.getElementById('watchSearchBtn');
+  const query=String((input&&input.value)||'').trim();
+  if(!query){
+    _renderWatchSearchResults([], 'Informe um nome para consultar.');
+    return;
+  }
+  if(btn){btn.disabled=true;btn.textContent='Buscando...';}
+  _setWatchSearchState('Consultando boletos em aberto nas planilhas...',true);
+  try{
+    const j=await api('/api/prazos/search?nome='+encodeURIComponent(query));
+    _renderWatchSearchSuggestions(j&&j.suggestions||[]);
+    _renderWatchSearchResults(j&&j.items||[], String((j&&j.message)||'Busca concluída.'));
+  }catch(err){
+    _renderWatchSearchResults([], 'Falha ao consultar boletos em aberto.');
+    _setWatchSearchState(String(err&&err.message||err),false);
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='Buscar';}
+  }
+}
 async function deleteEntry(nf,parcela,at){
   if(!nf)return;
   const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nIsso remove apenas o registro do histórico/relatório, não a linha da planilha.`;
@@ -4637,6 +4914,15 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
+['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();searchOpenBoletos();}});});
+window.addEventListener('keydown',(e)=>{
+  if(e.key!=='Escape')return;
+  const modal=document.getElementById('watchSearchModal');
+  if(modal&&modal.classList.contains('show')){
+    e.preventDefault();
+    closeWatchSearchModal();
+  }
+});
 window.addEventListener('hashchange',()=>{const t=_tabFromLocation();if(t!==_activeTab)switchTab(t);});
 const _auditMonthEl=document.getElementById('aMonth');
 if(_auditMonthEl&&!_auditMonthEl.value){
@@ -4661,7 +4947,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return user
             
             # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
-            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/prazos", "/api/clean-sheets", "/api/clean-sheets/log"]:
+            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/prazos", "/api/prazos/search", "/api/prazos/search-suggestions", "/api/clean-sheets", "/api/clean-sheets/log"]:
                 return "hub_internal"
 
             if parsed_path.startswith("/api/"):
@@ -4802,6 +5088,23 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     deposito_dias = 7
                 try:
                     resultado = _gerar_relacao_pendencias(boleto_dias, deposito_dias)
+                    return _json_response(self, 200, {"ok": True, **resultado})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
+            if parsed.path == "/api/prazos/search-suggestions":
+                try:
+                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_names()})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
+            if parsed.path == "/api/prazos/search":
+                qs = parse_qs(parsed.query or "")
+                nome = (qs.get("nome", [""])[0] or "").strip()
+                if not nome:
+                    return _json_response(self, 400, {"ok": False, "message": "Informe um nome para consultar."})
+                try:
+                    resultado = _buscar_boletos_em_aberto_por_nome(nome)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
