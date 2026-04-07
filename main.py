@@ -2110,6 +2110,7 @@ def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
                     vencimento = str(row[0] or "").strip()
                     descricao = _normalize_report_text(str(row[1] or "").strip())
                     parcela = _normalize_report_text(str(row[5] or "").strip())
+                    raw_cells = [_normalize_report_text(str(cell or "").strip()) for cell in row]
                     rows.append(
                         {
                             "group_key": f"{tipo_empresa}:{ano}:{nf_digits}",
@@ -2123,12 +2124,15 @@ def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
                             "cliente": descricao,
                             "nf": nf_digits,
                             "nf_num": _audit_safe_int(nf_digits, 0),
+                            "valor_total_raw": _normalize_report_text(str(row[3] or "").strip()),
                             "valor_total": _audit_safe_float(row[3]),
                             "qtd_parcelas": max(1, _audit_safe_int(row[4], 1)),
                             "parcela": parcela,
+                            "valor_parcela_raw": _normalize_report_text(str(row[6] or "").strip()),
                             "valor_parcela": _audit_safe_float(row[6]),
                             "valor_pago": _normalize_report_text(str(row[7] or "").strip()),
                             "status_planilha": _normalize_report_text(str(row[8] or "").strip()),
+                            "raw_cells": raw_cells,
                         }
                     )
 
@@ -2418,9 +2422,14 @@ def _sheet_status_is_pending(status_value: str) -> bool:
 
 
 def _sheet_watch_is_baixado(item: dict) -> bool:
-    for field in ("descricao", "cliente", "parcela", "valor_pago", "status_planilha"):
+    ignore_markers = ("BAIXADO", "BAIXADA", "ESTORNADO", "ESTORNADA")
+    for field in ("descricao", "cliente", "parcela", "valor_pago", "status_planilha", "valor_total_raw", "valor_parcela_raw"):
         key = _normalize_ascii_key((item or {}).get(field, ""))
-        if "BAIXADO" in key or "BAIXADA" in key:
+        if any(marker in key for marker in ignore_markers):
+            return True
+    for cell in (item or {}).get("raw_cells") or []:
+        key = _normalize_ascii_key(cell)
+        if any(marker in key for marker in ignore_markers):
             return True
     return False
 
@@ -3519,7 +3528,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .watch-filters > div label{width:100%;text-align:center}
 .watch-filters > div input{width:min(88px,100%);text-align:center}
-.watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap}
+.watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .watch-note{max-width:900px;text-align:center}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}

@@ -105,11 +105,12 @@ No `instances.json` do Hub, use:
 ## Prazos no painel
 
 - A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.
-- Linhas marcadas como `BAIXADO` ou `BAIXADA` nos campos principais da planilha são ignoradas na aba `Prazos`, mesmo que o `Status` esteja vazio.
+- Linhas marcadas como `BAIXADO`, `BAIXADA`, `ESTORNADO` ou `ESTORNADA` em qualquer coluna relevante da linha, inclusive quando o texto cair fora da coluna de `Status`, são ignoradas na aba `Prazos`.
 - O painel separa boletos próximos do vencimento e depósitos atrasados, usando dias úteis e filtros customizáveis de `1` a `7`.
 - Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
 - A aba atualiza ao abrir, mostra estado de carregamento e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
+- Os botões de atualização da relação e da busca por nome ficam em linhas separadas, com espaçamento próprio no card da aba `Prazos`.
 - O botão `Buscar boletos em aberto` abre um popup próprio, fora do front-end nativo do navegador, para consultar por nome do cliente.
 - Se não houver pendências para o nome buscado, o popup mostra apenas a mensagem informando que não existem boletos em aberto.
 - Os nomes pesquisados e os nomes encontrados ficam salvos localmente em `%APPDATA%\\Botana\\watch_search_names.txt`, alimentando o autocomplete do campo nas próximas consultas.
