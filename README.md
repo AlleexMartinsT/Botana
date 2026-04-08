@@ -87,6 +87,9 @@ No `instances.json` do Hub, use:
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
 
+- No modo `Escolha manual`, a recuperação passou a medir o progresso pelo total de NFs pedidas, em vez de começar com um teto genérico como `0/1000`.
+- Quando a busca manual localiza apenas parte das NFs solicitadas, o resultado final informa quais NFs foram encontradas e quais ficaram faltando.
+
 ## Leitura do Gmail
 
 - O ciclo normal agora aplica de verdade o `Período` configurado no painel ao montar a busca do Gmail.

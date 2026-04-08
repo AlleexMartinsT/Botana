@@ -143,6 +143,9 @@ _MANUAL_ACTION = {
     "window_selected": 0,
     "continue_after_id": "",
     "continue_remaining": 0,
+    "requested_nf_count": 0,
+    "found_nf_numbers": [],
+    "missing_nf_numbers": [],
 }
 
 
@@ -294,6 +297,9 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "window_selected": 0,
                 "continue_after_id": "",
                 "continue_remaining": 0,
+                "requested_nf_count": 0,
+                "found_nf_numbers": [],
+                "missing_nf_numbers": [],
             }
         )
         for key, value in extra.items():
@@ -340,6 +346,9 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["window_selected"] = 0
         _MANUAL_ACTION["continue_after_id"] = ""
         _MANUAL_ACTION["continue_remaining"] = 0
+        _MANUAL_ACTION["requested_nf_count"] = 0
+        _MANUAL_ACTION["found_nf_numbers"] = []
+        _MANUAL_ACTION["missing_nf_numbers"] = []
         _MANUAL_ACTION["matched"] = 0
         _MANUAL_ACTION["inspected"] = 0
         _MANUAL_ACTION["launched"] = 0
@@ -3687,6 +3696,26 @@ def _extract_nf_numbers_from_text(text: str) -> list[int]:
     return sorted(set(values))
 
 
+def _format_nf_number_list(values, limit: int = 8) -> str:
+    numeros = []
+    vistos = set()
+    for item in list(values or []):
+        try:
+            numero = int(item)
+        except Exception:
+            continue
+        if numero <= 0 or numero in vistos:
+            continue
+        vistos.add(numero)
+        numeros.append(numero)
+    if not numeros:
+        return ""
+    if len(numeros) <= max(1, int(limit or 8)):
+        return ", ".join(str(numero) for numero in numeros)
+    head = ", ".join(str(numero) for numero in numeros[: max(1, int(limit or 8))])
+    return f"{head} e mais {len(numeros) - max(1, int(limit or 8))}"
+
+
 def _preview_matches_nf_range(subject: str, nf_start: int | None, nf_end: int | None) -> bool:
     if nf_start is None or nf_end is None:
         return True
@@ -4016,6 +4045,192 @@ def _selected_preview_window(items: list[dict]) -> dict:
     }
 
 
+def _find_missing_messages_for_nf_list(
+    service,
+    nf_values: list[int],
+    max_messages: int,
+    page_size: int,
+    progress_cb=None,
+) -> dict:
+    requested = _parse_nf_selection_list(nf_values)
+    requested_total = len(requested)
+    per_nf_limit = 3
+    message_limit = max(1, min(int(max_messages or 1), requested_total * per_nf_limit))
+    page_limit = max(4, min(10, _manual_scan_page_limit(50, page_size)))
+    targets = []
+    target_ids = set()
+    inspected_ids = set()
+    inspected = 0
+    pages = 0
+    found_nf_numbers = []
+    missing_nf_numbers = []
+    attachment_text_cache = {}
+    subject_mismatch_notes = []
+    subject_mismatch_count = 0
+    criteria_desc = _describe_recovery_filters(mode="list", nf_list=requested) or "NFs selecionadas"
+    if callable(progress_cb):
+        progress_cb(
+            phase="searching",
+            progress_current=0,
+            progress_total=requested_total,
+            matched=0,
+            inspected=0,
+            current_email="",
+            current_subject="",
+            current_date="",
+            requested_nf_count=requested_total,
+            found_nf_numbers=[],
+            missing_nf_numbers=requested[:],
+            message="Buscando as NFs selecionadas no Gmail.",
+            detail=f"Criterios: {criteria_desc}.",
+        )
+    for idx, nf in enumerate(requested, start=1):
+        query = _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), str(nf))
+        page_token = None
+        local_pages = 0
+        local_matches = 0
+        found_for_nf = False
+        while local_pages < page_limit and local_matches < per_nf_limit and len(targets) < message_limit:
+            batch, next_page_token = buscarMessagesEnviadosPagina(
+                service,
+                max_results=page_size,
+                page_token=page_token,
+                query=query,
+            )
+            pages += 1
+            local_pages += 1
+            if not batch and not next_page_token:
+                break
+            for item in batch:
+                msg_id = str(item.get("id", "")).strip()
+                if not msg_id:
+                    continue
+                preview = _preview_from_message_item(item)
+                current_email = str(preview.get("email", "")).strip()
+                current_subject = str(preview.get("subject", "")).strip()
+                current_date = str(preview.get("date", "")).strip()
+                if msg_id not in inspected_ids:
+                    inspected_ids.add(msg_id)
+                    inspected += 1
+                if callable(progress_cb):
+                    progress_cb(
+                        phase="searching",
+                        progress_current=len(found_nf_numbers),
+                        progress_total=requested_total,
+                        matched=len(targets),
+                        inspected=inspected,
+                        current_email=current_email,
+                        current_subject=current_subject,
+                        current_date=current_date,
+                        requested_nf_count=requested_total,
+                        found_nf_numbers=found_nf_numbers[:],
+                        missing_nf_numbers=[numero for numero in requested if numero not in set(found_nf_numbers)],
+                        message=f"Buscando NF {nf} ({idx} de {requested_total}).",
+                        detail=f"{inspected} mensagem(ns) analisada(s) ate agora.",
+                    )
+                attachment_text = attachment_text_cache.get(msg_id, "")
+                match_info = _recovery_match_details(
+                    service,
+                    msg_id,
+                    preview,
+                    mode="list",
+                    nf_list=[nf],
+                    attachment_text=attachment_text,
+                )
+                attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+                if not bool(match_info.get("matched")):
+                    continue
+                warning_note = str(match_info.get("warning_note", "") or "").strip()
+                if warning_note:
+                    subject_mismatch_count += 1
+                    if len(subject_mismatch_notes) < 8:
+                        note_parts = [f"NF {nf}"]
+                        if current_date:
+                            note_parts.append(current_date)
+                        if current_subject:
+                            note_parts.append(current_subject)
+                        context = " | ".join(note_parts)
+                        subject_mismatch_notes.append(
+                            f"{context} -> {warning_note}" if context else warning_note
+                        )
+                found_for_nf = True
+                if nf not in found_nf_numbers:
+                    found_nf_numbers.append(nf)
+                if msg_id in target_ids:
+                    local_matches += 1
+                    if local_matches >= per_nf_limit:
+                        break
+                    continue
+                target_ids.add(msg_id)
+                local_matches += 1
+                targets.append(
+                    {
+                        "id": msg_id,
+                        "threadId": str(item.get("threadId", "")).strip(),
+                        "labelIds": list(item.get("labelIds", []) or []),
+                        "snippet": str(item.get("snippet", "") or ""),
+                        "subject": str(item.get("subject", "") or "").strip(),
+                        "date": str(item.get("date", "") or "").strip(),
+                        "from": str(item.get("from", "") or "").strip(),
+                        "matched_nf": nf,
+                    }
+                )
+                if callable(progress_cb):
+                    progress_cb(
+                        phase="searching",
+                        progress_current=len(found_nf_numbers),
+                        progress_total=requested_total,
+                        matched=len(targets),
+                        inspected=inspected,
+                        current_email=current_email,
+                        current_subject=current_subject,
+                        current_date=current_date,
+                        requested_nf_count=requested_total,
+                        found_nf_numbers=found_nf_numbers[:],
+                        missing_nf_numbers=[numero for numero in requested if numero not in set(found_nf_numbers)],
+                        message=f"NFs localizadas: {len(found_nf_numbers)} de {requested_total}.",
+                        detail=f"NF {nf} localizada em {local_matches} mensagem(ns).",
+                    )
+                if local_matches >= per_nf_limit or len(targets) >= message_limit:
+                    break
+            if local_matches >= per_nf_limit or len(targets) >= message_limit or not next_page_token:
+                break
+            page_token = next_page_token
+        if not found_for_nf:
+            missing_nf_numbers.append(nf)
+            if callable(progress_cb):
+                progress_cb(
+                    phase="searching",
+                    progress_current=len(found_nf_numbers),
+                    progress_total=requested_total,
+                    matched=len(targets),
+                    inspected=inspected,
+                    current_email="",
+                    current_subject="",
+                    current_date="",
+                    requested_nf_count=requested_total,
+                    found_nf_numbers=found_nf_numbers[:],
+                    missing_nf_numbers=missing_nf_numbers[:],
+                    message=f"NFs localizadas: {len(found_nf_numbers)} de {requested_total}.",
+                    detail=f"A NF {nf} nao apareceu nas mensagens verificadas.",
+                )
+    return {
+        "ok": True,
+        "matched": len(targets),
+        "inspected": inspected,
+        "pages": pages,
+        "query": "consultas individuais por NF",
+        "criteria": criteria_desc,
+        "mode": "list",
+        "targets": targets,
+        "subject_mismatch_count": subject_mismatch_count,
+        "subject_mismatch_notes": subject_mismatch_notes,
+        "requested_nf_count": requested_total,
+        "found_nf_numbers": found_nf_numbers,
+        "missing_nf_numbers": missing_nf_numbers,
+    }
+
+
 def _reprocess_recent_query() -> str:
     return f"newer_than:{int(_REPROCESS_LOOKBACK_DAYS)}d"
 
@@ -4179,8 +4394,16 @@ def _find_missing_messages(
     else:
         raise ValueError("Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails.")
     service = _get_gmail_service_locked()
-    wanted = max(1, min(1000, int(max_messages)))
     page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    if mode_norm == "list":
+        return _find_missing_messages_for_nf_list(
+            service,
+            nf_values=nf_values,
+            max_messages=max_messages,
+            page_size=page_size,
+            progress_cb=progress_cb,
+        )
+    wanted = max(1, min(1000, int(max_messages)))
     page_limit = _manual_scan_page_limit(wanted, page_size)
     query = _recover_search_query(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values)
     targets = []
@@ -4324,6 +4547,8 @@ def _start_recover_missing_background(
 ) -> tuple[bool, dict]:
     mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
+    requested_nf_values = _parse_nf_selection_list(nf_list) if mode_norm == "list" else []
+    requested_nf_count = len(requested_nf_values)
     if not criteria_desc:
         return False, {"message": "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."}
     snap = _manual_action_snapshot()
@@ -4337,10 +4562,13 @@ def _start_recover_missing_background(
         "Recuperação de e-mails",
         "Recuperação iniciada.",
         detail=f"Buscando mensagens com XML em {criteria_desc}.",
-        progress_total=int(max_messages),
+        progress_total=requested_nf_count if requested_nf_count > 0 else 0,
         requested_limit=int(max_messages),
         matched=0,
         inspected=0,
+        requested_nf_count=requested_nf_count,
+        found_nf_numbers=[],
+        missing_nf_numbers=requested_nf_values[:],
     )
     if not started:
         return False, snap
@@ -4372,6 +4600,10 @@ def _start_recover_missing_background(
                 phase="searching",
                 matched=0,
                 inspected=0,
+                progress_total=requested_nf_count if requested_nf_count > 0 else 0,
+                requested_nf_count=requested_nf_count,
+                found_nf_numbers=[],
+                missing_nf_numbers=requested_nf_values[:],
             )
             result = _find_missing_messages(
                 max_messages=max_messages,
@@ -4388,7 +4620,15 @@ def _start_recover_missing_background(
             inspected = int(result.get("inspected", 0) or 0)
             subject_mismatch_count = int(result.get("subject_mismatch_count", 0) or 0)
             subject_mismatch_notes = list(result.get("subject_mismatch_notes") or [])
+            found_nf_numbers = _parse_nf_selection_list(result.get("found_nf_numbers") or [])
+            missing_nf_numbers = _parse_nf_selection_list(result.get("missing_nf_numbers") or [])
+            requested_nf_count = int(result.get("requested_nf_count", requested_nf_count) or 0)
             if targets:
+                nf_progress_note = ""
+                if requested_nf_count > 0:
+                    nf_progress_note = f"NFs localizadas: {len(found_nf_numbers)} de {requested_nf_count}."
+                    if missing_nf_numbers:
+                        nf_progress_note = f"{nf_progress_note} Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
                 _manual_action_update(
                     phase="processing",
                     progress_current=0,
@@ -4399,7 +4639,13 @@ def _start_recover_missing_background(
                     current_subject="",
                     current_date="",
                     message="Mensagens encontradas. Iniciando leitura.",
-                    detail=f"O Botana vai reler {len(targets)} mensagens encontradas em {criteria_desc}.",
+                    detail=(
+                        f"O Botana vai reler {len(targets)} mensagens encontradas em {criteria_desc}."
+                        + (f" {nf_progress_note}" if nf_progress_note else "")
+                    ),
+                    requested_nf_count=requested_nf_count,
+                    found_nf_numbers=found_nf_numbers,
+                    missing_nf_numbers=missing_nf_numbers,
                 )
                 ok, msg = executar_um_ciclo(
                     max_messages_override=len(targets),
@@ -4445,6 +4691,22 @@ def _start_recover_missing_background(
                 if resume_loop:
                     restarted = iniciar_verificacao()
                     detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
+                if requested_nf_count > 0:
+                    detail = f"{detail} | NFs localizadas: {len(found_nf_numbers)}/{requested_nf_count}"
+                    if missing_nf_numbers:
+                        detail = f"{detail} | NFs nao localizadas: {_format_nf_number_list(missing_nf_numbers)}"
+                    if ok and subject_mismatch_count <= 0 and missing_nf_numbers:
+                        msg = f"Recuperacao parcial: {len(found_nf_numbers)} de {requested_nf_count} NF(s) localizadas."
+                        if launched > 0:
+                            msg = (
+                                f"{msg} {launched} lancamento{'s' if launched != 1 else ''} "
+                                f"adicionado{'s' if launched != 1 else ''} na planilha."
+                            )
+                        elif duplicates > 0:
+                            msg = f"{msg} As NFs localizadas ja estavam lancadas."
+                        else:
+                            msg = f"{msg} Nada novo entrou na planilha."
+                        msg = f"{msg} Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
                 _manual_action_finish(
                     ok,
                     msg,
@@ -4459,23 +4721,38 @@ def _start_recover_missing_background(
                     subject_mismatch_count=subject_mismatch_count,
                     subject_mismatch_notes=subject_mismatch_notes,
                     requested_limit=int(max_messages),
+                    requested_nf_count=requested_nf_count,
+                    found_nf_numbers=found_nf_numbers,
+                    missing_nf_numbers=missing_nf_numbers,
                 )
                 return
             detail = f"Nenhuma mensagem com XML combinou com {criteria_desc}. Analisadas: {inspected}."
+            if missing_nf_numbers:
+                detail = f"{detail} NFs nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
             _manual_action_finish(
                 True,
-                "Nenhum e-mail foi encontrado para os filtros informados.",
+                (
+                    "Nenhum e-mail foi encontrado para os filtros informados."
+                    if not missing_nf_numbers
+                    else (
+                        "Nenhum e-mail foi encontrado para as NFs selecionadas. "
+                        f"Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
+                    )
+                ),
                 detail=detail,
                 progress_current=matched,
-                progress_total=int(max_messages),
+                progress_total=requested_nf_count if requested_nf_count > 0 else 0,
                 matched=matched,
                 inspected=inspected,
                 subject_mismatch_count=subject_mismatch_count,
                 subject_mismatch_notes=subject_mismatch_notes,
                 requested_limit=int(max_messages),
+                requested_nf_count=requested_nf_count,
+                found_nf_numbers=found_nf_numbers,
+                missing_nf_numbers=missing_nf_numbers,
             )
         except Exception as exc:
             logger.exception("Falha na recuperação de e-mails em background: %s", exc)
