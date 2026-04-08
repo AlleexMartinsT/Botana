@@ -4548,7 +4548,7 @@ def _start_recover_missing_background(
     mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     requested_nf_values = _parse_nf_selection_list(nf_list) if mode_norm == "list" else []
-    requested_nf_count = len(requested_nf_values)
+    initial_requested_nf_count = len(requested_nf_values)
     if not criteria_desc:
         return False, {"message": "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."}
     snap = _manual_action_snapshot()
@@ -4562,11 +4562,11 @@ def _start_recover_missing_background(
         "Recuperação de e-mails",
         "Recuperação iniciada.",
         detail=f"Buscando mensagens com XML em {criteria_desc}.",
-        progress_total=requested_nf_count if requested_nf_count > 0 else 0,
+        progress_total=initial_requested_nf_count if initial_requested_nf_count > 0 else 0,
         requested_limit=int(max_messages),
         matched=0,
         inspected=0,
-        requested_nf_count=requested_nf_count,
+        requested_nf_count=initial_requested_nf_count,
         found_nf_numbers=[],
         missing_nf_numbers=requested_nf_values[:],
     )
@@ -4600,8 +4600,8 @@ def _start_recover_missing_background(
                 phase="searching",
                 matched=0,
                 inspected=0,
-                progress_total=requested_nf_count if requested_nf_count > 0 else 0,
-                requested_nf_count=requested_nf_count,
+                progress_total=initial_requested_nf_count if initial_requested_nf_count > 0 else 0,
+                requested_nf_count=initial_requested_nf_count,
                 found_nf_numbers=[],
                 missing_nf_numbers=requested_nf_values[:],
             )
@@ -4622,7 +4622,7 @@ def _start_recover_missing_background(
             subject_mismatch_notes = list(result.get("subject_mismatch_notes") or [])
             found_nf_numbers = _parse_nf_selection_list(result.get("found_nf_numbers") or [])
             missing_nf_numbers = _parse_nf_selection_list(result.get("missing_nf_numbers") or [])
-            requested_nf_count = int(result.get("requested_nf_count", requested_nf_count) or 0)
+            requested_nf_count = int(result.get("requested_nf_count", initial_requested_nf_count) or 0)
             if targets:
                 nf_progress_note = ""
                 if requested_nf_count > 0:

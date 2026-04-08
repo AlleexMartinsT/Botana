@@ -89,6 +89,7 @@ No `instances.json` do Hub, use:
 
 - No modo `Escolha manual`, a recuperação passou a medir o progresso pelo total de NFs pedidas, em vez de começar com um teto genérico como `0/1000`.
 - Quando a busca manual localiza apenas parte das NFs solicitadas, o resultado final informa quais NFs foram encontradas e quais ficaram faltando.
+- A recuperação manual por lista não dispara mais erro interno de variável local ao iniciar a busca; o fluxo agora conclui normalmente e mostra se a NF foi lançada ou barrada como duplicada.
 
 ## Leitura do Gmail
 
