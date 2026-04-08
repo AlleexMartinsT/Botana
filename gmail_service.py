@@ -387,11 +387,12 @@ def _botana_label_ids(service) -> Tuple[Dict[str, str], List[str]]:
     return id_to_name, botana_ids
 
 
-def listar_mensagens_com_labels_botana(service, max_results: int = 1000) -> List[Dict[str, Any]]:
+def listar_mensagens_com_labels_botana(service, max_results: int = 1000, query: str | None = None) -> List[Dict[str, Any]]:
     labels = list_botana_labels(service)
     if not labels:
         return []
     wanted = max(1, min(1000, int(max_results or 1000)))
+    query_txt = str(query or "").strip()
     seen = set()
     out: List[Dict[str, Any]] = []
     for label in labels:
@@ -406,6 +407,8 @@ def listar_mensagens_com_labels_botana(service, max_results: int = 1000) -> List
         while collected_for_label < wanted:
             batch_size = min(500, wanted - collected_for_label)
             req_kwargs = {"userId": "me", "labelIds": [label_id], "maxResults": batch_size}
+            if query_txt:
+                req_kwargs["q"] = query_txt
             if page_token:
                 req_kwargs["pageToken"] = page_token
             resp = service.users().messages().list(**req_kwargs).execute()

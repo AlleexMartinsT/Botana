@@ -64,13 +64,15 @@ No `instances.json` do Hub, use:
 - O card `Recuperar e-mails` procura mensagens com XML pelos filtros informados e já executa a leitura em seguida para tentar lançar no financeiro.
 - A recuperação agora tem três modos: `Período`, `Faixa de NF` e `Escolha manual`, em que você monta uma lista própria de NFs como `20247` e `20344`.
 - O layout do card `Recuperar e-mails` ficou centralizado e agrupado em blocos, e o filtro ativo agora se recompõe automaticamente conforme o `Modo` escolhido.
+- Os campos preenchíveis de `Recuperar e-mails` ficaram mais compactos, o botão foi isolado em uma linha própria, e o campo visual de `Limite de mensagens` saiu da UI.
 - A recuperação não depende mais de ausência de label; ela pode reler mensagens já marcadas pelo Botana, e o bloqueio de duplicidade continua acontecendo no writer da planilha.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
 - Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` priorizam progresso, falhas e janela do lote, sem expor contadores técnicos de anexos, XML, lançamentos ou duplicidades no painel.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
-- O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
-- O reprocessamento agora monta o lote olhando todas as labels do Botana antes do corte final, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
+- O reprocessamento agora usa apenas `Limite de mensagens`, buscando por padrão as mensagens mais recentes ainda marcadas com a label do Botana nas últimas duas semanas.
+- Para mensagens mais antigas do que essa janela padrão, o caminho recomendado é `Recuperar e-mails`.
+- O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
 - A recuperação de faltantes usa a mesma área visual de `Ações manuais`, mostrando o andamento da varredura e quantas mensagens combinaram com os filtros.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.

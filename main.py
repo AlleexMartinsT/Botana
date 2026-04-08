@@ -78,6 +78,7 @@ _RUNTIME_SETTINGS = {
     "interval_seconds": int(INTERVALO),
     "max_messages": 100,
 }
+_REPROCESS_LOOKBACK_DAYS = 14
 _EMAIL_CACHE = {"email": "", "error": "", "pending": False, "at": 0.0}
 _NEXT_RUN_AT = 0.0
 _GMAIL_SERVICE_LOCK = threading.Lock()
@@ -427,9 +428,15 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool, continue_a
             snap["message"] = f"{label} ja esta em andamento."
         return False, snap
     continue_after_id = str(continue_after_id or "").strip()
-    initial_detail = f"At\u00e9 {int(max_messages)} mensagens mais recentes com label do Botana ser\u00e3o remarcadas e relidas neste ciclo."
+    initial_detail = (
+        f"At\u00e9 {int(max_messages)} mensagens mais recentes com label do Botana "
+        f"nos \u00faltimos {_REPROCESS_LOOKBACK_DAYS} dias ser\u00e3o remarcadas e relidas neste ciclo."
+    )
     if continue_after_id:
-        initial_detail = f"Continua\u00e7\u00e3o do reprocessamento: at\u00e9 {int(max_messages)} mensagens mais antigas ser\u00e3o remarcadas e relidas neste ciclo."
+        initial_detail = (
+            f"Continua\u00e7\u00e3o do reprocessamento: at\u00e9 {int(max_messages)} mensagens mais antigas "
+            f"dentro da janela de {_REPROCESS_LOOKBACK_DAYS} dias ser\u00e3o remarcadas e relidas neste ciclo."
+        )
     started, snap = _manual_action_begin(
         "reprocess",
         "Reprocessamento",
@@ -540,7 +547,10 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool, continue_a
                 )
                 return
             if matched <= 0:
-                friendly = "Nenhuma mensagem com label do Botana foi encontrada para reprocessar."
+                friendly = (
+                    f"Nenhuma mensagem com label do Botana foi encontrada para reprocessar "
+                    f"nos \u00faltimos {_REPROCESS_LOOKBACK_DAYS} dias."
+                )
             elif changed <= 0:
                 friendly = "Nenhuma mensagem foi marcada para reprocessar."
             else:
@@ -3803,10 +3813,18 @@ def _selected_preview_window(items: list[dict]) -> dict:
     }
 
 
+def _reprocess_recent_query() -> str:
+    return f"newer_than:{int(_REPROCESS_LOOKBACK_DAYS)}d"
+
+
 def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None, continue_after_id: str = "") -> dict:
     service = _get_gmail_service_locked()
     wanted = max(1, min(1000, int(max_messages)))
-    messages_raw = listar_mensagens_com_labels_botana(service, max_results=1000)
+    messages_raw = listar_mensagens_com_labels_botana(
+        service,
+        max_results=1000,
+        query=_reprocess_recent_query(),
+    )
     mensagens_com_meta = []
     for item in messages_raw:
         msg_id = str(item.get("id", "")).strip()
@@ -4088,7 +4106,7 @@ def _start_recover_missing_background(
         "recover_missing",
         "Recuperação de e-mails",
         "Recuperação iniciada.",
-        detail=f"Buscando até {int(max_messages)} mensagens com XML em {criteria_desc}.",
+        detail=f"Buscando mensagens com XML em {criteria_desc}.",
         progress_total=int(max_messages),
         requested_limit=int(max_messages),
         matched=0,
@@ -4362,27 +4380,27 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
 .recover-card h3{text-align:center}
-.recover-shell{max-width:920px;margin:0 auto;display:grid;gap:12px}
-.recover-grid{display:grid;grid-template-columns:minmax(220px,260px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:12px 16px;align-items:start}
+.recover-shell{max-width:860px;margin:0 auto;display:grid;gap:12px}
+.recover-grid{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:10px 14px;align-items:start}
 .recover-group,.recover-mode-box,.recover-range-box,.recover-period-box,.recover-list-box,.recover-action-box{width:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:12px;border:1px solid rgba(211,172,139,.72);border-radius:14px;background:rgba(255,252,247,.88)}
-.recover-mode-box{grid-area:mode;max-width:260px;justify-self:center}
+.recover-mode-box{grid-area:mode;max-width:220px;justify-self:center}
 .recover-period-box,.recover-range-box,.recover-list-box{grid-area:filter;max-width:100%;justify-self:stretch}
-.recover-action-box{grid-area:action;max-width:640px;justify-self:center}
+.recover-action-box{grid-area:action;max-width:360px;justify-self:center}
 .recover-grid.mode-list .recover-list-box{max-width:760px}
-.recover-grid.mode-list .recover-action-box{max-width:760px}
-.recover-grid.mode-period .recover-period-box{max-width:560px}
-.recover-grid.mode-range .recover-range-box{max-width:520px}
+.recover-grid.mode-list .recover-action-box{max-width:360px}
+.recover-grid.mode-period .recover-period-box{max-width:460px}
+.recover-grid.mode-range .recover-range-box{max-width:420px}
 .recover-grid label,.recover-mode-box label,.recover-range-box label,.recover-period-box label,.recover-list-box label,.recover-action-box label{width:100%;text-align:center}
-.recover-grid input,.recover-grid select,.recover-mode-box select,.recover-range-box input,.recover-period-box input,.recover-list-box input,.recover-action-box input{width:min(240px,100%);text-align:center}
+.recover-grid input,.recover-grid select,.recover-mode-box select,.recover-range-box input,.recover-period-box input,.recover-list-box input,.recover-action-box input{width:min(190px,100%);text-align:center}
 .recover-grid .hidden{display:none !important}
-.recover-range-fields,.recover-period-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;width:100%;max-width:520px}
-.recover-list-entry{display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%;max-width:560px}
-.recover-list-tags{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;min-height:46px;padding:10px;border:1px dashed rgba(110,58,27,.26);border-radius:14px;background:rgba(255,250,245,.82);width:100%;max-width:560px}
+.recover-range-fields,.recover-period-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;width:100%;max-width:420px}
+.recover-list-entry{display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%;max-width:500px}
+.recover-list-entry input{width:min(220px,100%)}
+.recover-list-tags{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;min-height:46px;padding:10px;border:1px dashed rgba(110,58,27,.26);border-radius:14px;background:rgba(255,250,245,.82);width:100%;max-width:500px}
 .recover-tag{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(110,58,27,.12);border:1px solid rgba(110,58,27,.22);font-size:12px;font-weight:700;color:#5b3118}
 .recover-tag button{border:none;background:transparent;color:inherit;font-weight:800;cursor:pointer;padding:0;line-height:1}
-.recover-action-row{display:flex;gap:12px;justify-content:center;align-items:end;flex-wrap:wrap;width:100%}
-.recover-action-row > div{display:flex;flex-direction:column;align-items:center}
-.recover-action-row > div label{text-align:center}
+.recover-action-row{display:flex;gap:12px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%}
+.recover-action-row button{min-width:220px}
 .recover-note{margin-top:2px;text-align:center;max-width:760px;justify-self:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
@@ -4648,7 +4666,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <div class="muted" style="margin-top:6px">Usa as mensagens mais recentes com label do Botana, remarca para reprocessamento e já executa a leitura em seguida.</div>
+        <div class="muted" style="margin-top:6px">Usa por padrão as mensagens mais recentes com label do Botana nas últimas duas semanas, remarca para reprocessamento e já executa a leitura em seguida. Para algo mais antigo, use Recuperar e-mails.</div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
           <button id="reprocessBtn" onclick="reprocess()">Reprocessar agora</button>
@@ -4704,14 +4722,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           </div>
           <div class="recover-action-box">
             <div class="recover-action-row">
-              <div>
-                <label>Limite de mensagens</label>
-                <input id="recoverLimit" type="number" value="200" min="1" max="1000"/>
-              </div>
-              <div>
-                <label>&nbsp;</label>
-                <button id="recoverBtn" onclick="recoverEmails()">Recuperar e lançar</button>
-              </div>
+              <button id="recoverBtn" onclick="recoverEmails()">Recuperar e lançar</button>
             </div>
           </div>
         </div>
@@ -5259,10 +5270,9 @@ function updProcessing(proc,maxMessages,action){
     return;
   }
   if(active&&kind==='recover_missing'&&phase!=='processing'){
-    const wanted=Math.max(1, Number(a.requested_limit||a.progress_total||maxMessages||100));
     const matched=Math.max(0, Number(a.matched||0));
     const inspected=Math.max(0, Number(a.inspected||0));
-    const perc=Math.max(0,Math.min(100,Math.round((Math.min(matched,wanted)/Math.max(1,wanted))*100)));
+    const perc=Math.max(12,Math.min(88,Math.round((Math.min(inspected,200)/200)*100)));
     const detailParts=[];
     if(String(a.current_email||'').trim())detailParts.push(`E-mail atual ${String(a.current_email||'').trim()}`);
     if(String(a.current_date||'').trim())detailParts.push(`Data ${String(a.current_date||'').trim()}`);
@@ -5276,7 +5286,7 @@ function updProcessing(proc,maxMessages,action){
     else if(last.ok===false) statusTxt='Erro';
     lastEl.textContent=`Último ciclo automático: ${statusTxt} em ${lastEnd}`;
     barFill.style.width=String(perc)+'%';
-    barLabel.textContent=`Recuperação: ${matched}/${wanted} encontradas | ${inspected} analisadas`;
+    barLabel.textContent=`Recuperação: ${matched} encontradas | ${inspected} analisadas`;
     return;
   }
   if(active&&kind==='recover_missing'&&phase==='processing'){
@@ -5399,13 +5409,12 @@ function updManualAction(action,processing,maxMessages){
       detailEl.textContent=String(a.detail||'Leitura e lançamento das mensagens encontradas em andamento.');
       _setManualBadge('ok','Lendo');
     }else{
-      const wanted=Math.max(1, Number(a.requested_limit||a.progress_total||maxMessages||100));
-      const perc=Math.max(8,Math.min(95,Math.round((Math.min(matched,wanted)/Math.max(1,wanted))*100)));
+      const perc=Math.max(12,Math.min(88,Math.round((Math.min(inspected,200)/200)*100)));
       const currentParts=[];
       if(String(a.current_email||'').trim())currentParts.push(`E-mail atual: ${String(a.current_email||'').trim()}`);
       if(String(a.current_date||'').trim())currentParts.push(`Data: ${String(a.current_date||'').trim()}`);
       barEl.style.width=String(perc)+'%';
-      progressEl.textContent=`Encontradas ${matched}/${wanted} | Analisadas ${inspected}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
+      progressEl.textContent=`Encontradas ${matched} | Analisadas ${inspected}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
       msgEl.textContent=String(a.message||'Recuperação em andamento.');
       detailEl.textContent=String(a.detail||'Varrendo e-mails com XML pelos filtros escolhidos.');
       _setManualBadge('ok','Varrendo');
@@ -5524,6 +5533,7 @@ async function reprocess(){
 }
 async function recoverEmails(){
   const btn=document.getElementById('recoverBtn');
+  const recoverMaxMessages=1000;
   if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
   const msgEl=document.getElementById('manualActionMsg');
   const detailEl=document.getElementById('manualActionDetail');
@@ -5532,7 +5542,7 @@ async function recoverEmails(){
   if(detailEl)detailEl.textContent='O Botana vai localizar as mensagens pelos filtros escolhidos e tentar lançar o que encontrar no financeiro.';
   try{
     const payload={
-      max_messages:Number(document.getElementById('recoverLimit').value||200),
+      max_messages:recoverMaxMessages,
       mode:mode,
       nf_start:_recoverDigits(document.getElementById('recoverNfStart').value||''),
       nf_end:_recoverDigits(document.getElementById('recoverNfEnd').value||''),
@@ -6175,7 +6185,7 @@ async function deleteEntry(nf,parcela,at){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverLimit','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverEmails();}});});
+['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverEmails();}});});
 ['recoverNfStart','recoverNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
@@ -6529,18 +6539,18 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
                     friendly = (
-                        f"Continuação do reprocessamento iniciada para até {max_messages} mensagens mais antigas; a leitura será executada em seguida."
+                        f"Continuação do reprocessamento iniciada para até {max_messages} mensagens mais antigas dentro dos últimos {_REPROCESS_LOOKBACK_DAYS} dias; a leitura será executada em seguida."
                         if continue_after_id
-                        else f"Reprocessamento iniciado para até {max_messages} mensagens mais recentes; a leitura será executada em seguida."
+                        else f"Reprocessamento iniciado para até {max_messages} mensagens mais recentes dos últimos {_REPROCESS_LOOKBACK_DAYS} dias; a leitura será executada em seguida."
                     )
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path in ("/api/recover-emails", "/api/recover-missing"):
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
                     try:
-                        max_messages = max(1, min(1000, int(data.get("max_messages", 200))))
+                        max_messages = max(1, min(1000, int(data.get("max_messages", 1000))))
                     except Exception:
-                        max_messages = 200
+                        max_messages = 1000
                     mode = str(data.get("mode", "") or "").strip()
                     nf_start = str(data.get("nf_start", "") or "").strip()
                     nf_end = str(data.get("nf_end", "") or "").strip()
@@ -6563,7 +6573,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         status_code = 400 if any(token in msg for token in ("Informe", "Escolha", "Adicione")) else 409
                         return _json_response(self, status_code, {"ok": False, "message": msg, "action": info})
                     filtros = _describe_recovery_filters(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list) or "os filtros informados"
-                    friendly = f"Recuperação iniciada para até {max_messages} mensagens com XML em {filtros}."
+                    friendly = f"Recuperação iniciada para mensagens com XML em {filtros}."
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
