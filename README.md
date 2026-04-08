@@ -40,7 +40,7 @@ Sem iniciar o loop automático:
 - `POST /api/stop`
 - `POST /api/run-now`
 - `POST /api/reprocess`
-- `POST /api/recover-missing`
+- `POST /api/recover-emails`
 - `GET /api/conferencia-parcelas`
 - `GET /api/prazos`
 - `GET /api/prazos/search`
@@ -61,9 +61,11 @@ No `instances.json` do Hub, use:
 ## Ações manuais no painel
 
 - O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
-- O card `Recuperar e-mails sem leitura` busca mensagens enviadas com XML que ainda não tenham label do Botana, usando período e/ou faixa de NF, e já relê essas mensagens na sequência.
+- O card `Recuperar e-mails` procura mensagens com XML pelos filtros informados e já executa a leitura em seguida para tentar lançar no financeiro.
+- A recuperação agora tem três modos: `Período`, `Faixa de NF` e `Escolha manual`, em que você monta uma lista própria de NFs como `20247` e `20344`.
+- A recuperação não depende mais de ausência de label; ela pode reler mensagens já marcadas pelo Botana, e o bloqueio de duplicidade continua acontecendo no writer da planilha.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
-- Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar faltantes` mostram também quantas parcelas caíram como `Duplicadas`, para diferenciar releitura bem-sucedida de lançamento realmente novo.
+- Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` mostram também quantas parcelas caíram como `Duplicadas`, para diferenciar releitura bem-sucedida de lançamento realmente novo.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
@@ -71,6 +73,7 @@ No `instances.json` do Hub, use:
 - A recuperação de faltantes usa os mesmos contadores visuais de `Ações manuais`, mostrando quantas mensagens foram analisadas, quantas combinaram com os filtros e qual e-mail está sendo varrido no momento.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
 - Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
+- O reprocessamento também informa a janela real coberta pelo lote selecionado, mostrando de qual data mais recente até qual data mais antiga ele conseguiu ir com o limite pedido.
 - As duas barras de progresso passam a refletir o reprocessamento ativo, incluindo o limite pedido no painel.
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
@@ -82,6 +85,7 @@ No `instances.json` do Hub, use:
 - Mensagens que já tenham qualquer label do Botana são puladas no ciclo normal, evitando releitura desnecessária e liberando espaço para e-mails ainda não tratados.
 - O limite efetivo de leitura automática fica alinhado ao menos ao produto de `Máx páginas x Tamanho da página`, para não manter um corte antigo menor do que o configurado na UI.
 - Quando o XML vier só com a fatura total (`fat`) mas o e-mail trouxer vários boletos PDF, o Botana tenta extrair vencimento e valor de cada boleto para reconstruir as parcelas antes de lançar no financeiro.
+- Quando o XML vier sem parcelas e o e-mail indicar `DEPÓSITO` no assunto ou no corpo, o Botana usa esse sinal para montar um lançamento único de `DEP`, reaproveitando o valor total do XML e a data de emissão como fallback de vencimento.
 
 ## Histórico no painel
 

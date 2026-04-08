@@ -222,6 +222,14 @@ def buscarMessagesEnviadosPagina(
                 msgs = thread.get("messages", [])
 
                 for msg in msgs:
+                    payload = msg.get("payload", {}) or {}
+                    headers = payload.get("headers", []) or []
+                    header_map = {}
+                    for item in headers:
+                        name = str((item or {}).get("name", "")).strip().lower()
+                        if not name or name in header_map:
+                            continue
+                        header_map[name] = str((item or {}).get("value", "")).strip()
                     label_ids = [str(label_id).strip() for label_id in (msg.get("labelIds", []) or []) if str(label_id).strip()]
                     if "SENT" not in label_ids:
                         continue
@@ -233,6 +241,9 @@ def buscarMessagesEnviadosPagina(
                             "threadId": msg["threadId"],
                             "labelIds": label_ids,
                             "snippet": msg.get("snippet", ""),
+                            "subject": header_map.get("subject", ""),
+                            "date": header_map.get("date", ""),
+                            "from": header_map.get("from", ""),
                         }
                     )
             except Exception as e:

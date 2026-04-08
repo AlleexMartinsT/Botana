@@ -55,6 +55,7 @@ def extrairDadosXML(caminhoXML):
 
     cnpj_emit = re.sub(r"\D", "", emit.findtext("ns:CNPJ", default="", namespaces=ns) or "")
     cnpj_dest = re.sub(r"\D", "", dest.findtext("ns:CNPJ", default="", namespaces=ns) or "")
+    emissao_raw = ide.findtext("ns:dhEmi", default="", namespaces=ns) or ide.findtext("ns:dEmi", default="", namespaces=ns)
 
     dados = {
         "nf": ide.findtext("ns:nNF", default="", namespaces=ns),
@@ -66,6 +67,8 @@ def extrairDadosXML(caminhoXML):
         "parcelas": [],
         "parcelas_source": "none",
         "naturezaOperacao": ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper(),
+        "dataEmissao": _normalize_date_to_ddmmyyyy(emissao_raw),
+        "dataEmissaoRaw": str(emissao_raw or "").strip(),
     }
 
     nat_op = ide.findtext("ns:natOp", default="", namespaces=ns).strip().upper()

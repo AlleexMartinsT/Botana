@@ -132,6 +132,9 @@ _MANUAL_ACTION = {
     "current_subject": "",
     "current_date": "",
     "requested_limit": 0,
+    "window_oldest_date": "",
+    "window_newest_date": "",
+    "window_selected": 0,
 }
 
 
@@ -273,6 +276,9 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "current_subject": "",
                 "current_date": "",
                 "requested_limit": 0,
+                "window_oldest_date": "",
+                "window_newest_date": "",
+                "window_selected": 0,
             }
         )
         for key, value in extra.items():
@@ -314,6 +320,9 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["current_subject"] = ""
         _MANUAL_ACTION["current_date"] = ""
         _MANUAL_ACTION["requested_limit"] = 0
+        _MANUAL_ACTION["window_oldest_date"] = ""
+        _MANUAL_ACTION["window_newest_date"] = ""
+        _MANUAL_ACTION["window_selected"] = 0
         _MANUAL_ACTION["matched"] = 0
         _MANUAL_ACTION["inspected"] = 0
         for key, value in extra.items():
@@ -459,6 +468,12 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
             changed = int(result.get("changed", 0) or 0)
             failed = int(result.get("failed", 0) or 0)
             matched = int(result.get("matched", 0) or 0)
+            window_oldest_date = str(result.get("window_oldest_date", "") or "").strip()
+            window_newest_date = str(result.get("window_newest_date", "") or "").strip()
+            window_selected = int(result.get("window_selected", 0) or 0)
+            window_text = ""
+            if window_oldest_date and window_newest_date:
+                window_text = f"Lote selecionado: {window_selected or matched} mensagens, de {window_newest_date} até {window_oldest_date}."
             if targets:
                 _manual_action_update(
                     phase="processing",
@@ -469,8 +484,14 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                     current_email="",
                     current_subject="",
                     current_date="",
+                    window_oldest_date=window_oldest_date,
+                    window_newest_date=window_newest_date,
+                    window_selected=window_selected,
                     message="Labels atualizadas. Iniciando leitura dos e-mails reprocessados.",
-                    detail=f"O Botana vai reler at\u00e9 {len(targets)} mensagens reprocessadas para tentar relan\u00e7ar na planilha.",
+                    detail=(
+                        f"O Botana vai reler at\u00e9 {len(targets)} mensagens reprocessadas para tentar relan\u00e7ar na planilha."
+                        + (f" {window_text}" if window_text else "")
+                    ),
                 )
                 ok, msg = executar_um_ciclo(
                     max_messages_override=len(targets),
@@ -487,6 +508,8 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                     f"Lan\u00e7amentos: {int(proc.get('launched', 0) or 0)} | "
                     f"Duplicadas: {int(proc.get('duplicates', 0) or 0)}"
                 )
+                if window_text:
+                    detail = f"{detail} | {window_text}"
                 if resume_loop:
                     restarted = iniciar_verificacao()
                     detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
@@ -499,6 +522,9 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                     changed=changed,
                     failed=failed,
                     requested_limit=int(max_messages),
+                    window_oldest_date=window_oldest_date,
+                    window_newest_date=window_newest_date,
+                    window_selected=window_selected,
                 )
                 return
             if matched <= 0:
@@ -508,6 +534,8 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
             else:
                 friendly = f"Reprocessamento concluido: {changed} de {matched} mensagens atualizadas."
             detail = f"Falhas: {failed} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
+            if window_text:
+                detail = f"{detail} | {window_text}"
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop autom\u00e1tico {'retomado' if restarted else 'n\u00e3o retomado'}."
@@ -520,6 +548,9 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool) -> tuple[b
                 changed=changed,
                 failed=failed,
                 requested_limit=int(max_messages),
+                window_oldest_date=window_oldest_date,
+                window_newest_date=window_newest_date,
+                window_selected=window_selected,
             )
         except Exception as exc:
             logger.exception("Falha no reprocessamento em background: %s", exc)
@@ -1015,6 +1046,79 @@ def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) 
     return payload
 
 
+def _message_payment_hint(message_meta: dict | None) -> str:
+    if not isinstance(message_meta, dict):
+        return ""
+    text = " ".join(
+        str(message_meta.get(key, "") or "").strip()
+        for key in ("subject", "snippet")
+    )
+    key = f" {_normalize_ascii_key(text)} "
+    has_boleto = any(token in key for token in (" BOLETO ", " BLT ", " BOLET0 ", " BOLETT "))
+    has_deposito = any(token in key for token in (" DEPOSITO ", " DEP CX ", " DEP BR ", " CONTA CAIXA ", " CONTA BRADESCO "))
+    if has_deposito and not has_boleto:
+        return "deposito"
+    if has_boleto and not has_deposito:
+        return "boleto"
+    return ""
+
+
+def _message_date_fallback(message_meta: dict | None) -> str:
+    if not isinstance(message_meta, dict):
+        return ""
+    raw = str(message_meta.get("date", "") or "").strip()
+    if not raw:
+        return ""
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return _normalize_ddmmyyyy(raw)
+
+
+def _infer_deposito_parcela_from_preview(dados_xml: dict, message_meta: dict | None, boleto_infos: list[dict]) -> dict:
+    payload = dict(dados_xml or {})
+    if list(payload.get("parcelas") or []):
+        return payload
+    if list(boleto_infos or []):
+        return payload
+    if _message_payment_hint(message_meta) != "deposito":
+        return payload
+    valor_total = float(payload.get("valorTotal") or 0.0)
+    if valor_total <= 0:
+        return payload
+    vencimento = (
+        str(payload.get("dataEmissao") or "").strip()
+        or str(payload.get("vencimento") or "").strip()
+        or _message_date_fallback(message_meta)
+    )
+    if not vencimento:
+        return payload
+    parcela = {
+        "numero": 1,
+        "numParcela": "1ª Parcela",
+        "vencimento": vencimento,
+        "valor": valor_total,
+    }
+    payload["parcelas"] = [parcela]
+    payload["qtdParcelas"] = 1
+    payload["parcelas_source"] = "preview_deposito"
+    payload["vencimento"] = vencimento
+    payload["numParcela"] = parcela["numParcela"]
+    payload["valorParcela"] = valor_total
+    try:
+        payload["anoVencimento"] = datetime.strptime(vencimento, "%d/%m/%Y").strftime("%Y")
+    except Exception:
+        pass
+    logger.info(
+        "NF %s inferiu lançamento como depósito a partir do assunto/corpo do e-mail.",
+        payload.get("nf"),
+    )
+    return payload
+
+
 def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: dict):
     """Registra no relatorio um evento estruturado apenas para lancamentos validos."""
     try:
@@ -1152,6 +1256,11 @@ def processar_emails_enviados(
             msg_id = str(m.get("id", "")).strip()
             if not msg_id or msg_id in vistos:
                 continue
+            message_meta = {
+                "subject": str(m.get("subject", "") or "").strip(),
+                "snippet": str(m.get("snippet", "") or "").strip(),
+                "date": str(m.get("date", "") or "").strip(),
+            }
             vistos.add(msg_id)
             total_msgs += 1
             _sync_progress()
@@ -1299,6 +1408,7 @@ def processar_emails_enviados(
 
                 xml_boletos = _boletos_for_xml(dados_xml, boleto_infos)
                 dados_xml = _infer_parcelas_from_boleto_pdfs(dados_xml, xml_boletos)
+                dados_xml = _infer_deposito_parcela_from_preview(dados_xml, message_meta, xml_boletos)
                 cnpj_emit = re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or ""))
                 ano = dados_xml.get("anoVencimento")
                 planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
@@ -3379,7 +3489,66 @@ def _cycle_search_query() -> str:
     return build_sent_xml_query(filter_mode=str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")))
 
 
-def _recover_nf_query_terms(nf_start: str = "", nf_end: str = "") -> str:
+def _normalize_recovery_mode(value: str) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"period", "periodo", "período", "date", "data"}:
+        return "period"
+    if mode in {"range", "faixa", "nfs"}:
+        return "range"
+    if mode in {"list", "lista", "manual", "escolha"}:
+        return "list"
+    return ""
+
+
+def _parse_nf_selection_list(value) -> list[int]:
+    if isinstance(value, (list, tuple, set)):
+        raw_values = [str(item or "").strip() for item in value]
+    else:
+        raw_values = [str(value or "").strip()]
+    itens = []
+    vistos = set()
+    for raw in raw_values:
+        for token in re.findall(r"\d{1,5}", raw):
+            try:
+                numero = int(token)
+            except Exception:
+                continue
+            if numero <= 0 or numero in vistos:
+                continue
+            vistos.add(numero)
+            itens.append(numero)
+    return itens
+
+
+def _resolve_recovery_mode(
+    mode: str = "",
+    nf_start: str = "",
+    nf_end: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    nf_list=None,
+) -> str:
+    mode_norm = _normalize_recovery_mode(mode)
+    if mode_norm:
+        return mode_norm
+    if _parse_nf_selection_list(nf_list):
+        return "list"
+    start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
+    if start_nf is not None or end_nf is not None:
+        return "range"
+    if _parse_iso_date_input(date_from) or _parse_iso_date_input(date_to):
+        return "period"
+    return ""
+
+
+def _recover_nf_query_terms(nf_start: str = "", nf_end: str = "", nf_list=None) -> str:
+    numeros = _parse_nf_selection_list(nf_list)
+    if numeros:
+        if len(numeros) == 1:
+            return str(numeros[0])
+        if len(numeros) <= 25:
+            return "{" + " ".join(str(numero) for numero in numeros) + "}"
+        return ""
     start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
     if start_nf is None or end_nf is None:
         return ""
@@ -3390,17 +3559,27 @@ def _recover_nf_query_terms(nf_start: str = "", nf_end: str = "") -> str:
     return ""
 
 
-def _recover_search_query(nf_start: str = "", nf_end: str = "", date_from: str = "", date_to: str = "") -> str:
+def _recover_search_query(
+    mode: str = "",
+    nf_start: str = "",
+    nf_end: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    nf_list=None,
+) -> str:
+    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     extra_parts = []
-    start_date = _parse_iso_date_input(date_from)
-    end_date = _parse_iso_date_input(date_to)
-    if start_date:
-        extra_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
-    if end_date:
-        extra_parts.append(f"before:{(end_date + timedelta(days=1)).strftime('%Y/%m/%d')}")
-    nf_query = _recover_nf_query_terms(nf_start=nf_start, nf_end=nf_end)
-    if nf_query:
-        extra_parts.append(nf_query)
+    if mode_norm == "period":
+        start_date = _parse_iso_date_input(date_from)
+        end_date = _parse_iso_date_input(date_to)
+        if start_date:
+            extra_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
+        if end_date:
+            extra_parts.append(f"before:{(end_date + timedelta(days=1)).strftime('%Y/%m/%d')}")
+    else:
+        nf_query = _recover_nf_query_terms(nf_start=nf_start, nf_end=nf_end, nf_list=nf_list)
+        if nf_query:
+            extra_parts.append(nf_query)
     return _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), " ".join(extra_parts))
 
 
@@ -3443,20 +3622,116 @@ def _manual_scan_page_limit(wanted: int, page_size: int) -> int:
     return max(runtime_pages, min(50, max(10, estimated * 4)))
 
 
-def _describe_recovery_filters(nf_start: str = "", nf_end: str = "", date_from: str = "", date_to: str = "") -> str:
+def _describe_recovery_filters(
+    mode: str = "",
+    nf_start: str = "",
+    nf_end: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    nf_list=None,
+) -> str:
+    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     parts = []
-    start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
-    if start_nf is not None and end_nf is not None:
-        parts.append(f"NFs {start_nf} a {end_nf}" if start_nf != end_nf else f"NF {start_nf}")
-    start_date = _parse_iso_date_input(date_from)
-    end_date = _parse_iso_date_input(date_to)
-    if start_date and end_date:
-        parts.append(f"período {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
-    elif start_date:
-        parts.append(f"a partir de {start_date.strftime('%d/%m/%Y')}")
-    elif end_date:
-        parts.append(f"até {end_date.strftime('%d/%m/%Y')}")
+    if mode_norm == "list":
+        numeros = _parse_nf_selection_list(nf_list)
+        if numeros:
+            parts.append("NFs " + ", ".join(str(numero) for numero in numeros))
+    elif mode_norm == "range":
+        start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
+        if start_nf is not None and end_nf is not None:
+            parts.append(f"NFs {start_nf} a {end_nf}" if start_nf != end_nf else f"NF {start_nf}")
+    elif mode_norm == "period":
+        start_date = _parse_iso_date_input(date_from)
+        end_date = _parse_iso_date_input(date_to)
+        if start_date and end_date:
+            parts.append(f"período {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
+        elif start_date:
+            parts.append(f"a partir de {start_date.strftime('%d/%m/%Y')}")
+        elif end_date:
+            parts.append(f"até {end_date.strftime('%d/%m/%Y')}")
     return " | ".join(parts)
+
+
+def _preview_from_message_headers(
+    from_raw: str = "",
+    subject: str = "",
+    date_raw: str = "",
+    snippet: str = "",
+    timestamp: int = 0,
+) -> dict:
+    _, email_addr = parseaddr(str(from_raw or "").strip())
+    email_view = email_addr or str(from_raw or "").strip()
+    date_view = str(date_raw or "").strip()
+    stamp = int(timestamp or 0)
+    parsed_date = None
+    if date_raw:
+        try:
+            dt = parsedate_to_datetime(str(date_raw))
+            if dt.tzinfo is not None:
+                dt = dt.astimezone()
+            date_view = dt.strftime("%d/%m/%Y %H:%M")
+            parsed_date = dt.date()
+            if not stamp:
+                stamp = int(dt.timestamp() * 1000)
+        except Exception:
+            pass
+    return {
+        "email": email_view,
+        "subject": str(subject or "").strip(),
+        "snippet": str(snippet or "").strip(),
+        "date": date_view,
+        "date_raw": str(date_raw or "").strip(),
+        "timestamp": stamp,
+        "_parsed_date": parsed_date,
+    }
+
+
+def _preview_from_message_item(item: dict | None) -> dict:
+    payload = dict(item or {})
+    return _preview_from_message_headers(
+        from_raw=str(payload.get("from", "") or "").strip(),
+        subject=str(payload.get("subject", "") or "").strip(),
+        date_raw=str(payload.get("date", "") or "").strip(),
+        snippet=str(payload.get("snippet", "") or "").strip(),
+    )
+
+
+def _preview_matches_recovery_filters(
+    preview: dict,
+    mode: str = "",
+    nf_start: int | None = None,
+    nf_end: int | None = None,
+    nf_list=None,
+    start_date=None,
+    end_date=None,
+) -> bool:
+    mode_norm = _normalize_recovery_mode(mode)
+    if mode_norm == "period":
+        parsed_date = preview.get("_parsed_date")
+        if parsed_date is None:
+            return False
+        if start_date and parsed_date < start_date:
+            return False
+        if end_date and parsed_date > end_date:
+            return False
+        return True
+    texto = " ".join(
+        x for x in (
+            str(preview.get("subject", "") or "").strip(),
+            str(preview.get("snippet", "") or "").strip(),
+        ) if x
+    )
+    numeros = _extract_nf_numbers_from_text(texto)
+    if not numeros:
+        return False
+    if mode_norm == "range":
+        if nf_start is None or nf_end is None:
+            return False
+        return any(nf_start <= numero <= nf_end for numero in numeros)
+    if mode_norm == "list":
+        wanted = set(_parse_nf_selection_list(nf_list))
+        return any(numero in wanted for numero in numeros)
+    return False
 
 
 def _reprocess_message_preview(service, msg_id: str) -> dict:
@@ -3481,24 +3756,37 @@ def _reprocess_message_preview(service, msg_id: str) -> dict:
         subject = str(header_map.get("subject", "")).strip()
         date_raw = str(header_map.get("date", "")).strip()
         internal_ts = int(str(meta.get("internalDate", "0") or "0").strip() or "0")
-        _, email_addr = parseaddr(from_raw)
-        email_view = email_addr or from_raw
-        date_view = date_raw
-        stamp = int(internal_ts or 0)
-        if date_raw:
-            try:
-                dt = parsedate_to_datetime(date_raw)
-                if dt.tzinfo is not None:
-                    dt = dt.astimezone()
-                date_view = dt.strftime("%d/%m/%Y %H:%M")
-                if not stamp:
-                    stamp = int(dt.timestamp() * 1000)
-            except Exception:
-                pass
-        preview.update({"email": email_view, "subject": subject, "date": date_view, "timestamp": stamp})
+        preview.update(
+            _preview_from_message_headers(
+                from_raw=from_raw,
+                subject=subject,
+                date_raw=date_raw,
+                snippet="",
+                timestamp=int(internal_ts or 0),
+            )
+        )
     except Exception as exc:
         logger.warning("Falha ao carregar cabecalhos da mensagem %s: %s", msg_id, exc)
     return preview
+
+
+def _selected_preview_window(items: list[dict]) -> dict:
+    selected = [dict(item.get("preview") or {}) for item in list(items or []) if isinstance(item, dict)]
+    selected = [item for item in selected if item]
+    if not selected:
+        return {"selected": 0, "oldest_date": "", "newest_date": ""}
+    with_ts = [item for item in selected if int(item.get("timestamp", 0) or 0) > 0]
+    if with_ts:
+        newest = max(with_ts, key=lambda item: int(item.get("timestamp", 0) or 0))
+        oldest = min(with_ts, key=lambda item: int(item.get("timestamp", 0) or 0))
+    else:
+        newest = selected[0]
+        oldest = selected[-1]
+    return {
+        "selected": len(selected),
+        "oldest_date": str(oldest.get("date", "") or "").strip(),
+        "newest_date": str(newest.get("date", "") or "").strip(),
+    }
 
 
 def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) -> dict:
@@ -3521,10 +3809,16 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
         )
     mensagens_com_meta.sort(key=lambda item: int((item.get("preview") or {}).get("timestamp", 0) or 0), reverse=True)
     messages = mensagens_com_meta[:wanted]
+    window_info = _selected_preview_window(messages)
     changed = 0
     failed = 0
     targets = []
     if callable(progress_cb):
+        detail_parts = ["Atualizando a label do Botana e exibindo o remetente/data da mensagem atual."]
+        if window_info.get("oldest_date") and window_info.get("newest_date"):
+            detail_parts.append(
+                f"Lote selecionado: {int(window_info.get('selected', 0) or 0)} mensagens, de {window_info.get('newest_date')} até {window_info.get('oldest_date')}."
+            )
         progress_cb(
             progress_current=0,
             progress_total=len(messages),
@@ -3534,7 +3828,10 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
             current_subject="",
             current_date="",
             message=f"{len(messages)} mensagens mais recentes encontradas para reprocessar.",
-            detail="Atualizando a label do Botana e exibindo o remetente/data da mensagem atual.",
+            detail=" ".join(detail_parts),
+            window_oldest_date=str(window_info.get("oldest_date", "") or "").strip(),
+            window_newest_date=str(window_info.get("newest_date", "") or "").strip(),
+            window_selected=int(window_info.get("selected", 0) or 0),
         )
     for idx, item in enumerate(messages, start=1):
         msg_id = str(item.get("id", "")).strip()
@@ -3591,35 +3888,50 @@ def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None) ->
         "changed": changed,
         "failed": failed,
         "mark_unread": bool(mark_unread),
+        "window_oldest_date": str(window_info.get("oldest_date", "") or "").strip(),
+        "window_newest_date": str(window_info.get("newest_date", "") or "").strip(),
+        "window_selected": int(window_info.get("selected", 0) or 0),
         "targets": targets,
     }
 
 
 def _find_missing_messages(
     max_messages: int,
+    mode: str = "",
     nf_start: str = "",
     nf_end: str = "",
     date_from: str = "",
     date_to: str = "",
+    nf_list=None,
     progress_cb=None,
 ) -> dict:
+    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
     start_date = _parse_iso_date_input(date_from)
     end_date = _parse_iso_date_input(date_to)
-    if start_nf is None and end_nf is None and not start_date and not end_date:
-        raise ValueError("Informe uma faixa de NF e/ou um período para recuperar.")
+    nf_values = _parse_nf_selection_list(nf_list)
+    if mode_norm == "period":
+        if not start_date and not end_date:
+            raise ValueError("Informe ao menos uma data para recuperar e-mails por período.")
+    elif mode_norm == "range":
+        if start_nf is None and end_nf is None:
+            raise ValueError("Informe uma faixa de NF para recuperar e-mails por intervalo.")
+    elif mode_norm == "list":
+        if not nf_values:
+            raise ValueError("Adicione ao menos uma NF na lista manual para recuperar e-mails.")
+    else:
+        raise ValueError("Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails.")
     service = _get_gmail_service_locked()
     wanted = max(1, min(1000, int(max_messages)))
     page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
     page_limit = _manual_scan_page_limit(wanted, page_size)
-    query = _recover_search_query(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to)
-    skip_botana_ids = {str(label_id).strip() for label_id in list_botana_label_ids(service) if str(label_id).strip()}
+    query = _recover_search_query(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values)
     targets = []
     seen_ids = set()
     inspected = 0
     pages = 0
     page_token = None
-    criteria_desc = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to) or "filtros informados"
+    criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values) or "filtros informados"
     if callable(progress_cb):
         progress_cb(
             phase="searching",
@@ -3630,7 +3942,7 @@ def _find_missing_messages(
             current_email="",
             current_subject="",
             current_date="",
-            message="Varrendo Gmail em busca de mensagens sem label do Botana.",
+            message="Varrendo Gmail em busca das mensagens escolhidas.",
             detail=f"Critérios: {criteria_desc}.",
         )
     while pages < page_limit and len(targets) < wanted:
@@ -3639,7 +3951,6 @@ def _find_missing_messages(
             max_results=page_size,
             page_token=page_token,
             query=query,
-            skip_label_ids=skip_botana_ids,
         )
         pages += 1
         if not batch and not next_page_token:
@@ -3649,7 +3960,7 @@ def _find_missing_messages(
             if not msg_id or msg_id in seen_ids:
                 continue
             seen_ids.add(msg_id)
-            preview = _reprocess_message_preview(service, msg_id)
+            preview = _preview_from_message_item(item)
             inspected += 1
             current_email = str(preview.get("email", "")).strip()
             current_subject = str(preview.get("subject", "")).strip()
@@ -3664,10 +3975,18 @@ def _find_missing_messages(
                     current_email=current_email,
                     current_subject=current_subject,
                     current_date=current_date,
-                    message=f"Analisando mensagens sem label: {inspected} verificadas.",
+                    message=f"Analisando mensagens: {inspected} verificadas.",
                     detail=f"Encontradas {len(targets)} dentro dos filtros. Página {pages} de até {page_limit}.",
                 )
-            if not _preview_matches_nf_range(current_subject, start_nf, end_nf):
+            if not _preview_matches_recovery_filters(
+                preview,
+                mode=mode_norm,
+                nf_start=start_nf,
+                nf_end=end_nf,
+                nf_list=nf_values,
+                start_date=start_date,
+                end_date=end_date,
+            ):
                 continue
             targets.append(
                 {
@@ -3675,6 +3994,9 @@ def _find_missing_messages(
                     "threadId": str(item.get("threadId", "")).strip(),
                     "labelIds": list(item.get("labelIds", []) or []),
                     "snippet": str(item.get("snippet", "") or ""),
+                    "subject": str(item.get("subject", "") or "").strip(),
+                    "date": str(item.get("date", "") or "").strip(),
+                    "from": str(item.get("from", "") or "").strip(),
                 }
             )
             if callable(progress_cb):
@@ -3702,20 +4024,24 @@ def _find_missing_messages(
         "pages": pages,
         "query": query,
         "criteria": criteria_desc,
+        "mode": mode_norm,
         "targets": targets,
     }
 
 
 def _start_recover_missing_background(
     max_messages: int,
+    mode: str = "",
     nf_start: str = "",
     nf_end: str = "",
     date_from: str = "",
     date_to: str = "",
+    nf_list=None,
 ) -> tuple[bool, dict]:
-    criteria_desc = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to)
+    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
+    criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
     if not criteria_desc:
-        return False, {"message": "Informe uma faixa de NF e/ou um período para recuperar."}
+        return False, {"message": "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."}
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -3724,9 +4050,9 @@ def _start_recover_missing_background(
         return False, snap
     started, snap = _manual_action_begin(
         "recover_missing",
-        "Recuperação de faltantes",
+        "Recuperação de e-mails",
         "Recuperação iniciada.",
-        detail=f"Buscando até {int(max_messages)} mensagens sem label do Botana em {criteria_desc}.",
+        detail=f"Buscando até {int(max_messages)} mensagens com XML em {criteria_desc}.",
         progress_total=int(max_messages),
         requested_limit=int(max_messages),
         matched=0,
@@ -3743,7 +4069,7 @@ def _start_recover_missing_background(
         try:
             if resume_loop:
                 _manual_action_update(
-                    message="Interrompendo ciclo automático para recuperar faltantes.",
+                    message="Interrompendo ciclo automático para recuperar e-mails.",
                     detail="O loop automático será retomado depois da recuperação.",
                 )
                 parar_verificacao(wait=True, timeout=120.0)
@@ -3758,17 +4084,19 @@ def _start_recover_missing_background(
             stop_event.clear()
             _manual_action_update(
                 message="Recuperação em andamento.",
-                detail=f"Varrendo Gmail em busca de mensagens sem label do Botana em {criteria_desc}.",
+                detail=f"Varrendo Gmail em busca de mensagens com XML em {criteria_desc}.",
                 phase="searching",
                 matched=0,
                 inspected=0,
             )
             result = _find_missing_messages(
                 max_messages=max_messages,
+                mode=mode_norm,
                 nf_start=nf_start,
                 nf_end=nf_end,
                 date_from=date_from,
                 date_to=date_to,
+                nf_list=nf_list,
                 progress_cb=_progress,
             )
             targets = list(result.get("targets") or [])
@@ -3785,7 +4113,7 @@ def _start_recover_missing_background(
                     current_subject="",
                     current_date="",
                     message="Mensagens encontradas. Iniciando leitura.",
-                    detail=f"O Botana vai reler {len(targets)} mensagens sem label do Botana em {criteria_desc}.",
+                    detail=f"O Botana vai reler {len(targets)} mensagens encontradas em {criteria_desc}.",
                 )
                 ok, msg = executar_um_ciclo(
                     max_messages_override=len(targets),
@@ -3815,13 +4143,13 @@ def _start_recover_missing_background(
                     requested_limit=int(max_messages),
                 )
                 return
-            detail = f"Nenhuma mensagem sem label do Botana combinou com {criteria_desc}. Analisadas: {inspected}."
+            detail = f"Nenhuma mensagem com XML combinou com {criteria_desc}. Analisadas: {inspected}."
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
             _manual_action_finish(
                 True,
-                "Nenhuma mensagem pendente foi encontrada para os filtros informados.",
+                "Nenhum e-mail foi encontrado para os filtros informados.",
                 detail=detail,
                 progress_current=matched,
                 progress_total=int(max_messages),
@@ -3830,15 +4158,15 @@ def _start_recover_missing_background(
                 requested_limit=int(max_messages),
             )
         except Exception as exc:
-            logger.exception("Falha na recuperação de faltantes em background: %s", exc)
+            logger.exception("Falha na recuperação de e-mails em background: %s", exc)
             if resume_loop:
                 try:
                     iniciar_verificacao()
                 except Exception:
                     logger.exception("Falha ao retomar loop automatico apos erro na recuperação.")
-            _manual_action_finish(False, "Erro na recuperação de faltantes.", detail=str(exc), requested_limit=int(max_messages))
+            _manual_action_finish(False, "Erro na recuperação de e-mails.", detail=str(exc), requested_limit=int(max_messages))
 
-    threading.Thread(target=_worker, daemon=True, name="botana-recover-missing").start()
+    threading.Thread(target=_worker, daemon=True, name="botana-recover-emails").start()
     return True, snap
 
 
@@ -4002,10 +4330,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
 .recover-card h3{text-align:center}
-.recover-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px;align-items:end}
-.recover-grid > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
-.recover-grid > div label{width:100%;text-align:center}
-.recover-grid > div input{width:min(180px,100%);text-align:center}
+.recover-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;align-items:start}
+.recover-grid > div,.recover-mode-box,.recover-range-box,.recover-period-box,.recover-list-box,.recover-action-box{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.recover-grid label,.recover-mode-box label,.recover-range-box label,.recover-period-box label,.recover-list-box label,.recover-action-box label{width:100%;text-align:center}
+.recover-grid input,.recover-grid select,.recover-mode-box select,.recover-range-box input,.recover-period-box input,.recover-list-box input,.recover-action-box input{width:min(220px,100%);text-align:center}
+.recover-grid .hidden{display:none !important}
+.recover-range-fields,.recover-period-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
+.recover-list-entry{display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%}
+.recover-list-tags{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;min-height:38px;padding:8px;border:1px dashed rgba(110,58,27,.26);border-radius:14px;background:rgba(255,250,245,.82);width:100%}
+.recover-tag{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(110,58,27,.12);border:1px solid rgba(110,58,27,.22);font-size:12px;font-weight:700;color:#5b3118}
+.recover-tag button{border:none;background:transparent;color:inherit;font-weight:800;cursor:pointer;padding:0;line-height:1}
 .recover-note{margin-top:8px;text-align:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
@@ -4146,9 +4480,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .ov.show{display:flex}
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
 .cnt{margin-top:12px;font-size:2.4rem;font-weight:800;color:#b05714}
-@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr 1fr 1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}}
+@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-grid{grid-template-columns:1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
@@ -4281,33 +4615,48 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
 
     <section class="card recover-card" style="margin-top:10px">
-      <h3>Recuperar e-mails sem leitura</h3>
+      <h3>Recuperar e-mails</h3>
       <div class="recover-grid">
-        <div>
-          <label>Data inicial</label>
-          <input id="recoverDateFrom" type="date"/>
+        <div class="recover-mode-box">
+          <label>Modo</label>
+          <select id="recoverMode" onchange="toggleRecoverFilters()">
+            <option value="period">Período</option>
+            <option value="range">Faixa de NF</option>
+            <option value="list">Escolha manual</option>
+          </select>
         </div>
-        <div>
-          <label>Data final</label>
-          <input id="recoverDateTo" type="date"/>
+        <div id="recoverPeriodBox" class="recover-period-box">
+          <label>Período</label>
+          <div class="recover-period-fields">
+            <input id="recoverDateFrom" type="date"/>
+            <input id="recoverDateTo" type="date"/>
+          </div>
         </div>
-        <div>
-          <label>NF inicial</label>
-          <input id="recoverNfStart" type="text" placeholder="20247"/>
+        <div id="recoverRangeBox" class="recover-range-box hidden">
+          <label>Faixa de NF</label>
+          <div class="recover-range-fields">
+            <input id="recoverNfStart" type="text" inputmode="numeric" maxlength="5" placeholder="20247"/>
+            <input id="recoverNfEnd" type="text" inputmode="numeric" maxlength="5" placeholder="20481"/>
+          </div>
         </div>
-        <div>
-          <label>NF final</label>
-          <input id="recoverNfEnd" type="text" placeholder="20481"/>
+        <div id="recoverListBox" class="recover-list-box hidden">
+          <label>NFs escolhidas</label>
+          <div class="recover-list-entry">
+            <input id="recoverListInput" type="text" inputmode="numeric" maxlength="64" placeholder="20247, 20344" oninput="sanitizeRecoverNfInput(this)" onkeydown="recoverListKeydown(event)"/>
+            <button type="button" class="sec" onclick="addRecoverNf()">Adicionar NF</button>
+          </div>
+          <div id="recoverListTags" class="recover-list-tags"><span class="muted">Nenhuma NF adicionada.</span></div>
         </div>
-        <div>
+        <div class="recover-action-box">
           <label>Limite de mensagens</label>
           <input id="recoverLimit" type="number" value="200" min="1" max="1000"/>
         </div>
-        <div style="display:flex;align-items:end;justify-content:center">
-          <button id="recoverBtn" onclick="recoverMissing()">Recuperar faltantes</button>
+        <div class="recover-action-box" style="justify-content:flex-end">
+          <label>&nbsp;</label>
+          <button id="recoverBtn" onclick="recoverEmails()">Recuperar e lançar</button>
         </div>
       </div>
-      <div class="muted recover-note">Busca apenas mensagens enviadas com XML que ainda não têm label do Botana. Use período e/ou faixa de NF; o progresso aparece em Ações manuais.</div>
+      <div class="muted recover-note">Procura mensagens com XML pelos filtros informados e tenta lançar no financeiro mesmo que o e-mail já tenha label do Botana. Use período, faixa de NF ou monte uma lista manual; duplicidades continuam bloqueadas pelo writer.</div>
     </section>
   </section>
 
@@ -4554,6 +4903,7 @@ function _tickNext(){
   }
 }
 let _activeTab='main';
+let _recoverNfSelections=[];
 function _tabFromLocation(){
   const h=String(window.location.hash||'').replace('#','').trim().toLowerCase();
   if(h==='hist'||h==='diag'||h==='main'||h==='audit'||h==='watch') return h;
@@ -4597,6 +4947,56 @@ function switchTab(tab){
   if(changed){
     try{window.scrollTo({top:0,behavior:'auto'});}catch(_){window.scrollTo(0,0);}
   }
+}
+function _recoverDigits(value){return String(value||'').replace(/\\D+/g,'').slice(0,5);}
+function _parseRecoverNfInput(value){
+  const seen=new Set();
+  return (String(value||'').match(/\\d{1,5}/g)||[])
+    .map((item)=>String(item||'').slice(0,5))
+    .filter((item)=>item&&!seen.has(item)&&(seen.add(item),true));
+}
+function sanitizeRecoverNfInput(el){
+  if(!el)return;
+  const values=_parseRecoverNfInput(el.value||'');
+  el.value=values.join(', ');
+}
+function _renderRecoverNfTags(){
+  const box=document.getElementById('recoverListTags');
+  if(!box)return;
+  if(!_recoverNfSelections.length){
+    box.innerHTML='<span class="muted">Nenhuma NF adicionada.</span>';
+    return;
+  }
+  box.innerHTML=_recoverNfSelections.map((nf)=>`<span class="recover-tag">${_esc(nf)} <button type="button" title="Remover" onclick="removeRecoverNf('${_esc(nf)}')">×</button></span>`).join('');
+}
+function addRecoverNf(){
+  const input=document.getElementById('recoverListInput');
+  const values=_parseRecoverNfInput(input&&input.value||'');
+  if(!values.length){
+    if(input)input.focus();
+    return;
+  }
+  values.forEach((nf)=>{if(!_recoverNfSelections.includes(nf))_recoverNfSelections.push(nf);});
+  if(input){input.value='';input.focus();}
+  _renderRecoverNfTags();
+}
+function removeRecoverNf(nf){
+  _recoverNfSelections=_recoverNfSelections.filter((item)=>item!==String(nf||''));
+  _renderRecoverNfTags();
+}
+function recoverListKeydown(ev){
+  if(ev.key!=='Enter')return;
+  ev.preventDefault();
+  addRecoverNf();
+}
+function toggleRecoverFilters(){
+  const mode=String((document.getElementById('recoverMode')||{}).value||'period');
+  const period=document.getElementById('recoverPeriodBox');
+  const range=document.getElementById('recoverRangeBox');
+  const list=document.getElementById('recoverListBox');
+  if(period)period.classList.toggle('hidden',mode!=='period');
+  if(range)range.classList.toggle('hidden',mode!=='range');
+  if(list)list.classList.toggle('hidden',mode!=='list');
 }
 function setPill(ok,running){const p=document.getElementById('pill');if(running){p.className='status-pill ok';p.innerHTML='<span>•</span><span>Em execução</span>';return;}if(ok){p.className='status-pill off';p.innerHTML='<span>•</span><span>Aguardando</span>';return;}p.className='status-pill err';p.innerHTML='<span>•</span><span>Com erro</span>';}
 function setAccBadge(kind,label){
@@ -4666,7 +5066,10 @@ function _reprocessView(action){
   const currentEmail=String(a.current_email||'').trim();
   const currentDate=String(a.current_date||'').trim();
   const currentSubject=String(a.current_subject||'').trim();
-  return {requested,total,current,visibleTotal,perc,currentEmail,currentDate,currentSubject};
+  const windowOldestDate=String(a.window_oldest_date||'').trim();
+  const windowNewestDate=String(a.window_newest_date||'').trim();
+  const windowSelected=Math.max(0, Number(a.window_selected||0));
+  return {requested,total,current,visibleTotal,perc,currentEmail,currentDate,currentSubject,windowOldestDate,windowNewestDate,windowSelected};
 }
 function _manualRequestedLimit(action,fallback){
   const requested=Math.max(0, Number(((action||{}).requested_limit)||0));
@@ -4691,6 +5094,7 @@ function updProcessing(proc,maxMessages,action){
     if(view.currentEmail)detailParts.push(`E-mail atual ${view.currentEmail}`);
     if(view.currentDate)detailParts.push(`Data ${view.currentDate}`);
     if(view.currentSubject)detailParts.push(`Assunto ${view.currentSubject}`);
+    if(view.windowOldestDate&&view.windowNewestDate)detailParts.push(`Janela ${view.windowNewestDate} até ${view.windowOldestDate}`);
     runEl.textContent='Loop: reprocessamento manual em andamento';
     nowEl.textContent=detailParts.length?`Mensagem atual: ${detailParts.join(' | ')}`:'Mensagem atual: buscando e-mails para reprocessar';
     const last=p.last||{};
@@ -4733,7 +5137,7 @@ function updProcessing(proc,maxMessages,action){
     if(String(a.current_date||'').trim())detailParts.push(`Data ${String(a.current_date||'').trim()}`);
     if(String(a.current_subject||'').trim())detailParts.push(`Assunto ${String(a.current_subject||'').trim()}`);
     runEl.textContent='Loop: recuperação manual em andamento';
-    nowEl.textContent=detailParts.length?`Mensagem atual: ${detailParts.join(' | ')}`:'Mensagem atual: varrendo e-mails sem label do Botana';
+    nowEl.textContent=detailParts.length?`Mensagem atual: ${detailParts.join(' | ')}`:'Mensagem atual: varrendo e-mails com XML';
     const last=p.last||{};
     const lastEnd=last.finished_at?_fmtDateTime(last.finished_at):'-';
     let statusTxt='-';
@@ -4843,6 +5247,7 @@ function updManualAction(action,processing,maxMessages){
       const currentParts=[];
       if(view.currentEmail)currentParts.push(`E-mail atual: ${view.currentEmail}`);
       if(view.currentDate)currentParts.push(`Data: ${view.currentDate}`);
+      if(view.windowOldestDate&&view.windowNewestDate)currentParts.push(`Janela: ${view.windowNewestDate} até ${view.windowOldestDate}`);
       barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
       progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
       msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
@@ -4872,16 +5277,18 @@ function updManualAction(action,processing,maxMessages){
       barEl.style.width=String(perc)+'%';
       progressEl.textContent=`Encontradas ${matched}/${wanted} | Analisadas ${inspected}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
       msgEl.textContent=String(a.message||'Recuperação em andamento.');
-      detailEl.textContent=String(a.detail||'Varrendo e-mails sem label do Botana.');
+      detailEl.textContent=String(a.detail||'Varrendo e-mails com XML pelos filtros escolhidos.');
       _setManualBadge('ok','Varrendo');
     }
   }else{
     const status=String(a.status||'idle');
     const finished=String(a.finished_at||'').trim();
+    const windowParts=[];
+    if(String(a.window_newest_date||'').trim()&&String(a.window_oldest_date||'').trim())windowParts.push(`Janela ${String(a.window_newest_date||'').trim()} até ${String(a.window_oldest_date||'').trim()}`);
     const finishedText=finished?`Última atualização: ${_fmtDateTime(finished)}`:'Use o botão acima para reprocessar as mensagens e executar a leitura no mesmo fluxo.';
     barEl.style.width=status==='success'&&Number(a.progress_total||0)>0?'100%':'0%';
     progressEl.textContent=status==='success'||status==='error'
-      ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Limite pedido ${Number(a.requested_limit||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}`
+      ? `Progresso final: ${Number(a.progress_current||0)}/${Number(a.progress_total||0)||'-'} | Limite pedido ${Number(a.requested_limit||0)||'-'} | Atualizadas ${Number(a.changed||0)} | Falhas ${Number(a.failed||0)}${windowParts.length?` | ${windowParts.join(' | ')}`:''}`
       : 'Progresso: -';
     msgEl.textContent=String(a.message||'Nenhuma ação manual em andamento.');
     detailEl.textContent=String(a.detail||finishedText);
@@ -4895,7 +5302,7 @@ function updManualAction(action,processing,maxMessages){
   }
   if(recoverBtn){
     recoverBtn.disabled=active;
-    recoverBtn.textContent=active&&kind==='recover_missing'?(phase==='processing'?'Lendo...':'Varrendo...'):'Recuperar faltantes';
+    recoverBtn.textContent=active&&kind==='recover_missing'?(phase==='processing'?'Lendo...':'Buscando...'):'Recuperar e lançar';
   }
 }
 async function refresh(){
@@ -4982,31 +5389,35 @@ async function reprocess(){
     await refresh();
   }
 }
-async function recoverMissing(){
+async function recoverEmails(){
   const btn=document.getElementById('recoverBtn');
   if(btn){btn.disabled=true;btn.textContent='Iniciando...';}
   const msgEl=document.getElementById('manualActionMsg');
   const detailEl=document.getElementById('manualActionDetail');
-  if(msgEl)msgEl.textContent='Solicitação enviada. Varrendo Gmail em busca de mensagens sem label do Botana...';
-  if(detailEl)detailEl.textContent='O Botana vai procurar mensagens dentro do período e/ou faixa de NF informados e reler somente as que ainda não foram marcadas.';
+  const mode=String(document.getElementById('recoverMode').value||'period');
+  if(msgEl)msgEl.textContent='Solicitação enviada. Procurando e-mails para recuperar...';
+  if(detailEl)detailEl.textContent='O Botana vai localizar as mensagens pelos filtros escolhidos e tentar lançar o que encontrar no financeiro.';
   try{
     const payload={
       max_messages:Number(document.getElementById('recoverLimit').value||200),
-      nf_start:String(document.getElementById('recoverNfStart').value||'').trim(),
-      nf_end:String(document.getElementById('recoverNfEnd').value||'').trim(),
+      mode:mode,
+      nf_start:_recoverDigits(document.getElementById('recoverNfStart').value||''),
+      nf_end:_recoverDigits(document.getElementById('recoverNfEnd').value||''),
       date_from:String(document.getElementById('recoverDateFrom').value||'').trim(),
       date_to:String(document.getElementById('recoverDateTo').value||'').trim(),
+      nf_list:_recoverNfSelections.slice(),
     };
-    const j=await api('/api/recover-missing',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const j=await api('/api/recover-emails',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(j&&j.friendly&&msgEl)msgEl.textContent=String(j.friendly);
     await refresh();
   }catch(err){
     if(msgEl)msgEl.textContent='Falha ao iniciar a recuperação.';
     if(detailEl)detailEl.textContent=String(err&&err.message||err);
-    alert('Erro ao recuperar faltantes: '+(err&&err.message||err));
+    alert('Erro ao recuperar e-mails: '+(err&&err.message||err));
     await refresh();
   }
 }
+async function recoverMissing(){return recoverEmails();}
 function _fmtDateTime(v){if(!v)return '-';try{return new Date(v).toLocaleString('pt-BR');}catch(_){return String(v);}}
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
@@ -5631,7 +6042,8 @@ async function deleteEntry(nf,parcela,at){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverLimit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverMissing();}});});
+['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverLimit','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverEmails();}});});
+['recoverNfStart','recoverNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
@@ -5650,6 +6062,8 @@ const _auditMonthEl=document.getElementById('aMonth');
 if(_auditMonthEl&&!_auditMonthEl.value){
   try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
 }
+toggleRecoverFilters();
+_renderRecoverNfTags();
 toggleAuditFilters();
 refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);setInterval(_tickNext,1000);setInterval(()=>{if(_activeTab==='hist')loadHistory(true);},10000);
 initHubBackButton();
@@ -5971,32 +6385,36 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
                     friendly = f"Reprocessamento iniciado para ate {max_messages} mensagens mais recentes; a leitura sera executada em seguida."
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
-                if parsed.path == "/api/recover-missing":
+                if parsed.path in ("/api/recover-emails", "/api/recover-missing"):
                     if not _can_operate(user):
                         return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
                     try:
                         max_messages = max(1, min(1000, int(data.get("max_messages", 200))))
                     except Exception:
                         max_messages = 200
+                    mode = str(data.get("mode", "") or "").strip()
                     nf_start = str(data.get("nf_start", "") or "").strip()
                     nf_end = str(data.get("nf_end", "") or "").strip()
                     date_from = str(data.get("date_from", "") or "").strip()
                     date_to = str(data.get("date_to", "") or "").strip()
+                    nf_list = data.get("nf_list", [])
                     started, info = _start_recover_missing_background(
                         max_messages=max_messages,
+                        mode=mode,
                         nf_start=nf_start,
                         nf_end=nf_end,
                         date_from=date_from,
                         date_to=date_to,
+                        nf_list=nf_list,
                     )
                     if not started:
                         msg = str((info or {}).get("message") or "").strip()
                         if not msg:
                             msg = _manual_action_busy_message() or "Nao foi possivel iniciar a recuperacao."
-                        status_code = 400 if "Informe" in msg else 409
+                        status_code = 400 if any(token in msg for token in ("Informe", "Escolha", "Adicione")) else 409
                         return _json_response(self, status_code, {"ok": False, "message": msg, "action": info})
-                    filtros = _describe_recovery_filters(nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to) or "os filtros informados"
-                    friendly = f"Recuperacao iniciada para ate {max_messages} mensagens sem label do Botana em {filtros}."
+                    filtros = _describe_recovery_filters(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list) or "os filtros informados"
+                    friendly = f"Recuperação iniciada para até {max_messages} mensagens com XML em {filtros}."
                     return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
