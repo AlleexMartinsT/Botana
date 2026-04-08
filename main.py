@@ -4802,7 +4802,7 @@ button{margin-top:12px;width:100%;padding:10px 12px;border:0;border-radius:9px;b
 </style></head><body>
 <section class="card">
 <h1>Acesso ao Botana</h1>
-<p>Entre com usuário e senha para continuar</p>
+<p id="loginHint">Entre com usuário e senha para continuar</p>
 <label>Usuário</label><input id="u" type="text" autocomplete="username"/>
 <label>Senha</label><input id="p" type="password" autocomplete="current-password"/>
 <button id="b" onclick="login()">Entrar</button>
@@ -4814,6 +4814,7 @@ const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store
 function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
 const _BASE_PREFIX=_basePrefix();
 function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
+function _isPopupMode(){try{return new URLSearchParams(window.location.search||'').get('popup')==='1';}catch(_){return false;}}
 function backToHub(){
   try{
     const ref=document.referrer?new URL(document.referrer):null;
@@ -4821,22 +4822,52 @@ function backToHub(){
   }catch(_){}
   window.location.assign(new URL('/',window.location.origin).toString());
 }
-function initHubBackLogin(){const b=document.getElementById('hubBackLogin');if(!b)return;if(_BASE_PREFIX)b.classList.remove('hidden');}
+function initHubBackLogin(){
+  const b=document.getElementById('hubBackLogin');
+  const hint=document.getElementById('loginHint');
+  if(_isPopupMode()){
+    if(b)b.classList.add('hidden');
+    if(hint)hint.textContent='Entre com usuário e senha para validar o acesso no Hub.';
+    return;
+  }
+  if(!b)return;
+  if(_BASE_PREFIX)b.classList.remove('hidden');
+}
 async function login(){
   const u=document.getElementById('u').value||'';
   const p=document.getElementById('p').value||'';
   const m=document.getElementById('m');
   const b=document.getElementById('b');
+  const inputU=document.getElementById('u');
+  const inputP=document.getElementById('p');
   b.disabled=true;
   m.textContent='Validando acesso';
   try{
     const r=await fetch(_url('/api/login'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
     const j=await r.json();
-    if(r.ok&&j.ok){window.location.href=_url('/');return;}
+    if(r.ok&&j.ok){
+      if(_isPopupMode()){
+        if(inputU)inputU.disabled=true;
+        if(inputP)inputP.disabled=true;
+        m.style.color='#2e7d32';
+        m.textContent='Login confirmado. Esta janela pode ser fechada.';
+        try{if(window.opener)window.opener.postMessage({type:'botana-login-ok'},'*');}catch(_){}
+        setTimeout(()=>{try{window.close();}catch(_){}},700);
+        return;
+      }
+      window.location.href=_url('/');
+      return;
+    }
+    m.style.color='#9c2c1d';
     m.textContent=j.message||'Usuário ou senha inválidos';
   }catch(_){
+    m.style.color='#9c2c1d';
     m.textContent='Falha ao conectar com o servidor';
-  }finally{b.disabled=false;}
+  }finally{
+    if(!_isPopupMode()||m.textContent!=='Login confirmado. Esta janela pode ser fechada.'){
+      b.disabled=false;
+    }
+  }
 }
 ['u','p'].forEach(id=>{document.getElementById(id).addEventListener('keydown',(e)=>{if(e.key==='Enter')login();});});
 initHubBackLogin();

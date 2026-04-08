@@ -58,6 +58,8 @@ No `instances.json` do Hub, use:
 - `auto_clone_missing: true`
 - `start_args: ["main.py","--server","--host","127.0.0.1","--port","8865"]`
 
+- Quando o Hub abrir `/botana/login?popup=1`, o login do Botana fica em modo reduzido: não mostra o botão interno de voltar ao Hub e, após autenticar, confirma o acesso e fecha a janela sem redirecionar para o painel completo.
+
 ## Ações manuais no painel
 
 - O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
