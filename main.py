@@ -129,6 +129,11 @@ _MANUAL_ACTION = {
     "failed": 0,
     "matched": 0,
     "inspected": 0,
+    "launched": 0,
+    "duplicates": 0,
+    "messages_read": 0,
+    "subject_mismatch_count": 0,
+    "subject_mismatch_notes": [],
     "current_email": "",
     "current_subject": "",
     "current_date": "",
@@ -275,6 +280,11 @@ def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", 
                 "failed": 0,
                 "matched": 0,
                 "inspected": 0,
+                "launched": 0,
+                "duplicates": 0,
+                "messages_read": 0,
+                "subject_mismatch_count": 0,
+                "subject_mismatch_notes": [],
                 "current_email": "",
                 "current_subject": "",
                 "current_date": "",
@@ -332,6 +342,11 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
         _MANUAL_ACTION["continue_remaining"] = 0
         _MANUAL_ACTION["matched"] = 0
         _MANUAL_ACTION["inspected"] = 0
+        _MANUAL_ACTION["launched"] = 0
+        _MANUAL_ACTION["duplicates"] = 0
+        _MANUAL_ACTION["messages_read"] = 0
+        _MANUAL_ACTION["subject_mismatch_count"] = 0
+        _MANUAL_ACTION["subject_mismatch_notes"] = []
         for key, value in extra.items():
             _MANUAL_ACTION[key] = value
         return dict(_MANUAL_ACTION)
@@ -955,23 +970,39 @@ def _extract_boleto_due_and_value(pdf_text: str) -> tuple[str, float]:
         return "", 0.0
     upper = text.upper()
     regions = []
-    for marker in ("VENCIMENTO", "VENCTO", "DATA DE VENCIMENTO"):
-        pos = upper.find(marker)
-        if pos >= 0:
-            regions.append(text[pos : pos + 260])
+    seen_regions = set()
+    for marker in ("VENCIMENTO", "VENCTO", "DATA DE VENCIMENTO", "VALOR DOCUMENTO"):
+        for match in re.finditer(marker, upper):
+            start = max(0, match.start() - 12)
+            end = min(len(text), match.start() + 420)
+            key = (start, end)
+            if key in seen_regions:
+                continue
+            seen_regions.add(key)
+            regions.append(text[start:end])
     if not regions:
-        regions.append(text[:320])
+        regions.append(text[:520])
     for region in regions:
-        date_match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", region)
-        if not date_match:
-            continue
-        vencimento = _normalize_ddmmyyyy(date_match.group(1))
-        tail = region[date_match.end() : date_match.end() + 120]
-        value_match = re.search(r"\b(\d{1,3}(?:\.\d{3})*,\d{2})\b", tail)
-        if vencimento and value_match:
+        for date_match in re.finditer(r"\b(\d{2}/\d{2}/\d{4})\b", region):
+            vencimento = _normalize_ddmmyyyy(date_match.group(1))
+            if not vencimento:
+                continue
+            tail = region[date_match.end() : date_match.end() + 180]
+            value_match = re.search(r"\b(\d{1,3}(?:\.\d{3})*,\d{2})\b", tail)
+            if not value_match:
+                continue
             valor = _safe_money_text(value_match.group(1))
             if valor > 0:
                 return vencimento, valor
+    combined = re.search(
+        r"\b(\d{2}/\d{2}/\d{4})\b[\s\S]{0,120}?\b(\d{1,3}(?:\.\d{3})*,\d{2})\b",
+        text,
+    )
+    if combined:
+        vencimento = _normalize_ddmmyyyy(combined.group(1))
+        valor = _safe_money_text(combined.group(2))
+        if vencimento and valor > 0:
+            return vencimento, valor
     return "", 0.0
 
 
@@ -1024,24 +1055,47 @@ def _boletos_for_xml(dados_xml: dict, boleto_infos: list[dict]) -> list[dict]:
 def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) -> dict:
     payload = dict(dados_xml or {})
     parcelas = list(payload.get("parcelas") or [])
-    if str(payload.get("parcelas_source") or "").strip().lower() != "fat":
-        return payload
     candidatos = _boletos_for_xml(payload, boleto_infos)
-    if len(parcelas) != 1 or len(candidatos) <= 1:
+    if not candidatos:
         return payload
     if not all(str(item.get("vencimento") or "").strip() and float(item.get("valor") or 0.0) > 0 for item in candidatos):
         return payload
     valor_total = float(payload.get("valorTotal") or 0.0)
-    soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
-    if valor_total > 0 and abs(soma_boletos - valor_total) > 0.05:
-        logger.warning(
-            "NF %s com XML de fatura unica teve %d boletos PDF, mas a soma %.2f difere do total %.2f. Mantendo XML.",
-            payload.get("nf"),
-            len(candidatos),
-            soma_boletos,
-            valor_total,
-        )
-        return payload
+    source = str(payload.get("parcelas_source") or "").strip().lower()
+    if parcelas:
+        if source != "fat" or len(parcelas) != 1 or len(candidatos) <= 1:
+            return payload
+        soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
+        if valor_total > 0 and abs(soma_boletos - valor_total) > 0.05:
+            logger.warning(
+                "NF %s com XML de fatura unica teve %d boletos PDF, mas a soma %.2f difere do total %.2f. Mantendo XML.",
+                payload.get("nf"),
+                len(candidatos),
+                soma_boletos,
+                valor_total,
+            )
+            return payload
+    else:
+        soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
+        if len(candidatos) == 1:
+            boleto_valor = round(float(candidatos[0].get("valor") or 0.0), 2)
+            if valor_total > 0 and abs(boleto_valor - valor_total) > 0.05:
+                logger.warning(
+                    "NF %s sem parcelas no XML teve 1 boleto PDF, mas o valor %.2f difere do total %.2f. Mantendo XML.",
+                    payload.get("nf"),
+                    boleto_valor,
+                    valor_total,
+                )
+                return payload
+        elif valor_total > 0 and abs(soma_boletos - valor_total) > 0.05:
+            logger.warning(
+                "NF %s sem parcelas no XML teve %d boletos PDF, mas a soma %.2f difere do total %.2f. Mantendo XML.",
+                payload.get("nf"),
+                len(candidatos),
+                soma_boletos,
+                valor_total,
+            )
+            return payload
     parcelas_inferidas = []
     for idx, boleto in enumerate(candidatos, start=1):
         parcelas_inferidas.append(
@@ -1062,10 +1116,12 @@ def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) 
         payload["anoVencimento"] = datetime.strptime(payload["vencimento"], "%d/%m/%Y").strftime("%Y")
     except Exception:
         pass
+    reason = "o XML veio apenas com fatura total" if source == "fat" else "o XML veio sem parcelas"
     logger.info(
-        "NF %s inferiu %d parcelas a partir dos PDFs de boleto porque o XML veio apenas com fatura total.",
+        "NF %s inferiu %d parcelas a partir dos PDFs de boleto porque %s.",
         payload.get("nf"),
         len(parcelas_inferidas),
+        reason,
     )
     return payload
 
@@ -3758,6 +3814,153 @@ def _preview_matches_recovery_filters(
     return False
 
 
+def _message_attachment_text(service, msg_id: str) -> str:
+    if not msg_id:
+        return ""
+    try:
+        payload = (
+            service.users()
+            .messages()
+            .get(userId="me", id=msg_id, format="full")
+            .execute()
+            .get("payload", {})
+            or {}
+        )
+    except Exception as exc:
+        logger.warning("Falha ao carregar anexos da mensagem %s para filtro de NF: %s", msg_id, exc)
+        return ""
+    parts = list(payload.get("parts", []) or [])
+    if not parts:
+        parts = [payload]
+    names = []
+    stack = list(parts)
+    while stack:
+        part = stack.pop()
+        children = list(part.get("parts", []) or [])
+        if children:
+            stack.extend(children)
+        filename = str(part.get("filename", "") or "").strip()
+        if filename:
+            names.append(filename)
+    return " ".join(names).strip()
+
+
+def _recovery_match_details(
+    service,
+    msg_id: str,
+    preview: dict,
+    mode: str = "",
+    nf_start: int | None = None,
+    nf_end: int | None = None,
+    nf_list=None,
+    start_date=None,
+    end_date=None,
+    attachment_text: str = "",
+) -> dict:
+    preview_match = _preview_matches_recovery_filters(
+        preview,
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        nf_list=nf_list,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if preview_match:
+        return {
+            "matched": True,
+            "used_attachment_match": False,
+            "attachment_text": str(attachment_text or "").strip(),
+            "warning_note": "",
+        }
+    mode_norm = _normalize_recovery_mode(mode)
+    if mode_norm == "period":
+        return {
+            "matched": False,
+            "used_attachment_match": False,
+            "attachment_text": str(attachment_text or "").strip(),
+            "warning_note": "",
+        }
+    text = str(attachment_text or "").strip()
+    if not text:
+        text = _message_attachment_text(service, msg_id)
+    if not text:
+        return {
+            "matched": False,
+            "used_attachment_match": False,
+            "attachment_text": "",
+            "warning_note": "",
+        }
+    merged_preview = dict(preview or {})
+    merged_preview["subject"] = " ".join(
+        x for x in (
+            str(preview.get("subject", "") or "").strip(),
+            text,
+        ) if x
+    )
+    attachment_match = _preview_matches_recovery_filters(
+        merged_preview,
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        nf_list=nf_list,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    warning_note = ""
+    if attachment_match:
+        preview_text = " ".join(
+            x for x in (
+                str(preview.get("subject", "") or "").strip(),
+                str(preview.get("snippet", "") or "").strip(),
+            ) if x
+        )
+        preview_numbers = _extract_nf_numbers_from_text(preview_text)
+        attachment_numbers = _extract_nf_numbers_from_text(text)
+        if preview_numbers or attachment_numbers:
+            preview_label = ", ".join(str(numero) for numero in preview_numbers) if preview_numbers else "nenhuma NF"
+            attachment_label = ", ".join(str(numero) for numero in attachment_numbers) if attachment_numbers else "nenhuma NF"
+            if preview_label != attachment_label:
+                warning_note = (
+                    f"Assunto/snippet indicavam {preview_label}, "
+                    f"mas os anexos/XML indicavam {attachment_label}."
+                )
+    return {
+        "matched": bool(attachment_match),
+        "used_attachment_match": bool(attachment_match),
+        "attachment_text": text,
+        "warning_note": warning_note,
+    }
+
+
+def _message_matches_recovery_filters(
+    service,
+    msg_id: str,
+    preview: dict,
+    mode: str = "",
+    nf_start: int | None = None,
+    nf_end: int | None = None,
+    nf_list=None,
+    start_date=None,
+    end_date=None,
+    attachment_text: str = "",
+) -> bool:
+    return bool(
+        _recovery_match_details(
+            service,
+            msg_id,
+            preview,
+            mode=mode,
+            nf_start=nf_start,
+            nf_end=nf_end,
+            nf_list=nf_list,
+            start_date=start_date,
+            end_date=end_date,
+            attachment_text=attachment_text,
+        ).get("matched")
+    )
+
+
 def _reprocess_message_preview(service, msg_id: str) -> dict:
     preview = {"email": "", "subject": "", "date": "", "timestamp": 0}
     if not msg_id:
@@ -3985,6 +4188,9 @@ def _find_missing_messages(
     inspected = 0
     pages = 0
     page_token = None
+    attachment_text_cache = {}
+    subject_mismatch_notes = []
+    subject_mismatch_count = 0
     criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values) or "filtros informados"
     if callable(progress_cb):
         progress_cb(
@@ -4032,7 +4238,10 @@ def _find_missing_messages(
                     message=f"Analisando mensagens: {inspected} verificadas.",
                     detail=f"Encontradas {len(targets)} dentro dos filtros. Página {pages} de até {page_limit}.",
                 )
-            if not _preview_matches_recovery_filters(
+            attachment_text = attachment_text_cache.get(msg_id, "")
+            match_info = _recovery_match_details(
+                service,
+                msg_id,
                 preview,
                 mode=mode_norm,
                 nf_start=start_nf,
@@ -4040,8 +4249,27 @@ def _find_missing_messages(
                 nf_list=nf_values,
                 start_date=start_date,
                 end_date=end_date,
-            ):
+                attachment_text=attachment_text,
+            )
+            attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+            if not bool(match_info.get("matched")):
                 continue
+            warning_note = str(match_info.get("warning_note", "") or "").strip()
+            if warning_note:
+                subject_mismatch_count += 1
+                if len(subject_mismatch_notes) < 8:
+                    note_parts = []
+                    nf_hits = _extract_nf_numbers_from_text(warning_note)
+                    if nf_hits:
+                        note_parts.append("NF " + ", ".join(str(numero) for numero in nf_hits))
+                    if current_date:
+                        note_parts.append(current_date)
+                    if current_subject:
+                        note_parts.append(current_subject)
+                    context = " | ".join(note_parts)
+                    subject_mismatch_notes.append(
+                        f"{context} -> {warning_note}" if context else warning_note
+                    )
             targets.append(
                 {
                     "id": msg_id,
@@ -4080,6 +4308,8 @@ def _find_missing_messages(
         "criteria": criteria_desc,
         "mode": mode_norm,
         "targets": targets,
+        "subject_mismatch_count": subject_mismatch_count,
+        "subject_mismatch_notes": subject_mismatch_notes,
     }
 
 
@@ -4156,6 +4386,8 @@ def _start_recover_missing_background(
             targets = list(result.get("targets") or [])
             matched = int(result.get("matched", 0) or 0)
             inspected = int(result.get("inspected", 0) or 0)
+            subject_mismatch_count = int(result.get("subject_mismatch_count", 0) or 0)
+            subject_mismatch_notes = list(result.get("subject_mismatch_notes") or [])
             if targets:
                 _manual_action_update(
                     phase="processing",
@@ -4174,11 +4406,42 @@ def _start_recover_missing_background(
                     messages_override=targets,
                 )
                 proc = _process_snapshot().get("last", {})
+                launched = int(proc.get("launched", 0) or 0)
+                duplicates = int(proc.get("duplicates", 0) or 0)
+                messages_read = int(proc.get("messages", 0) or 0)
                 detail = (
                     f"Encontradas: {matched} | "
                     f"Analisadas: {inspected} | "
-                    f"E-mails lidos: {int(proc.get('messages', 0) or 0)}"
+                    f"E-mails lidos: {messages_read} | "
+                    f"Lançadas: {launched} | "
+                    f"Duplicadas: {duplicates}"
                 )
+                if subject_mismatch_count > 0:
+                    detail = f"{detail} | Divergência assunto/anexos: {subject_mismatch_count}"
+                if ok:
+                    if subject_mismatch_count > 0:
+                        msg = (
+                            "Recuperação concluída com aviso: "
+                            "o assunto do e-mail não batia com os anexos em "
+                            f"{subject_mismatch_count} mensagem{'s' if subject_mismatch_count != 1 else ''}."
+                        )
+                    elif launched > 0:
+                        msg = (
+                            f"Recuperação concluída: {launched} "
+                            f"lançamento{'s' if launched != 1 else ''} "
+                            "adicionado"
+                            f"{'s' if launched != 1 else ''} na planilha."
+                        )
+                    elif duplicates > 0:
+                        msg = (
+                            "Recuperação concluída sem novas linhas: "
+                            "as mensagens encontradas já estavam lançadas."
+                        )
+                    else:
+                        msg = (
+                            "Recuperação concluída sem lançamentos: "
+                            "os e-mails foram lidos, mas nada novo entrou na planilha."
+                        )
                 if resume_loop:
                     restarted = iniciar_verificacao()
                     detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
@@ -4186,10 +4449,15 @@ def _start_recover_missing_background(
                     ok,
                     msg,
                     detail=detail,
-                    progress_current=int(proc.get("messages", 0) or 0),
+                    progress_current=messages_read,
                     progress_total=len(targets),
                     matched=matched,
                     inspected=inspected,
+                    launched=launched,
+                    duplicates=duplicates,
+                    messages_read=messages_read,
+                    subject_mismatch_count=subject_mismatch_count,
+                    subject_mismatch_notes=subject_mismatch_notes,
                     requested_limit=int(max_messages),
                 )
                 return
@@ -4205,6 +4473,8 @@ def _start_recover_missing_background(
                 progress_total=int(max_messages),
                 matched=matched,
                 inspected=inspected,
+                subject_mismatch_count=subject_mismatch_count,
+                subject_mismatch_notes=subject_mismatch_notes,
                 requested_limit=int(max_messages),
             )
         except Exception as exc:
@@ -4379,6 +4649,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
+.hint-wrap{display:flex;justify-content:center;align-items:center;margin-top:6px}
+.help-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;border:1px solid #d6b18f;background:#fff7ef;color:#7a4d30;font-size:.8rem;font-weight:800;line-height:1;cursor:help;user-select:none}
+.help-tip:hover,.help-tip:focus-visible{background:#fff1e3;outline:none}
+.help-tip-bubble{position:absolute;left:50%;top:calc(100% + 8px);transform:translate(-50%,-4px);width:min(320px,calc(100vw - 48px));padding:10px 12px;border-radius:12px;border:1px solid #e2b58d;background:#fffaf5;color:#6b4128;font-size:.78rem;font-weight:500;line-height:1.45;box-shadow:0 10px 24px rgba(21,11,6,.16);opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:6;text-align:left}
+.help-tip:hover .help-tip-bubble,.help-tip:focus-visible .help-tip-bubble{opacity:1;transform:translate(-50%,0);pointer-events:auto}
 .recover-card h3{text-align:center}
 .recover-shell{max-width:860px;margin:0 auto;display:grid;gap:12px}
 .recover-grid{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:10px 14px;align-items:start}
@@ -4416,6 +4691,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-toolbar{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .hist-note{flex:1 1 420px}
 .hist-reset-btn{padding:6px 10px;font-size:.78rem}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;min-width:36px;padding:6px 0;font-size:1rem;line-height:1}
 .hist-table{width:100%;min-width:1240px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
 .hist-table th,.hist-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;padding-right:18px;border-bottom:2px solid #cf9c73;overflow:visible}
@@ -4666,7 +4942,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <div class="muted" style="margin-top:6px">Usa por padrão as mensagens mais recentes com label do Botana nas últimas duas semanas, remarca para reprocessamento e já executa a leitura em seguida. Para algo mais antigo, use Recuperar e-mails.</div>
+        <div class="hint-wrap">
+          <span class="help-tip" tabindex="0" aria-label="Ajuda do reprocessamento">?
+            <span class="help-tip-bubble">Usa por padrão as mensagens mais recentes com label do Botana nas últimas duas semanas, remarca para reprocessamento e já executa a leitura em seguida. Para algo mais antigo, use Recuperar e-mails.</span>
+          </span>
+        </div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
           <button id="reprocessBtn" onclick="reprocess()">Reprocessar agora</button>
@@ -4722,7 +5002,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           </div>
           <div class="recover-action-box">
             <div class="recover-action-row">
-              <button id="recoverBtn" onclick="recoverEmails()">Recuperar e lançar</button>
+              <button id="recoverBtn" onclick="recoverEmails()">Recuperar</button>
             </div>
           </div>
         </div>
@@ -4746,7 +5026,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <div class="hist-toolbar">
         <div class="muted hist-note">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada. Arraste a divisória do cabeçalho para reajustar as colunas.</div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <button type="button" class="sec hist-reset-btn" onclick="exportHistoryCsv()">Exportar CSV</button>
+          <button type="button" class="sec hist-reset-btn icon-btn" onclick="exportHistoryCsv()" title="Exportar CSV" aria-label="Exportar CSV"><span aria-hidden="true">&#8681;</span></button>
           <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
         </div>
       </div>
@@ -5441,7 +5721,7 @@ function updManualAction(action,processing,maxMessages){
   }
   if(recoverBtn){
     recoverBtn.disabled=active;
-    recoverBtn.textContent=active&&kind==='recover_missing'?(phase==='processing'?'Lendo...':'Buscando...'):'Recuperar e lançar';
+    recoverBtn.textContent=active&&kind==='recover_missing'?(phase==='processing'?'Lendo...':'Buscando...'):'Recuperar';
   }
 }
 async function refresh(){

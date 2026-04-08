@@ -66,11 +66,15 @@ No `instances.json` do Hub, use:
 - O layout do card `Recuperar e-mails` ficou centralizado e agrupado em blocos, e o filtro ativo agora se recompõe automaticamente conforme o `Modo` escolhido.
 - Os campos preenchíveis de `Recuperar e-mails` ficaram mais compactos, o botão foi isolado em uma linha própria, e o campo visual de `Limite de mensagens` saiu da UI.
 - A recuperação não depende mais de ausência de label; ela pode reler mensagens já marcadas pelo Botana, e o bloqueio de duplicidade continua acontecendo no writer da planilha.
+- Quando o e-mail vier com boleto PDF válido mas o XML estiver sem parcelas, o Botana agora reconstrói a parcela diretamente do boleto e consegue lançar casos como a `NF 20571`.
+- Na recuperação por NF, o Botana também passou a considerar o nome dos anexos quando o assunto/snippet vierem inconsistentes, então casos como `NF 20451` continuam encontráveis mesmo se o assunto do e-mail estiver errado.
+- Quando essa recuperação precisar confiar nos anexos/XML porque o assunto do e-mail não bate com a NF real, o Botana agora marca esse aviso no estado final para o Hub alertar o usuário.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
 - Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` priorizam progresso, falhas e janela do lote, sem expor contadores técnicos de anexos, XML, lançamentos ou duplicidades no painel.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando por padrão as mensagens mais recentes ainda marcadas com a label do Botana nas últimas duas semanas.
+- A explicação desse fluxo no card `Reprocessar e-mails` fica sob um ícone pequeno de `?`, em vez de texto fixo ocupando espaço no painel.
 - Para mensagens mais antigas do que essa janela padrão, o caminho recomendado é `Recuperar e-mails`.
 - O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
@@ -90,6 +94,7 @@ No `instances.json` do Hub, use:
 - Mensagens que já tenham qualquer label do Botana são puladas no ciclo normal, evitando releitura desnecessária e liberando espaço para e-mails ainda não tratados.
 - O limite efetivo de leitura automática fica alinhado ao menos ao produto de `Máx páginas x Tamanho da página`, para não manter um corte antigo menor do que o configurado na UI.
 - Quando o XML vier só com a fatura total (`fat`) mas o e-mail trouxer vários boletos PDF, o Botana tenta extrair vencimento e valor de cada boleto para reconstruir as parcelas antes de lançar no financeiro.
+- Esse fallback de boletos PDF também cobre XMLs sem parcelas, desde que os boletos do e-mail tragam vencimento e valor compatíveis com a NF.
 - Quando o XML vier sem parcelas e o e-mail indicar `DEPÓSITO` no assunto ou no corpo, o Botana usa esse sinal para montar um lançamento único de `DEP`, reaproveitando o valor total do XML e a data de emissão como fallback de vencimento.
 
 ## Histórico no painel
@@ -132,7 +137,7 @@ No `instances.json` do Hub, use:
 
 ## Exportação do histórico
 
-- A aba `Histórico` agora tem um botão `Exportar CSV`.
+- A aba `Histórico` agora usa um botão de ícone para `Exportar CSV`, com tooltip no hover.
 - A exportação respeita os mesmos filtros e o mesmo limite aplicados na consulta atual da grade.
 
 ## Ajustes de Prazos
