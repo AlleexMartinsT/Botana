@@ -400,8 +400,11 @@ def listar_mensagens_com_labels_botana(service, max_results: int = 1000) -> List
         if not label_id:
             continue
         page_token = None
-        while len(out) < wanted:
-            batch_size = min(500, wanted - len(out))
+        collected_for_label = 0
+        # Busca até o mesmo limite em cada label e deixa a ordenação final para o caller.
+        # Isso evita que labels antigas "consumam" todo o pool antes de chegar nas labels datadas mais novas.
+        while collected_for_label < wanted:
+            batch_size = min(500, wanted - collected_for_label)
             req_kwargs = {"userId": "me", "labelIds": [label_id], "maxResults": batch_size}
             if page_token:
                 req_kwargs["pageToken"] = page_token
@@ -413,13 +416,12 @@ def listar_mensagens_com_labels_botana(service, max_results: int = 1000) -> List
                     continue
                 seen.add(msg_id)
                 out.append({"id": msg_id, "threadId": item.get("threadId", ""), "botana_label": label_name})
-                if len(out) >= wanted:
+                collected_for_label += 1
+                if collected_for_label >= wanted:
                     break
             page_token = str(resp.get("nextPageToken", "")).strip()
             if not page_token or not batch:
                 break
-        if len(out) >= wanted:
-            break
     return out
 
 

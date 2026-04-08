@@ -70,6 +70,7 @@ No `instances.json` do Hub, use:
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
+- O reprocessamento agora monta o lote olhando todas as labels do Botana antes do corte final, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
 - A recuperação de faltantes usa a mesma área visual de `Ações manuais`, mostrando o andamento da varredura e quantas mensagens combinaram com os filtros.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
