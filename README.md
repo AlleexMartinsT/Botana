@@ -63,17 +63,19 @@ No `instances.json` do Hub, use:
 - O botão `Reprocessar agora` inicia a ação em background, devolve resposta visual imediata e dispara a leitura no mesmo fluxo.
 - O card `Recuperar e-mails` procura mensagens com XML pelos filtros informados e já executa a leitura em seguida para tentar lançar no financeiro.
 - A recuperação agora tem três modos: `Período`, `Faixa de NF` e `Escolha manual`, em que você monta uma lista própria de NFs como `20247` e `20344`.
+- O layout do card `Recuperar e-mails` ficou centralizado e agrupado em blocos, e o filtro ativo agora se recompõe automaticamente conforme o `Modo` escolhido.
 - A recuperação não depende mais de ausência de label; ela pode reler mensagens já marcadas pelo Botana, e o bloqueio de duplicidade continua acontecendo no writer da planilha.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
-- Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` mostram também quantas parcelas caíram como `Duplicadas`, para diferenciar releitura bem-sucedida de lançamento realmente novo.
+- Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` priorizam progresso, falhas e janela do lote, sem expor contadores técnicos de anexos, XML, lançamentos ou duplicidades no painel.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando as mensagens mais recentes ainda marcadas com a label do Botana.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
-- A recuperação de faltantes usa os mesmos contadores visuais de `Ações manuais`, mostrando quantas mensagens foram analisadas, quantas combinaram com os filtros e qual e-mail está sendo varrido no momento.
+- A recuperação de faltantes usa a mesma área visual de `Ações manuais`, mostrando o andamento da varredura e quantas mensagens combinaram com os filtros.
 - As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
-- Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e o e-mail/data da mensagem atual.
+- Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e a data do item atual, sem repetir label anterior nem o e-mail completo na linha de resumo.
 - O reprocessamento também informa a janela real coberta pelo lote selecionado, mostrando de qual data mais recente até qual data mais antiga ele conseguiu ir com o limite pedido.
+- Ao concluir um reprocessamento com mensagens mais antigas ainda disponíveis, o painel abre um popup automático perguntando se você quer continuar do próximo lote; se confirmar, basta informar a quantidade adicional.
 - As duas barras de progresso passam a refletir o reprocessamento ativo, incluindo o limite pedido no painel.
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
