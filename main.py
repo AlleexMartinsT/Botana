@@ -7330,6 +7330,334 @@ refresh();loadHistory();switchTab(_tabFromLocation());setInterval(refresh,3000);
 initHubBackButton();
 </script></body></html>"""
 
+
+def _render_audit_tabulator_preview_html() -> str:
+    return """<!doctype html>
+<html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Botana - Preview Tabulator</title>
+<link rel="preconnect" href="https://unpkg.com" crossorigin />
+<link rel="stylesheet" href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator.min.css" />
+<script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap');
+:root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7;--line:#e7c4a5}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,#2f1a0f,#5c341c);padding:18px;color:#2a1b12}
+.preview-shell{max-width:1180px;margin:0 auto;display:grid;gap:16px}
+.preview-head{padding:22px 24px;border:1px solid rgba(231,200,168,.85);border-radius:20px;background:linear-gradient(180deg,rgba(255,250,246,.98),rgba(255,245,235,.94));box-shadow:0 24px 60px rgba(21,11,6,.28);text-align:center}
+.preview-kicker{margin:0;color:#a65e20;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase}
+.preview-head h1{margin:10px 0 0;font-size:34px;line-height:1.06;color:var(--b)}
+.preview-head p{margin:12px auto 0;max-width:760px;color:#6c4a35;font-size:14px;line-height:1.65}
+.preview-actions{margin-top:16px;display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+.preview-actions a,.preview-actions button{display:inline-flex;align-items:center;justify-content:center;padding:10px 16px;border-radius:999px;border:1px solid #d7b393;background:#fff9f3;color:#5a311b;font-weight:800;text-decoration:none;cursor:pointer}
+.preview-actions a:hover,.preview-actions button:hover{background:linear-gradient(90deg,var(--o),var(--o2));border-color:transparent;color:#2b1408}
+.card{background:rgba(255,248,240,.95);border:1px solid #e7c8a8;border-radius:16px;padding:14px;box-shadow:0 8px 20px rgba(21,11,6,.08)}
+.card h3{margin:0 0 8px;color:var(--b);font-size:1rem;text-align:center}
+.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,180px));gap:10px;align-items:end;justify-content:center;max-width:980px;margin:0 auto}
+.audit-filters>div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.audit-filters>div label{width:100%;text-align:center;font-weight:700;color:#5c341c}
+.audit-filters>div input,.audit-filters>div select,.audit-filters>div button{width:min(180px,100%);text-align:center;padding:9px;border:1px solid #d6b18f;border-radius:9px;background:#fffdfb;font-family:inherit}
+.audit-filters button{border:0;background:linear-gradient(90deg,var(--o),var(--o2));color:#2b1408;font-weight:800;cursor:pointer}
+.audit-state{min-height:20px;text-align:center;font-size:.84rem;color:#6b4126;margin-top:10px}
+.audit-state.loading{color:#a25b18;font-weight:700}
+.audit-summary{margin-top:12px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+.audit-summary .k{border:1px solid #e2b58d;border-radius:12px;background:linear-gradient(180deg,#fff7ef,#fff1e3);padding:10px;text-align:center}
+.audit-summary .n{font-size:1.3rem;font-weight:800;color:#7a3d11}
+.audit-summary .t{font-size:.8rem;color:#6b4126}
+.preview-note{margin-top:10px;text-align:center;font-size:12px;color:#6c4a35}
+#auditPreviewTableWrap{margin-top:12px;border:1px solid #ddb38d;border-radius:14px;overflow:hidden;background:#fffdfb}
+#auditPreviewTable .tabulator{border:none;background:#fffdfb;font-size:.83rem;color:#3f2819}
+#auditPreviewTable .tabulator-header{border-bottom:1px solid var(--line);background:#fff1e3}
+#auditPreviewTable .tabulator-col,#auditPreviewTable .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
+#auditPreviewTable .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
+#auditPreviewTable .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
+#auditPreviewTable .tabulator-row:hover,#auditPreviewTable .tabulator-row.tabulator-selectable:hover{background:rgba(238,155,47,.08)}
+#auditPreviewTable .tabulator-cell{border-right:1px solid #f3e8dc;padding:9px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#auditPreviewTable .tabulator-footer{border-top:1px solid var(--line);background:#fff8f1;color:#6b4126;font-size:12px;font-weight:700}
+#auditPreviewTable .tabulator-page{border:1px solid #d9d0c5;background:#fff;color:#384658}
+#auditPreviewTable .tabulator-page.active{background:var(--o);color:#2b1408;border-color:var(--o)}
+#auditPreviewTable .tabulator-row.audit-row-aviso{background:rgba(255,193,7,.12)!important}
+#auditPreviewTable .tabulator-row.audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
+#auditPreviewTable .tabulator-row.audit-row-erro{background:rgba(220,53,69,.14)!important}
+#auditPreviewTable .tabulator-row.audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+#auditPreviewTable .tabulator-row.audit-row-local-pending{background:rgba(240,198,79,.10)!important}
+#auditPreviewTable .tabulator-row.audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
+.audit-status{display:inline-flex;align-items:center;justify-content:center;padding:4px 9px;border-radius:999px;font-size:.72rem;font-weight:800;border:1px solid transparent}
+.audit-status-btn{cursor:pointer;transition:transform .15s ease, box-shadow .15s ease;background:none}
+.audit-status-btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(92,52,28,.12)}
+.audit-status-btn[disabled]{cursor:default;opacity:.78;box-shadow:none;transform:none}
+.audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
+.audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
+.audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
+.muted-center{text-align:center;color:#6c4a35;font-size:.82rem}
+@media(max-width:980px){.audit-summary{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){body{padding:12px}.preview-head h1{font-size:28px}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr}}
+@media(max-width:560px){.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr}}
+</style></head><body>
+<main class="preview-shell">
+  <section class="preview-head">
+    <p class="preview-kicker">Preview isolado</p>
+    <h1>Conferência com Tabulator</h1>
+    <p>Este preview existe só para testar como a grade da aba Conferência ficaria usando um grid dinâmico. O painel principal continua igual e esta rota não substitui a tela atual.</p>
+    <div class="preview-actions">
+      <a id="previewBackLink" href="/">Voltar ao painel atual</a>
+      <button type="button" onclick="loadParcelAudit()">Conferir agora</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <h3>Conferência de parcelas lançadas</h3>
+    <div class="audit-filters">
+      <div>
+        <label>Modo</label>
+        <select id="aMode" onchange="toggleAuditFilters()">
+          <option value="mes">Mês do lançamento</option>
+          <option value="nfs">Faixa de NF</option>
+          <option value="todos">Tudo</option>
+        </select>
+      </div>
+      <div>
+        <label>Mês</label>
+        <input id="aMonth" type="month"/>
+      </div>
+      <div>
+        <label>NF inicial</label>
+        <input id="aNfStart" type="text" inputmode="numeric" placeholder="49001"/>
+      </div>
+      <div>
+        <label>NF final</label>
+        <input id="aNfEnd" type="text" inputmode="numeric" placeholder="49100"/>
+      </div>
+      <div style="display:flex;align-items:end;justify-content:center"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
+    </div>
+    <div id="auditStatus" class="audit-state">Pronto para conferir.</div>
+    <div class="audit-summary">
+      <div class="k"><div id="auditK1" class="n">0</div><div class="t">NFs verificadas</div></div>
+      <div class="k"><div id="auditK2" class="n">0</div><div class="t">Com divergência</div></div>
+      <div class="k"><div id="auditK3" class="n">0</div><div class="t">Parcelas esperadas</div></div>
+      <div class="k"><div id="auditK4" class="n">0</div><div class="t">Parcelas lançadas</div></div>
+      <div class="k"><div id="auditK5" class="n">0</div><div class="t">Duplicadas</div></div>
+    </div>
+    <div class="preview-note">Preview Tabulator: ordenação, filtro por coluna, paginação local e mesma API usada pela aba atual.</div>
+    <div id="auditPreviewTableWrap">
+      <div id="auditPreviewTable"></div>
+    </div>
+    <div class="muted-center" style="margin-top:10px">A rota principal continua com a grade atual em HTML. Aqui é só para comparar o comportamento do grid.</div>
+  </section>
+</main>
+<script>
+const _PATH_RESERVED=new Set(['','login','logout','api','assets','static','store-image','favicon.ico','preview']);
+function _basePrefix(){const p=String(window.location.pathname||'/');const segs=p.split('/').filter(Boolean);if(!segs.length)return '';const first=String(segs[0]||'').toLowerCase();if(_PATH_RESERVED.has(first))return '';return `/${segs[0]}`;}
+const _BASE_PREFIX=_basePrefix();
+function _url(path){const p=String(path||'');if(!p.startsWith('/'))return p;if(!_BASE_PREFIX)return p;return p.startsWith(`${_BASE_PREFIX}/`)||p===_BASE_PREFIX?p:`${_BASE_PREFIX}${p}`;}
+async function api(path,opts){const r=await fetch(_url(path),opts);const j=await r.json().catch(()=>({}));if(r.status===401){window.location.href=_url('/login');throw new Error('não autenticado');}if(!r.ok){throw new Error(String((j&&j.message)||`HTTP ${r.status}`));}return j;}
+function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
+function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
+function _compactClienteLabel(cliente,descricao){
+  const fonte=_compactSpaces(descricao||cliente||'');
+  if(!fonte)return '-';
+  const blt=(fonte.match(/\\bBLT[\\s:-]*(\\d+(?:-\\d+)*)\\b/i)||[])[1]||'';
+  let base=fonte.replace(/\\bBLT[\\s:-]*\\d+(?:-\\d+)*.*$/i,'').trim();
+  if(!base)base=fonte;
+  const palavras=base.split(/\\s+/).filter(Boolean);
+  const uteis=palavras.filter(p=>!/^(DE|DA|DO|DAS|DOS|E)$/i.test(p));
+  const escolhidas=(uteis.length?uteis:palavras).slice(0,blt?2:3).join(' ');
+  const nomeCurto=_compactSpaces(escolhidas||base);
+  return _compactSpaces(blt?`${nomeCurto} ${blt}`:nomeCurto);
+}
+function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
+function _fmtDateTime(v){const ms=Date.parse(String(v||''));if(!Number.isFinite(ms))return String(v||'-')||'-';return new Date(ms).toLocaleString('pt-BR');}
+function _fmtAuditDate(v){
+  const txt=String(v||'').trim();
+  if(!txt||txt==='-'||txt.toLowerCase()==='invalid date')return '-';
+  if(/^\\d{4}-\\d{2}-\\d{2}$/.test(txt)){const [y,m,d]=txt.split('-');return `${d}/${m}/${y}`;}
+  if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt))return txt;
+  return _fmtDateTime(txt);
+}
+function _auditDateSortValue(value){
+  const txt=String(value||'').trim();
+  if(!txt||txt==='-'||txt.toLowerCase()==='invalid date')return 0;
+  if(/^\\d{4}-\\d{2}-\\d{2}$/.test(txt))return Date.parse(`${txt}T00:00:00`)||0;
+  if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt)){const [d,m,y]=txt.split('/');return Date.parse(`${y}-${m}-${d}T00:00:00`)||0;}
+  const ms=Date.parse(txt);
+  return Number.isFinite(ms)?ms:0;
+}
+function _statusRank(status){const txt=String(status||'').trim().toLowerCase();if(txt==='erro')return 0;if(txt==='aviso')return 1;return 2;}
+function _setAuditStatus(message,loading=false){
+  const el=document.getElementById('auditStatus');
+  const btn=document.getElementById('auditRunBtn');
+  if(el){el.textContent=String(message||'Pronto para conferir.');el.classList.toggle('loading',!!loading);}
+  if(btn){btn.disabled=!!loading;btn.textContent=loading?'Conferindo...':'Conferir parcelas';}
+}
+function _setAuditSummary(summary){
+  const s=summary||{};
+  [['auditK1','nfs_verificadas'],['auditK2','nfs_com_divergencia'],['auditK3','parcelas_esperadas'],['auditK4','parcelas_lancadas'],['auditK5','parcelas_duplicadas']].forEach(([id,key])=>{
+    const el=document.getElementById(id);
+    if(el)el.textContent=String(s[key]||0);
+  });
+}
+function toggleAuditFilters(){
+  const mode=((document.getElementById('aMode')||{}).value||'mes').trim();
+  const monthEl=document.getElementById('aMonth');
+  const startEl=document.getElementById('aNfStart');
+  const endEl=document.getElementById('aNfEnd');
+  if(monthEl)monthEl.disabled=mode!=='mes';
+  if(startEl)startEl.disabled=mode!=='nfs';
+  if(endEl)endEl.disabled=mode!=='nfs';
+}
+let _auditPreviewTable=null;
+function _auditStatusFormatter(cell){
+  const data=cell.getRow().getData()||{};
+  const label=String(data.status_label||'-');
+  const title=String(data.status_title||'').trim();
+  if(data.delete_enabled){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className=`audit-status audit-status-btn ${data.status||'ok'}`;
+    btn.textContent=label;
+    btn.disabled=!!data.local_removed||!!data.local_pending;
+    btn.title=title||'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha';
+    btn.addEventListener('click',async(ev)=>{ev.preventDefault();ev.stopPropagation();await deleteAuditRow(cell.getRow());});
+    return btn;
+  }
+  const span=document.createElement('span');
+  span.className=`audit-status ${data.status||'ok'}`;
+  span.textContent=label;
+  if(title)span.title=title;
+  return span;
+}
+function _ensureAuditPreviewTable(){
+  if(_auditPreviewTable)return _auditPreviewTable;
+  _auditPreviewTable=new Tabulator('#auditPreviewTable',{
+    data:[],
+    layout:'fitColumns',
+    responsiveLayout:'collapse',
+    pagination:'local',
+    paginationSize:15,
+    paginationCounter:'rows',
+    movableColumns:true,
+    resizableColumns:true,
+    placeholder:'Nenhuma NF encontrada para os filtros selecionados.',
+    initialSort:[{column:'status_rank',dir:'asc'},{column:'nf_num',dir:'desc'}],
+    columns:[
+      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:110,sorter:function(a,b,aRow,bRow){return (aRow.getData().status_rank||0)-(bRow.getData().status_rank||0);},formatter:_auditStatusFormatter},
+      {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:92,sorter:'number',headerFilter:'input'},
+      {title:'Cliente',field:'cliente_view',minWidth:240,headerFilter:'input'},
+      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:112,sorter:'number',formatter:function(cell){const data=cell.getRow().getData()||{};const count=Number(data.qtd_duplicada||0);const view=String(data.duplicadas_view||'').trim();if(count>0&&view&&view!=='-'){return `<span title="${_esc(view)}">${count} - ${_esc(view)}</span>`;}return String(count||0);}},
+      {title:'Últ. venc.',field:'ultimo_vencimento_view',hozAlign:'center',headerHozAlign:'center',width:128,sorter:function(a,b,aRow,bRow){return (aRow.getData().ultimo_vencimento_sort||0)-(bRow.getData().ultimo_vencimento_sort||0);}},
+      {title:'Aba',field:'local_view',minWidth:150,headerFilter:'input'}
+    ],
+    rowFormatter:function(row){
+      const el=row.getElement();
+      const data=row.getData()||{};
+      el.classList.remove('audit-row-aviso','audit-row-erro','audit-row-local-pending','audit-row-local-removed');
+      if(data.local_removed)el.classList.add('audit-row-local-removed');
+      else if(data.local_pending)el.classList.add('audit-row-local-pending');
+      else if(data.status==='erro')el.classList.add('audit-row-erro');
+      else if(data.status==='aviso')el.classList.add('audit-row-aviso');
+      const reason=String(data.reason_hint||'').trim();
+      if(reason)el.title=reason;
+    }
+  });
+  return _auditPreviewTable;
+}
+function _mapAuditItems(items){
+  return (Array.isArray(items)?items:[]).map((it)=>{
+    const reason=String(it.reason_hint||'').trim();
+    const local=String(it.local_lancamento||it.aba||'-');
+    const lastDueRaw=String(it.ultimo_vencimento||it.ultimo_lancamento||'');
+    const duplicadasView=Number(it.qtd_duplicada||0)>0?((Array.isArray(it.parcelas_duplicadas)?it.parcelas_duplicadas:[]).map(v=>_compactSpaces(v)).filter(Boolean).join(', ')||'-'):'-';
+    const deleteCandidates=Math.max(0,Number(it.delete_candidates||0));
+    return Object.assign({},it,{
+      nf_num:Number(it.nf||0),
+      status_rank:_statusRank(it.status||''),
+      cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+      local_view:_fmtLocal(local),
+      ultimo_vencimento_view:_fmtAuditDate(lastDueRaw),
+      ultimo_vencimento_sort:_auditDateSortValue(lastDueRaw),
+      duplicadas_view:duplicadasView,
+      delete_enabled:!!(it.status&&it.status!=='ok'&&deleteCandidates>0),
+      status_title:reason || (deleteCandidates>0?'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha':''),
+      local_removed:false,
+      local_pending:false
+    });
+  });
+}
+async function deleteAuditRow(row){
+  const data=row&&typeof row.getData==='function'?row.getData():null;
+  if(!data)return;
+  const auditKey=String(data.audit_key||'').trim();
+  const nfView=String(data.nf||'-').trim()||'-';
+  const count=Math.max(0,Number(data.delete_candidates||0));
+  if(!auditKey||count<=0){alert(`A NF ${nfView} não tem linhas removíveis automaticamente na planilha.`);return;}
+  const msg=`Tem certeza que deseja limpar ${count} linha(s) excedente(s)/duplicada(s) da NF ${nfView} direto na planilha?\\nEssa ação apaga apenas o conteúdo das linhas identificadas como sobra na Conferência, sem reordenar o restante.`;
+  if(!confirm(msg))return;
+  await row.update({local_pending:true});
+  _setAuditStatus(`Aplicando limpeza da NF ${nfView} na planilha...`,true);
+  try{
+    const res=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({audit_key:auditKey})});
+    await row.update({local_pending:false,local_removed:true});
+    _setAuditStatus(String((res&&res.message)||`Limpeza da NF ${nfView} aplicada com sucesso.`),false);
+  }catch(err){
+    await row.update({local_pending:false,local_removed:false});
+    _setAuditStatus('Falha ao limpar na planilha.',false);
+    alert('Erro ao limpar na planilha: '+String(err&&err.message||err));
+  }
+}
+async function loadParcelAudit(){
+  _setAuditStatus('Conferindo planilhas...',true);
+  try{
+    const p=new URLSearchParams();
+    const mode=((document.getElementById('aMode')||{}).value||'mes').trim()||'mes';
+    const monthValue=((document.getElementById('aMonth')||{}).value||'').trim();
+    const nfStart=((document.getElementById('aNfStart')||{}).value||'').trim();
+    const nfEnd=((document.getElementById('aNfEnd')||{}).value||'').trim();
+    p.set('filtro',mode);
+    if(mode==='mes'&&monthValue)p.set('mes',monthValue);
+    if(mode==='nfs'&&nfStart)p.set('nf_inicio',nfStart);
+    if(mode==='nfs'&&nfEnd)p.set('nf_fim',nfEnd);
+    const data=await api('/api/conferencia-parcelas?'+p.toString());
+    _setAuditSummary((data&&data.summary)||{});
+    const table=_ensureAuditPreviewTable();
+    table.setData(_mapAuditItems((data&&data.items)||[]));
+    const meta=(data&&data.meta)||{};
+    const loadedAt=String(meta.loaded_at||'').trim();
+    const linhas=Number(meta.linhas_lidas||0);
+    const abas=Number(meta.abas_lidas||0);
+    const statusMsg=loadedAt?`Conferência atualizada em ${_fmtDateTime(loadedAt)} | ${linhas} linhas lidas em ${abas} abas`:'Conferência atualizada.';
+    _setAuditStatus(statusMsg,false);
+  }catch(err){
+    _setAuditSummary({});
+    const table=_ensureAuditPreviewTable();
+    table.setData([]);
+    _setAuditStatus('Falha ao conferir as planilhas.',false);
+    alert('Erro ao carregar conferência: '+String(err&&err.message||err));
+  }
+}
+function handleAuditFieldKeydown(ev){
+  if(ev.key!=='Enter')return;
+  ev.preventDefault();
+  const mode=String((document.getElementById('aMode')||{}).value||'mes').trim();
+  const currentId=String((ev&&ev.target&&ev.target.id)||'').trim();
+  if(currentId==='aMode'){
+    if(mode==='nfs'){document.getElementById('aNfStart').focus();return;}
+    if(mode==='mes'){document.getElementById('aMonth').focus();return;}
+    loadParcelAudit();return;
+  }
+  if(mode==='mes'){loadParcelAudit();return;}
+  if(mode==='nfs'&&currentId==='aNfStart'){document.getElementById('aNfEnd').focus();return;}
+  loadParcelAudit();
+}
+document.getElementById('previewBackLink').setAttribute('href',_url('/'));
+['aMode','aMonth','aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(el)el.addEventListener('keydown',handleAuditFieldKeydown);});
+try{document.getElementById('aMonth').value=new Date().toISOString().slice(0,7);}catch(_){}
+toggleAuditFilters();
+_ensureAuditPreviewTable();
+</script></body></html>"""
+
 def start_server(host: str, port: int, no_loop: bool = False):
     _load_auth()
     _load_settings()
@@ -7370,6 +7698,8 @@ def start_server(host: str, port: int, no_loop: bool = False):
             if not user:
                 return
 
+            if parsed.path == "/preview/tabulator/conferencia":
+                return _html_response(self, 200, _render_audit_tabulator_preview_html())
             if parsed.path == "/":
                 return _html_response(self, 200, _render_server_html())
             if parsed.path == "/api/state":

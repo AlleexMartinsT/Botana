@@ -141,6 +141,8 @@ No `instances.json` do Hub, use:
 - Os textos explicativos longos de `Conferência` e `Prazos` passaram a ficar em `?` ao lado do título da seção, para a interface ficar mais limpa.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
 
+- Existe uma rota isolada de preview em `/preview/tabulator/conferencia` para comparar uma versÃ£o Tabulator da `ConferÃªncia`, com paginaÃ§Ã£o local, filtros por coluna e ordenaÃ§Ã£o dinÃ¢mica, sem substituir a aba atual do painel.
+
 ## Prazos no painel
 
 - A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.
