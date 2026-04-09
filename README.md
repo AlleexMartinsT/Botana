@@ -143,6 +143,8 @@ No `instances.json` do Hub, use:
 
 - Existe uma rota isolada de preview em `/preview/tabulator/conferencia` para comparar uma versÃ£o Tabulator da `ConferÃªncia`, com paginaÃ§Ã£o local, filtros por coluna e ordenaÃ§Ã£o dinÃ¢mica, sem substituir a aba atual do painel.
 
+- A aba real da `ConferÃªncia` agora usa `Tabulator` no front para ordenaÃ§Ã£o nativa, filtros por coluna, paginaÃ§Ã£o local e resize de colunas, com fallback automÃ¡tico para a grade HTML antiga se a biblioteca nÃ£o carregar.
+
 ## Prazos no painel
 
 - A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.

@@ -5226,6 +5226,8 @@ def _render_server_html() -> str:
     return """<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Botana - Painel</title>
+<link rel="preconnect" href="https://unpkg.com" crossorigin />
+<link rel="stylesheet" href="https://unpkg.com/tabulator-tables@6.3.1/dist/css/tabulator.min.css" />
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Lexend:wght@300;400;600;700;800&display=swap');
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
@@ -5401,6 +5403,27 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-local-removed{background:transparent!important}
 .audit-row-local-removed:hover{background:transparent!important}
 .audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
+.audit-tabulator{display:none}
+.audit-tabulator.active{display:block}
+#auditTableTabulator{border:1px solid #ddb38d;border-radius:10px;overflow:hidden;background:#fffdfb}
+#auditTableTabulator .tabulator{border:none;background:#fffdfb;font-size:.8rem;color:#3f2819}
+#auditTableTabulator .tabulator-header{border-bottom:1px solid #e7c4a5;background:#fff1e3}
+#auditTableTabulator .tabulator-col,
+#auditTableTabulator .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
+#auditTableTabulator .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
+#auditTableTabulator .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
+#auditTableTabulator .tabulator-row:hover,
+#auditTableTabulator .tabulator-row.tabulator-selectable:hover{background:rgba(238,155,47,.08)}
+#auditTableTabulator .tabulator-cell{border-right:1px solid #f3e8dc;padding:8px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#auditTableTabulator .tabulator-footer{border-top:1px solid #e7c4a5;background:#fff8f1;color:#6b4126;font-size:12px;font-weight:700}
+#auditTableTabulator .tabulator-page{border:1px solid #d9d0c5;background:#fff;color:#384658}
+#auditTableTabulator .tabulator-page.active{background:var(--o);color:#2b1408;border-color:var(--o)}
+#auditTableTabulator .tabulator-row.audit-row-aviso{background:rgba(255,193,7,.12)!important}
+#auditTableTabulator .tabulator-row.audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
+#auditTableTabulator .tabulator-row.audit-row-erro{background:rgba(220,53,69,.14)!important}
+#auditTableTabulator .tabulator-row.audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+#auditTableTabulator .tabulator-row.audit-row-local-pending{background:rgba(240,198,79,.10)!important}
+#auditTableTabulator .tabulator-row.audit-row-local-pending:hover{background:rgba(240,198,79,.16)!important}
 .watch-title{text-align:center}
 .watch-filters{display:grid;grid-template-columns:1fr;gap:8px;align-items:center;justify-items:center}
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
@@ -5488,7 +5511,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
-</style></head><body>
+</style>
+<script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
+</head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
   <section class="top">
@@ -5764,7 +5789,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="k"><div id="auditK5" class="n">0</div><div class="t">Duplicadas</div></div>
       </div>
       <div class="table-wrap" style="margin-top:10px">
-        <table class="audit-table">
+        <div id="auditTableTabulator" class="audit-tabulator"></div>
+        <table id="auditTableLegacy" class="audit-table">
           <colgroup>
             <col class="audit-col-status"/>
             <col class="audit-col-nf"/>
@@ -6589,6 +6615,7 @@ let _auditDeleteInFlight=false;
 const _auditDeleteDelayMs=3000;
 let _auditItems=[];
 let _auditSort={key:'',dir:'asc'};
+let _auditTable=null;
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -6816,7 +6843,108 @@ function _fmtAuditDate(v){
   if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt))return txt;
   return _fmtDateTime(txt);
 }
+function _auditHasTabulator(){return typeof window.Tabulator==='function';}
+function _toggleAuditRenderMode(useTabulator){
+  const host=document.getElementById('auditTableTabulator');
+  const legacy=document.getElementById('auditTableLegacy');
+  if(host)host.classList.toggle('active',!!useTabulator);
+  if(legacy)legacy.style.display=useTabulator?'none':'table';
+}
+function _auditResolveRowTarget(target){
+  if(target&&typeof target.getData==='function')return target;
+  if(target&&target.row&&typeof target.row.getData==='function')return target.row;
+  return null;
+}
+function _mapAuditRow(it){
+  const reasonHint=_compactSpaces(it.reason_hint||'');
+  const local=_fmtLocal(it.local_lancamento||it.aba||'-');
+  const ultimoVenc=_fmtAuditDate(it.ultimo_vencimento||it.ultimo_lancamento);
+  const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
+  const deleteCandidates=Number(it.delete_candidates||0);
+  return Object.assign({},it,{
+    _nf_num:Number(it.nf||0),
+    _status_rank:_auditStatusRank(it.status||''),
+    _cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+    _duplicadas_view:duplicadasTxt,
+    _local_view:local,
+    _ultimo_venc_view:ultimoVenc,
+    _ultimo_venc_sort:_auditDateSortValue(it.ultimo_vencimento||it.ultimo_lancamento||''),
+    _status_title:reasonHint || (deleteCandidates>0 ? 'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha' : ''),
+    _delete_enabled:!!(it.status&&it.status!=='ok'&&deleteCandidates>0),
+    _local_pending:false,
+    _local_removed:false,
+  });
+}
+function _auditStatusCellFormatter(cell){
+  const data=cell.getRow().getData()||{};
+  const label=String(data.status_label||'-');
+  const title=String(data._status_title||'').trim();
+  if(data._delete_enabled){
+    const btn=document.createElement('button');
+    btn.type='button';
+    btn.className=`audit-status audit-status-btn ${data.status||'ok'}`;
+    btn.textContent=label;
+    btn.disabled=!!data._local_removed||!!data._local_pending;
+    btn.title=title||'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha';
+    btn.addEventListener('click',async(ev)=>{
+      ev.preventDefault();
+      ev.stopPropagation();
+      await deleteAuditRows({row:cell.getRow()},data.audit_key,data.nf,data.status_label,data.delete_candidates);
+    });
+    return btn;
+  }
+  const span=document.createElement('span');
+  span.className=`audit-status ${data.status||'ok'}`;
+  span.textContent=label;
+  if(title)span.title=title;
+  return span;
+}
+function _ensureAuditTabulator(){
+  if(!_auditHasTabulator())return null;
+  if(_auditTable)return _auditTable;
+  _auditTable=new Tabulator('#auditTableTabulator',{
+    data:[],
+    layout:'fitColumns',
+    responsiveLayout:'collapse',
+    pagination:'local',
+    paginationSize:14,
+    paginationCounter:'rows',
+    movableColumns:true,
+    resizableColumns:true,
+    placeholder:'Nenhuma NF encontrada para os filtros selecionados',
+    columns:[
+      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:108,sorter:function(a,b,aRow,bRow){return (aRow.getData()._status_rank||0)-(bRow.getData()._status_rank||0);},formatter:_auditStatusCellFormatter},
+      {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:90,sorter:'number',headerFilter:'input'},
+      {title:'Cliente',field:'_cliente_view',minWidth:240,headerFilter:'input'},
+      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:116,sorter:'number',formatter:function(cell){
+        const data=cell.getRow().getData()||{};
+        const count=Number(data.qtd_duplicada||0);
+        const txt=String(data._duplicadas_view||'').trim();
+        if(count>0&&txt&&txt!=='0'&&txt!=='-')return `<span title="${_esc(txt)}">${count} - ${_esc(txt)}</span>`;
+        return String(count||0);
+      }},
+      {title:'Últ. venc.',field:'_ultimo_venc_view',hozAlign:'center',headerHozAlign:'center',width:128,sorter:function(a,b,aRow,bRow){return (aRow.getData()._ultimo_venc_sort||0)-(bRow.getData()._ultimo_venc_sort||0);}},
+      {title:'Aba',field:'_local_view',minWidth:150,headerFilter:'input'},
+    ],
+    rowFormatter:function(row){
+      const el=row.getElement();
+      const data=row.getData()||{};
+      el.classList.remove('audit-row-aviso','audit-row-erro','audit-row-local-pending','audit-row-local-removed');
+      if(data._local_removed)el.classList.add('audit-row-local-removed');
+      else if(data._local_pending)el.classList.add('audit-row-local-pending');
+      else if(data.status==='erro')el.classList.add('audit-row-erro');
+      else if(data.status==='aviso')el.classList.add('audit-row-aviso');
+      const reason=String(data.reason_hint||'').trim();
+      if(reason)el.title=reason;
+    },
+  });
+  return _auditTable;
+}
 function _initAuditSortHeaders(){
+  if(_auditHasTabulator())return;
   const keys=['status','nf','cliente','esperada','lancada','faltando','duplicada','vencimento','local'];
   const ths=document.querySelectorAll('.audit-table thead th');
   ths.forEach((th,idx)=>{
@@ -6873,6 +7001,7 @@ function _sortAudit(items){
   });
 }
 function _setAuditSort(key){
+  if(_auditHasTabulator())return;
   const next=String(key||'').trim();
   if(!next)return;
   const ths=document.querySelectorAll('.audit-table th.sortable');
@@ -6884,6 +7013,7 @@ function _setAuditSort(key){
   _renderParcelAudit(_auditItems);
 }
 function _bindAuditSortHeaders(){
+  if(_auditHasTabulator())return;
   _initAuditSortHeaders();
   document.querySelectorAll('.audit-table th.sortable').forEach(th=>{
     if(th.dataset.sortReady==='1')return;
@@ -6914,6 +7044,15 @@ function _setAuditSummary(summary){
 }
 function _renderParcelAudit(items){
   _auditItems=Array.isArray(items)?items:[];
+  if(_auditHasTabulator()){
+    const table=_ensureAuditTabulator();
+    _toggleAuditRenderMode(!!table);
+    if(table){
+      table.setData(_auditItems.map(_mapAuditRow));
+      return;
+    }
+  }
+  _toggleAuditRenderMode(false);
   const body=document.getElementById('aBody');
   if(!body)return;
   const arr=_sortAudit(_auditItems);
@@ -6945,6 +7084,11 @@ function _renderParcelAudit(items){
   });
 }
 function _markAuditRowDeletedLocal(btn,message){
+  const auditRow=_auditResolveRowTarget(btn);
+  if(auditRow){
+    try{auditRow.update({_local_pending:false,_local_removed:true});}catch(_){}
+    return;
+  }
   const row=btn&&btn.closest?btn.closest('tr'):null;
   if(row){
     row.classList.remove('audit-row-erro','audit-row-aviso','audit-row-local-pending');
@@ -6956,6 +7100,11 @@ function _markAuditRowDeletedLocal(btn,message){
   }
 }
 function _markAuditRowPendingLocal(btn,message){
+  const auditRow=_auditResolveRowTarget(btn);
+  if(auditRow){
+    try{auditRow.update({_local_removed:false,_local_pending:true});}catch(_){}
+    return;
+  }
   const row=btn&&btn.closest?btn.closest('tr'):null;
   if(row){
     row.classList.remove('audit-row-local-removed');
@@ -6967,6 +7116,11 @@ function _markAuditRowPendingLocal(btn,message){
   }
 }
 function _restoreAuditRowDeleteLocal(btn,message){
+  const auditRow=_auditResolveRowTarget(btn);
+  if(auditRow){
+    try{auditRow.update({_local_pending:false,_local_removed:false});}catch(_){}
+    return;
+  }
   const row=btn&&btn.closest?btn.closest('tr'):null;
   if(row){
     row.classList.remove('audit-row-local-pending');
@@ -7069,6 +7223,10 @@ async function loadParcelAudit(silent=false){
     if(reqId!==_auditLoadSeq)return;
     if(!silent)console.warn('Erro ao carregar conferência:',err);
     _setAuditSummary({});
+    if(_auditHasTabulator()&&_auditTable){
+      _auditTable.setData([]);
+      _toggleAuditRenderMode(true);
+    }
     const body=document.getElementById('aBody');
     if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
     _setAuditLoading(false,'Falha ao conferir as planilhas.');
