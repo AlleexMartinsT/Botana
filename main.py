@@ -2863,6 +2863,8 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
 
     itens_saida = []
     audit_delete_cache = {}
+    missing_reason_cache = {}
+    missing_reason_state = {}
     resumo = {
         "nfs_verificadas": 0,
         "nfs_ok": 0,
@@ -2872,6 +2874,12 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "parcelas_duplicadas": 0,
     }
     nfs_vistas_no_escopo = set()
+    diagnose_missing_nfs = (
+        filtro_normalizado == "nfs"
+        and nf_inicio_num is not None
+        and nf_fim_num is not None
+        and (nf_fim_num - nf_inicio_num) <= 40
+    )
 
     for _, nf_items in grupos.items():
         if not _matches_scope(nf_items):
@@ -3013,12 +3021,18 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         for nf_num in range(nf_inicio_num, nf_fim_num + 1):
             if nf_num in nfs_vistas_no_escopo:
                 continue
+            reason_hint = ""
+            if diagnose_missing_nfs:
+                reason_hint = missing_reason_cache.get(nf_num)
+                if reason_hint is None:
+                    reason_hint = _audit_missing_nf_reason(nf_num, state=missing_reason_state)
+                    missing_reason_cache[nf_num] = reason_hint
             itens_saida.append(
                 {
                     "audit_key": f"missing:{nf_num}",
                     "nf": str(nf_num),
-                    "cliente": "NF ausente na planilha",
-                    "descricao": "NF ausente na planilha",
+                    "cliente": "-",
+                    "descricao": "-",
                     "qtd_esperada": 0,
                     "qtd_lancada": 0,
                     "qtd_bruta": 0,
@@ -3027,11 +3041,12 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
                     "qtd_duplicada": 0,
                     "parcelas_duplicadas": [],
                     "vencimentos": [],
-                    "ultimo_vencimento": "",
+                    "ultimo_vencimento": "-",
                     "aba": "-",
-                    "local_lancamento": "Nao encontrada na planilha",
+                    "local_lancamento": "-",
                     "status": "erro",
                     "status_label": "NF ausente",
+                    "reason_hint": reason_hint,
                     "delete_candidates": 0,
                     "can_delete_rows": False,
                 }
@@ -4070,6 +4085,81 @@ def _recovery_match_details(
         "attachment_text": text,
         "warning_note": warning_note if attachment_match else "",
     }
+
+
+def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
+    try:
+        nf_value = int(nf_num or 0)
+    except Exception:
+        return ""
+    if nf_value <= 0:
+        return ""
+    ctx = state if isinstance(state, dict) else {}
+    if ctx.get("disabled"):
+        return ""
+    attachment_text_cache = ctx.setdefault("attachment_text_cache", {})
+    service = ctx.get("service")
+    if service is None:
+        try:
+            service = _get_gmail_service_locked(timeout=0.5)
+        except Exception:
+            ctx["disabled"] = True
+            return ""
+        ctx["service"] = service
+    query = _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), str(nf_value))
+    page_token = None
+    pages = 0
+    seen_ids = set()
+    while pages < 2 and len(seen_ids) < 12:
+        try:
+            batch, next_page_token = buscarMessagesEnviadosPagina(
+                service,
+                max_results=8,
+                page_token=page_token,
+                query=query,
+            )
+        except Exception as exc:
+            logger.warning("Falha ao diagnosticar NF ausente %s no Gmail: %s", nf_value, exc)
+            ctx["disabled"] = True
+            return ""
+        pages += 1
+        if not batch and not next_page_token:
+            break
+        for item in batch:
+            msg_id = str(item.get("id", "")).strip()
+            if not msg_id or msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+            preview = _preview_from_message_item(item)
+            attachment_text = str(attachment_text_cache.get(msg_id, "") or "").strip()
+            match_info = _recovery_match_details(
+                service,
+                msg_id,
+                preview,
+                mode="list",
+                nf_list=[nf_value],
+                attachment_text=attachment_text,
+            )
+            attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+            warning_note = str(match_info.get("warning_note", "") or "").strip()
+            date_view = str(preview.get("date", "") or "").strip()
+            subject_view = str(preview.get("subject", "") or "").strip()
+            context = " | ".join(part for part in (date_view, subject_view) if part)
+            if warning_note:
+                base = f"{warning_note}"
+                if context:
+                    base = f"{base} E-mail: {context}."
+                if bool(match_info.get("matched")):
+                    return f"{base} A recuperacao consegue localizar esta NF pelos anexos/XML."
+                return base
+            if bool(match_info.get("matched")):
+                if context:
+                    return f"E-mail com XML localizado no Gmail para esta NF. {context}."
+                return "E-mail com XML localizado no Gmail para esta NF."
+        if not next_page_token:
+            break
+        page_token = next_page_token
+    return ""
 
 
 def _message_matches_recovery_filters(
@@ -6586,10 +6676,13 @@ function _renderParcelAudit(items){
     const statusLabel=_esc(it.status_label||'-');
     const auditKey=_esc(it.audit_key||'');
     const nfValue=_esc(it.nf||'-');
-    const statusCell=(it.status&&it.status!=='ok')
-      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
-      : `<span class="audit-status ${_esc(it.status||'ok')}">${statusLabel}</span>`;
-    tr.innerHTML=`<td>${statusCell}</td><td title="${nfValue}">${nfValue}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    const reasonHint=_compactSpaces(it.reason_hint||'');
+    const statusTitle=reasonHint || (deleteCandidates>0 ? 'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha' : '');
+    if(reasonHint)tr.title=reasonHint;
+    const statusCell=(it.status&&it.status!=='ok'&&deleteCandidates>0)
+      ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="${_esc(statusTitle)}" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
+      : `<span class="audit-status ${_esc(it.status||'ok')}"${statusTitle?` title="${_esc(statusTitle)}"`:''}>${statusLabel}</span>`;
+    tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
 }

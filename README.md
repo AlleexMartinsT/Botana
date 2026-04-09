@@ -129,7 +129,8 @@ No `instances.json` do Hub, use:
 - Cliques em sequência no `Status` da Conferência entram em uma fila de até `3s` e são enviados em lote, usando o snapshot recém-carregado da aba em vez de reler todas as planilhas a cada exclusão.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
-- No filtro por `Faixa de NF`, a `Conferência` também passa a incluir linhas sintéticas de `NF ausente` quando algum número do intervalo não existe na planilha, para deixar explícito qual NF está faltando.
+- No filtro por `Faixa de NF`, a `Conferência` também passa a incluir linhas sintéticas de `NF ausente` quando algum número do intervalo não existe na planilha, com `-` nos campos textuais para não poluir a leitura da grade.
+- Quando a `NF ausente` puder ser explicada pelo Gmail, a linha mostra esse motivo no hover; badges de `Status` só ficam clicáveis quando há linhas reais para limpar.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
 
 ## Prazos no painel
