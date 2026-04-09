@@ -81,6 +81,7 @@ No `instances.json` do Hub, use:
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando por padrão as mensagens mais recentes ainda marcadas com a label do Botana nas últimas duas semanas.
 - A explicação desse fluxo no card `Reprocessar e-mails` fica sob um ícone pequeno de `?`, em vez de texto fixo ocupando espaço no painel.
 - Os cards `Reprocessar e-mails` e `Recuperar e-mails` agora mostram esse `?` ao lado do próprio título, em vez de deixar a ajuda solta abaixo dos campos.
+- O balão de ajuda desses `?` abre alinhado ao ícone e foi ajustado para não ser cortado pela lateral do painel.
 - Para mensagens mais antigas do que essa janela padrão, o caminho recomendado é `Recuperar e-mails`.
 - O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.

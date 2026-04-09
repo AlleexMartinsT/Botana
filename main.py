@@ -5100,7 +5100,7 @@ def _render_server_html() -> str:
 :root{--o:#da7a1c;--o2:#ee9b2f;--b:#4a2b18;--bg:#f8efe6;--br:#e4c6a7}
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:linear-gradient(160deg,rgba(41,22,11,.78),rgba(95,56,28,.72)),url('/assets/store-bg') center/cover fixed;display:flex;justify-content:center;align-items:center;padding:12px;color:#2a1b12}
-.app{width:min(1150px,100%);border-radius:18px;overflow:hidden;border:1px solid rgba(231,200,168,.9);background:linear-gradient(180deg,rgba(255,250,246,.96),rgba(255,245,235,.92));box-shadow:0 24px 60px rgba(21,11,6,.35)}
+.app{width:min(1150px,100%);border-radius:18px;overflow:visible;border:1px solid rgba(231,200,168,.9);background:linear-gradient(180deg,rgba(255,250,246,.96),rgba(255,245,235,.92));box-shadow:0 24px 60px rgba(21,11,6,.35)}
 .top{padding:14px 20px;background:linear-gradient(90deg,var(--b),var(--o));color:#fff9f3;font-weight:700;display:flex;justify-content:space-between;align-items:center;gap:8px}
 .top-right{display:flex;align-items:center;gap:8px}
 .whoami{font-size:.82rem;opacity:.95}
@@ -5177,10 +5177,10 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
-.help-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;border:1px solid #d6b18f;background:#fff7ef;color:#7a4d30;font-size:.8rem;font-weight:800;line-height:1;cursor:help;user-select:none}
+.help-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;border:1px solid #d6b18f;background:#fff7ef;color:#7a4d30;font-size:.8rem;font-weight:800;line-height:1;cursor:help;user-select:none;z-index:30}
 .help-tip:hover,.help-tip:focus-visible{background:#fff1e3;outline:none}
-.help-tip-bubble{position:absolute;left:50%;top:calc(100% + 8px);transform:translate(-50%,-4px);width:min(320px,calc(100vw - 48px));padding:10px 12px;border-radius:12px;border:1px solid #e2b58d;background:#fffaf5;color:#6b4128;font-size:.78rem;font-weight:500;line-height:1.45;box-shadow:0 10px 24px rgba(21,11,6,.16);opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:6;text-align:left}
-.help-tip:hover .help-tip-bubble,.help-tip:focus-visible .help-tip-bubble{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.help-tip-bubble{position:absolute;right:0;left:auto;top:calc(100% + 8px);transform:translateY(-4px);width:min(320px,calc(100vw - 40px));max-width:min(320px,calc(100vw - 40px));padding:10px 12px;border-radius:12px;border:1px solid #e2b58d;background:#fffaf5;color:#6b4128;font-size:.78rem;font-weight:500;line-height:1.45;box-shadow:0 10px 24px rgba(21,11,6,.16);opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:40;text-align:left}
+.help-tip:hover .help-tip-bubble,.help-tip:focus-visible .help-tip-bubble{opacity:1;transform:translateY(0);pointer-events:auto}
 .recover-shell{max-width:920px;margin:0 auto;display:grid;gap:12px}
 .recover-grid{display:grid;grid-template-columns:minmax(160px,220px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:10px 14px;align-items:start}
 .recover-group,.recover-mode-box,.recover-range-box,.recover-period-box,.recover-list-box,.recover-action-box{width:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:12px;border:1px solid rgba(211,172,139,.72);border-radius:14px;background:rgba(255,252,247,.88)}
@@ -5355,7 +5355,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
 </style></head><body>
 <div id="ov" class="ov"><div class="ovb"><h4>Reautenticação em andamento</h4><p>Troque para a conta correta no navegador<br/>A autenticação começará em:</p><div id="cnt" class="cnt">5</div></div></div>
 <main class="app">
