@@ -66,6 +66,7 @@ No `instances.json` do Hub, use:
 - O card `Recuperar e-mails` procura mensagens com XML pelos filtros informados e já executa a leitura em seguida para tentar lançar no financeiro.
 - A recuperação agora tem três modos: `Período`, `Faixa de NF` e `Escolha manual`, em que você monta uma lista própria de NFs como `20247` e `20344`.
 - O layout do card `Recuperar e-mails` ficou centralizado e agrupado em blocos, e o filtro ativo agora se recompõe automaticamente conforme o `Modo` escolhido.
+- O card `Recuperar e-mails` ficou mais responsivo: em telas menores os blocos passam a empilhar melhor, e no modo `Faixa de NF` o `Enter` no primeiro campo avança para o segundo antes de confirmar a recuperação.
 - Os campos preenchíveis de `Recuperar e-mails` ficaram mais compactos, o botão foi isolado em uma linha própria, e o campo visual de `Limite de mensagens` saiu da UI.
 - A recuperação não depende mais de ausência de label; ela pode reler mensagens já marcadas pelo Botana, e o bloqueio de duplicidade continua acontecendo no writer da planilha.
 - Quando o e-mail vier com boleto PDF válido mas o XML estiver sem parcelas, o Botana agora reconstrói a parcela diretamente do boleto e consegue lançar casos como a `NF 20571`.
@@ -79,6 +80,7 @@ No `instances.json` do Hub, use:
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando por padrão as mensagens mais recentes ainda marcadas com a label do Botana nas últimas duas semanas.
 - A explicação desse fluxo no card `Reprocessar e-mails` fica sob um ícone pequeno de `?`, em vez de texto fixo ocupando espaço no painel.
+- Os cards `Reprocessar e-mails` e `Recuperar e-mails` agora mostram esse `?` ao lado do próprio título, em vez de deixar a ajuda solta abaixo dos campos.
 - Para mensagens mais antigas do que essa janela padrão, o caminho recomendado é `Recuperar e-mails`.
 - O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
@@ -127,6 +129,7 @@ No `instances.json` do Hub, use:
 - Cliques em sequência no `Status` da Conferência entram em uma fila de até `3s` e são enviados em lote, usando o snapshot recém-carregado da aba em vez de reler todas as planilhas a cada exclusão.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
+- No filtro por `Faixa de NF`, a `Conferência` também passa a incluir linhas sintéticas de `NF ausente` quando algum número do intervalo não existe na planilha, para deixar explícito qual NF está faltando.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
 
 ## Prazos no painel

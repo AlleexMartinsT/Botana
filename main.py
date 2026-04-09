@@ -2871,12 +2871,16 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "parcelas_lancadas": 0,
         "parcelas_duplicadas": 0,
     }
+    nfs_vistas_no_escopo = set()
 
     for _, nf_items in grupos.items():
         if not _matches_scope(nf_items):
             continue
 
         nf = str((nf_items[0] or {}).get("nf") or "").strip()
+        nf_num = _audit_safe_int((nf_items[0] or {}).get("nf_num"), 0)
+        if nf_num > 0:
+            nfs_vistas_no_escopo.add(nf_num)
         parcelas_contagem = {}
         cliente = ""
         descricao = ""
@@ -2998,6 +3002,41 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         if status == "ok":
             resumo["nfs_ok"] += 1
         else:
+            resumo["nfs_com_divergencia"] += 1
+
+    if (
+        filtro_normalizado == "nfs"
+        and nf_inicio_num is not None
+        and nf_fim_num is not None
+        and nf_fim_num >= nf_inicio_num
+    ):
+        for nf_num in range(nf_inicio_num, nf_fim_num + 1):
+            if nf_num in nfs_vistas_no_escopo:
+                continue
+            itens_saida.append(
+                {
+                    "audit_key": f"missing:{nf_num}",
+                    "nf": str(nf_num),
+                    "cliente": "NF ausente na planilha",
+                    "descricao": "NF ausente na planilha",
+                    "qtd_esperada": 0,
+                    "qtd_lancada": 0,
+                    "qtd_bruta": 0,
+                    "qtd_faltando": 1,
+                    "qtd_excedente": 0,
+                    "qtd_duplicada": 0,
+                    "parcelas_duplicadas": [],
+                    "vencimentos": [],
+                    "ultimo_vencimento": "",
+                    "aba": "-",
+                    "local_lancamento": "Nao encontrada na planilha",
+                    "status": "erro",
+                    "status_label": "NF ausente",
+                    "delete_candidates": 0,
+                    "can_delete_rows": False,
+                }
+            )
+            resumo["nfs_verificadas"] += 1
             resumo["nfs_com_divergencia"] += 1
 
     itens_saida.sort(
@@ -5041,20 +5080,19 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .auth-card h3{text-align:center}
 .auth-card .btns button{width:100%}
 .reproc-card .btns{margin-top:8px;justify-content:center}
-.reproc-card h3{text-align:center}
+.title-help-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:6px}
+.title-help-row h3{margin:0;text-align:center}
 .reproc-grid{display:grid;grid-template-columns:minmax(180px,240px);gap:8px;align-items:end;justify-content:center;justify-items:center}
 .reproc-grid > div{display:flex;flex-direction:column;align-items:center}
 .reproc-grid > div label{text-align:center}
 .reproc-grid > div input,.reproc-grid > div select{width:min(220px,100%);text-align:center}
 .reproc-card .muted{text-align:center}
-.hint-wrap{display:flex;justify-content:center;align-items:center;margin-top:6px}
 .help-tip{position:relative;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:999px;border:1px solid #d6b18f;background:#fff7ef;color:#7a4d30;font-size:.8rem;font-weight:800;line-height:1;cursor:help;user-select:none}
 .help-tip:hover,.help-tip:focus-visible{background:#fff1e3;outline:none}
 .help-tip-bubble{position:absolute;left:50%;top:calc(100% + 8px);transform:translate(-50%,-4px);width:min(320px,calc(100vw - 48px));padding:10px 12px;border-radius:12px;border:1px solid #e2b58d;background:#fffaf5;color:#6b4128;font-size:.78rem;font-weight:500;line-height:1.45;box-shadow:0 10px 24px rgba(21,11,6,.16);opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:6;text-align:left}
 .help-tip:hover .help-tip-bubble,.help-tip:focus-visible .help-tip-bubble{opacity:1;transform:translate(-50%,0);pointer-events:auto}
-.recover-card h3{text-align:center}
-.recover-shell{max-width:860px;margin:0 auto;display:grid;gap:12px}
-.recover-grid{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:10px 14px;align-items:start}
+.recover-shell{max-width:920px;margin:0 auto;display:grid;gap:12px}
+.recover-grid{display:grid;grid-template-columns:minmax(160px,220px) minmax(0,1fr);grid-template-areas:"mode filter" "action action";gap:10px 14px;align-items:start}
 .recover-group,.recover-mode-box,.recover-range-box,.recover-period-box,.recover-list-box,.recover-action-box{width:100%;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:12px;border:1px solid rgba(211,172,139,.72);border-radius:14px;background:rgba(255,252,247,.88)}
 .recover-mode-box{grid-area:mode;max-width:220px;justify-self:center}
 .recover-period-box,.recover-range-box,.recover-list-box{grid-area:filter;max-width:100%;justify-self:stretch}
@@ -5064,17 +5102,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .recover-grid.mode-period .recover-period-box{max-width:460px}
 .recover-grid.mode-range .recover-range-box{max-width:420px}
 .recover-grid label,.recover-mode-box label,.recover-range-box label,.recover-period-box label,.recover-list-box label,.recover-action-box label{width:100%;text-align:center}
-.recover-grid input,.recover-grid select,.recover-mode-box select,.recover-range-box input,.recover-period-box input,.recover-list-box input,.recover-action-box input{width:min(190px,100%);text-align:center}
+.recover-grid input,.recover-grid select,.recover-mode-box select,.recover-range-box input,.recover-period-box input,.recover-list-box input,.recover-action-box input{width:100%;max-width:220px;text-align:center}
 .recover-grid .hidden{display:none !important}
-.recover-range-fields,.recover-period-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;width:100%;max-width:420px}
+.recover-range-fields,.recover-period-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;width:100%;max-width:460px}
 .recover-list-entry{display:flex;gap:8px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%;max-width:500px}
-.recover-list-entry input{width:min(220px,100%)}
+.recover-list-entry input{width:min(260px,100%)}
 .recover-list-tags{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;align-items:center;min-height:46px;padding:10px;border:1px dashed rgba(110,58,27,.26);border-radius:14px;background:rgba(255,250,245,.82);width:100%;max-width:500px}
 .recover-tag{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:rgba(110,58,27,.12);border:1px solid rgba(110,58,27,.22);font-size:12px;font-weight:700;color:#5b3118}
 .recover-tag button{border:none;background:transparent;color:inherit;font-weight:800;cursor:pointer;padding:0;line-height:1}
 .recover-action-row{display:flex;gap:12px;justify-content:center;align-items:center;flex-wrap:wrap;width:100%}
 .recover-action-row button{min-width:220px}
-.recover-note{margin-top:2px;text-align:center;max-width:760px;justify-self:center}
 .cb{margin-top:8px;display:inline-flex;align-items:center;gap:8px}
 .action-box{margin-top:10px;border:1px solid #d8b391;border-radius:10px;background:#fffaf5;padding:9px;display:grid;gap:6px}
 .action-head{display:flex;justify-content:space-between;align-items:center;gap:8px}
@@ -5226,7 +5263,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-fields label{text-align:center}
 .continue-pop-fields input{width:min(110px,100%);text-align:center}
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
-@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
+@media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
 @media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}}
 </style></head><body>
@@ -5333,17 +5370,17 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
       </article>
       <article class="card reproc-card">
-        <h3>Reprocessar e-mails</h3>
+        <div class="title-help-row">
+          <h3>Reprocessar e-mails</h3>
+          <span class="help-tip" tabindex="0" aria-label="Ajuda do reprocessamento">?
+            <span class="help-tip-bubble">Usa por padrão as mensagens mais recentes com label do Botana nas últimas duas semanas, remarca para reprocessamento e já executa a leitura em seguida. Para algo mais antigo, use Recuperar e-mails.</span>
+          </span>
+        </div>
         <div class="reproc-grid">
           <div>
             <label>Limite de mensagens</label>
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
-        </div>
-        <div class="hint-wrap">
-          <span class="help-tip" tabindex="0" aria-label="Ajuda do reprocessamento">?
-            <span class="help-tip-bubble">Usa por padrão as mensagens mais recentes com label do Botana nas últimas duas semanas, remarca para reprocessamento e já executa a leitura em seguida. Para algo mais antigo, use Recuperar e-mails.</span>
-          </span>
         </div>
         <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
@@ -5365,7 +5402,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     </section>
 
     <section class="card recover-card" style="margin-top:10px">
-      <h3>Recuperar e-mails</h3>
+      <div class="title-help-row">
+        <h3>Recuperar e-mails</h3>
+        <span class="help-tip" tabindex="0" aria-label="Ajuda da recuperação">?
+          <span class="help-tip-bubble">Procura mensagens com XML pelos filtros informados e tenta lançar no financeiro mesmo que o e-mail já tenha label do Botana. Use período, faixa de NF ou monte uma lista manual; duplicidades continuam bloqueadas pelo writer.</span>
+        </span>
+      </div>
       <div class="recover-shell">
         <div id="recoverGrid" class="recover-grid mode-period">
           <div class="recover-mode-box">
@@ -5404,7 +5446,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             </div>
           </div>
         </div>
-        <div class="muted recover-note">Procura mensagens com XML pelos filtros informados e tenta lançar no financeiro mesmo que o e-mail já tenha label do Botana. Use período, faixa de NF ou monte uma lista manual; duplicidades continuam bloqueadas pelo writer.</div>
       </div>
     </section>
   </section>
@@ -5757,6 +5798,46 @@ function recoverListKeydown(ev){
   if(ev.key!=='Enter')return;
   ev.preventDefault();
   addRecoverNf();
+}
+function _focusRecoverField(id){
+  const el=document.getElementById(id);
+  if(!el||el.classList.contains('hidden')||el.closest('.hidden'))return false;
+  try{el.focus();}catch(_){return false;}
+  return true;
+}
+function handleRecoverFieldKeydown(ev){
+  if(ev.key!=='Enter')return;
+  ev.preventDefault();
+  const mode=String((document.getElementById('recoverMode')||{}).value||'period');
+  const currentId=String((ev&&ev.target&&ev.target.id)||'').trim();
+  if(currentId==='recoverMode'){
+    if(mode==='range'){
+      if(_focusRecoverField('recoverNfStart'))return;
+    }else if(mode==='list'){
+      if(_focusRecoverField('recoverListInput'))return;
+    }else{
+      if(_focusRecoverField('recoverDateFrom'))return;
+    }
+    recoverEmails();
+    return;
+  }
+  if(mode==='period'){
+    if(currentId==='recoverDateFrom'&&_focusRecoverField('recoverDateTo'))return;
+    recoverEmails();
+    return;
+  }
+  if(mode==='range'){
+    if(currentId==='recoverNfStart'&&_focusRecoverField('recoverNfEnd'))return;
+    recoverEmails();
+    return;
+  }
+  if(mode==='list'){
+    if(currentId==='recoverListInput'){
+      addRecoverNf();
+      return;
+    }
+    recoverEmails();
+  }
 }
 function toggleRecoverFilters(){
   const mode=String((document.getElementById('recoverMode')||{}).value||'period');
@@ -6863,7 +6944,7 @@ async function deleteEntry(nf,parcela,at){
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
-['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();recoverEmails();}});});
+['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleRecoverFieldKeydown);});
 ['recoverNfStart','recoverNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
