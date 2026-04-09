@@ -444,7 +444,7 @@ def _start_run_now_background(max_messages_override: int | None = None) -> tuple
     return True, snap
 
 
-def _start_reprocess_background(max_messages: int, mark_unread: bool, continue_after_id: str = "") -> tuple[bool, dict]:
+def _start_reprocess_background(max_messages: int, mark_unread: bool = False, continue_after_id: str = "") -> tuple[bool, dict]:
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -579,7 +579,7 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool, continue_a
                 friendly = "Nenhuma mensagem foi marcada para reprocessar."
             else:
                 friendly = f"Reprocessamento concluido: {changed} de {matched} mensagens preparadas."
-            detail = f"Falhas: {failed} | Marcar como nao lido: {'sim' if mark_unread else 'nao'}"
+            detail = f"Falhas: {failed}"
             if window_text:
                 detail = f"{detail} | {window_text}"
             if resume_loop:
@@ -3054,6 +3054,39 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             resumo["nfs_verificadas"] += 1
             resumo["nfs_com_divergencia"] += 1
 
+    if filtro_normalizado == "mes" and str(mes or "").strip():
+        for missing_item in _audit_missing_nf_candidates_for_month(mes, existing_nfs=nfs_vistas_no_escopo):
+            nf_num = _audit_safe_int(missing_item.get("nf"), 0)
+            if nf_num <= 0 or nf_num in nfs_vistas_no_escopo:
+                continue
+            nfs_vistas_no_escopo.add(nf_num)
+            itens_saida.append(
+                {
+                    "audit_key": f"gmail-missing:{nf_num}",
+                    "nf": str(nf_num),
+                    "cliente": "-",
+                    "descricao": "-",
+                    "qtd_esperada": 0,
+                    "qtd_lancada": 0,
+                    "qtd_bruta": 0,
+                    "qtd_faltando": 1,
+                    "qtd_excedente": 0,
+                    "qtd_duplicada": 0,
+                    "parcelas_duplicadas": [],
+                    "vencimentos": [],
+                    "ultimo_vencimento": "-",
+                    "aba": "-",
+                    "local_lancamento": "-",
+                    "status": "erro",
+                    "status_label": "NF ausente",
+                    "reason_hint": str(missing_item.get("reason_hint") or "").strip(),
+                    "delete_candidates": 0,
+                    "can_delete_rows": False,
+                }
+            )
+            resumo["nfs_verificadas"] += 1
+            resumo["nfs_com_divergencia"] += 1
+
     itens_saida.sort(
         key=lambda item: (
             0 if item.get("status") == "erro" else 1 if item.get("status") == "aviso" else 2,
@@ -4162,6 +4195,109 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
     return ""
 
 
+def _audit_missing_nf_candidates_for_month(mes: str, existing_nfs=None) -> list[dict]:
+    month_key = str(mes or "").strip()
+    if not re.match(r"^\d{4}-\d{2}$", month_key):
+        return []
+    try:
+        start_date = datetime.strptime(f"{month_key}-01", "%Y-%m-%d").date()
+    except Exception:
+        return []
+    try:
+        if start_date.month == 12:
+            next_month = start_date.replace(year=start_date.year + 1, month=1, day=1)
+        else:
+            next_month = start_date.replace(month=start_date.month + 1, day=1)
+        end_date = next_month - timedelta(days=1)
+    except Exception:
+        return []
+    seen_nfs = {int(n) for n in (existing_nfs or set()) if int(n or 0) > 0}
+    try:
+        service = _get_gmail_service_locked(timeout=0.5)
+    except Exception:
+        return []
+
+    attachment_text_cache = {}
+    out = []
+    found = set()
+    page_size = max(20, min(60, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    page_limit = max(4, min(8, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3) + 4))
+    query = _recover_search_query(
+        mode="period",
+        date_from=start_date.isoformat(),
+        date_to=end_date.isoformat(),
+    )
+    page_token = None
+    pages = 0
+    seen_ids = set()
+    while pages < page_limit and len(out) < 25:
+        try:
+            batch, next_page_token = buscarMessagesEnviadosPagina(
+                service,
+                max_results=page_size,
+                page_token=page_token,
+                query=query,
+            )
+        except Exception as exc:
+            logger.warning("Falha ao varrer Gmail para NFs ausentes da conferencia (%s): %s", month_key, exc)
+            break
+        pages += 1
+        if not batch and not next_page_token:
+            break
+        for item in batch:
+            msg_id = str(item.get("id", "")).strip()
+            if not msg_id or msg_id in seen_ids:
+                continue
+            seen_ids.add(msg_id)
+            preview = _preview_from_message_item(item)
+            attachment_text = str(attachment_text_cache.get(msg_id, "") or "").strip()
+            if not attachment_text:
+                attachment_text = _message_attachment_text(service, msg_id)
+                attachment_text_cache[msg_id] = attachment_text
+            xml_numbers = set(_extract_xml_hint_numbers(attachment_text))
+            if not xml_numbers:
+                continue
+            preview_text = " ".join(
+                x
+                for x in (
+                    str(preview.get("subject", "") or "").strip(),
+                    str(preview.get("snippet", "") or "").strip(),
+                )
+                if x
+            )
+            preview_numbers = set(_extract_nf_numbers_from_text(preview_text))
+            attachment_numbers = set(_extract_nf_numbers_from_text(attachment_text))
+            hinted_numbers = sorted((preview_numbers | attachment_numbers) - xml_numbers)
+            if not hinted_numbers:
+                continue
+            xml_label = ", ".join(str(numero) for numero in sorted(xml_numbers))
+            subject_view = str(preview.get("subject", "") or "").strip()
+            date_view = str(preview.get("date", "") or "").strip()
+            context = " | ".join(part for part in (date_view, subject_view) if part)
+            for nf_candidate in hinted_numbers:
+                if nf_candidate in seen_nfs or nf_candidate in found:
+                    continue
+                if nf_candidate in preview_numbers and nf_candidate in attachment_numbers:
+                    source_label = "Assunto/PDF"
+                elif nf_candidate in preview_numbers:
+                    source_label = "Assunto/snippet"
+                else:
+                    source_label = "PDF/anexos"
+                reason = f"{source_label} indicavam {nf_candidate}, mas o XML indicava {xml_label}."
+                if context:
+                    reason = f"{reason} E-mail: {context}."
+                found.add(nf_candidate)
+                out.append({"nf": nf_candidate, "reason_hint": reason})
+                if len(out) >= 25:
+                    break
+            if len(out) >= 25:
+                break
+        if not next_page_token:
+            break
+        page_token = next_page_token
+    return out
+
+
 def _message_matches_recovery_filters(
     service,
     msg_id: str,
@@ -4435,7 +4571,7 @@ def _reprocess_recent_query() -> str:
     return f"newer_than:{int(_REPROCESS_LOOKBACK_DAYS)}d"
 
 
-def _reprocess_recent(max_messages: int, mark_unread: bool, progress_cb=None, continue_after_id: str = "") -> dict:
+def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=None, continue_after_id: str = "") -> dict:
     service = _get_gmail_service_locked()
     wanted = max(1, min(1000, int(max_messages)))
     messages_raw = listar_mensagens_com_labels_botana(
@@ -5227,13 +5363,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-table th.is-resizing{background:#ffe5cf}
 .col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
 .col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
-.audit-filters{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;align-items:end}
+.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,180px));gap:8px;align-items:end;justify-content:center;max-width:980px;margin:0 auto}
 .audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .audit-filters > div label{width:100%;text-align:center}
-.audit-filters > div input,.audit-filters > div select{width:100%;text-align:center}
+.audit-filters > div input,.audit-filters > div select{width:min(180px,100%);text-align:center}
 .audit-title{text-align:center}
 .audit-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
-.audit-note{max-width:900px;text-align:center}
 .audit-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
 .audit-state.loading{color:#a25b18;font-weight:700}
 .audit-summary{margin-top:10px;display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
@@ -5243,6 +5378,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-table{width:100%;min-width:1080px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
 .audit-table th,.audit-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .audit-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
+.audit-table th.sortable{cursor:pointer;user-select:none}
+.audit-table th.sortable:after{content:""}
+.audit-table th.sortable.asc,.audit-table th.sortable.desc{background:#fde8d2}
 .audit-col-status{width:92px}
 .audit-col-nf{width:86px}
 .audit-col-cliente{width:260px}
@@ -5275,7 +5413,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-filters > div input{width:min(88px,100%);text-align:center}
 .watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
-.watch-note{max-width:900px;text-align:center}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
 .watch-state.loading{color:#a25b18;font-weight:700}
 .watch-summary{margin-top:10px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
@@ -5472,7 +5609,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <input id="limit" type="number" value="100" min="1" max="1000"/>
           </div>
         </div>
-        <label class="cb"><input id="unread" type="checkbox" checked/>Marcar como não lido</label>
         <div class="btns">
           <button id="reprocessBtn" onclick="reprocess()">Reprocessar agora</button>
         </div>
@@ -5593,7 +5729,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabAudit" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3 class="audit-title">Conferência de parcelas lançadas</h3>
+      <div class="title-help-row">
+        <h3 class="audit-title">Conferência de parcelas lançadas</h3>
+        <span class="help-tip" tabindex="0" aria-label="Ajuda da conferência">?
+          <span class="help-tip-bubble">A conferência lê diretamente as planilhas, seleciona as NFs pelo filtro escolhido e compara o total esperado da NF com as parcelas registradas nas abas.</span>
+        </span>
+      </div>
       <div class="audit-filters">
         <div>
           <label>Modo</label>
@@ -5618,7 +5759,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div style="display:flex;align-items:end"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
       </div>
       <div class="audit-toolbar">
-        <div class="muted audit-note">A conferência lê diretamente as planilhas, seleciona as NFs pelo filtro escolhido e compara o total esperado da NF com as parcelas registradas nas abas.</div>
         <div id="auditStatus" class="audit-state">Pronto para conferir.</div>
       </div>
       <div class="audit-summary">
@@ -5643,15 +5783,15 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           </colgroup>
           <thead>
             <tr>
-              <th>Status</th>
-              <th>NF</th>
-              <th>Cliente</th>
-              <th>Esperadas</th>
-              <th>Lançadas</th>
-              <th>Faltando</th>
-              <th>Duplicadas</th>
-              <th>Últ. venc.</th>
-              <th>Aba</th>
+              <th class="sortable" data-key="status">Status</th>
+              <th class="sortable" data-key="nf">NF</th>
+              <th class="sortable" data-key="cliente">Cliente</th>
+              <th class="sortable" data-key="esperada">Esperadas</th>
+              <th class="sortable" data-key="lancada">Lançadas</th>
+              <th class="sortable" data-key="faltando">Faltando</th>
+              <th class="sortable" data-key="duplicada">Duplicadas</th>
+              <th class="sortable" data-key="vencimento">Últ. venc.</th>
+              <th class="sortable" data-key="local">Aba</th>
             </tr>
           </thead>
           <tbody id="aBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
@@ -5662,7 +5802,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabWatch" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3 class="watch-title">Boletos e depósitos próximos do limite</h3>
+      <div class="title-help-row">
+        <h3 class="watch-title">Boletos e depósitos próximos do limite</h3>
+        <span class="help-tip" tabindex="0" aria-label="Ajuda dos prazos">?
+          <span class="help-tip-bubble">A relação lê diretamente as planilhas e lista apenas títulos com Status vazio ou A Receber. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</span>
+        </span>
+      </div>
       <div class="watch-filters">
         <div>
           <label>Boletos em até</label>
@@ -5678,7 +5823,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <button type="button" class="sec" onclick="openWatchSearchModal()">Buscar boletos em aberto</button>
       </div>
       <div class="watch-toolbar">
-        <div class="muted watch-note">A relação lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</div>
         <div id="watchStatus" class="watch-state">Pronto para consultar.</div>
       </div>
       <div class="watch-summary">
@@ -5991,7 +6135,7 @@ async function continueReprocessFromPrompt(){
   }
   if(btn){btn.disabled=true;btn.textContent='Continuando...';}
   try{
-    await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_messages:extra,mark_unread:document.getElementById('unread').checked,continue_after_id:continueAfterId})});
+    await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_messages:extra,continue_after_id:continueAfterId})});
     closeContinueReprocessModal();
     await refresh();
   }catch(err){
@@ -6369,7 +6513,7 @@ async function reprocess(){
   if(msgEl)msgEl.textContent='Solicitacao enviada. Buscando mensagens para reprocessar...';
   if(detailEl)detailEl.textContent='As labels serao atualizadas primeiro; em seguida o Botana vai reler essas mensagens e tentar relancar na planilha.';
   try{
-    const payload={account:'principal',max_messages:Number(document.getElementById('limit').value||100),mark_unread:document.getElementById('unread').checked};
+    const payload={account:'principal',max_messages:Number(document.getElementById('limit').value||100)};
     const j=await api('/api/reprocess',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     if(j&&j.friendly&&msgEl)msgEl.textContent=String(j.friendly);
     await refresh();
@@ -6410,7 +6554,16 @@ async function recoverEmails(){
   }
 }
 async function recoverMissing(){return recoverEmails();}
-function _fmtDateTime(v){if(!v)return '-';try{return new Date(v).toLocaleString('pt-BR');}catch(_){return String(v);}}
+function _fmtDateTime(v){
+  if(!v)return '-';
+  try{
+    const d=new Date(v);
+    if(Number.isNaN(d.getTime()))return String(v)==='-'?'-':String(v);
+    return d.toLocaleString('pt-BR');
+  }catch(_){
+    return String(v);
+  }
+}
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
 function _compactClienteLabel(cliente,descricao){
@@ -6439,6 +6592,8 @@ let _auditDeleteQueue=new Map();
 let _auditDeleteTimer=null;
 let _auditDeleteInFlight=false;
 const _auditDeleteDelayMs=3000;
+let _auditItems=[];
+let _auditSort={key:'',dir:'asc'};
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -6573,6 +6728,7 @@ function _setSort(key){
 }
 _initHistoryColumnResize();
 document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventListener('click',()=>_setSort(th.dataset.key));});
+_bindAuditSortHeaders();
 function _historyParams(){
   const p=new URLSearchParams();
   const vAt=((document.getElementById('hAt')||{}).value||'').trim();
@@ -6620,19 +6776,125 @@ function toggleAuditFilters(){
   if(startEl)startEl.disabled=!useNf;
   if(endEl)endEl.disabled=!useNf;
 }
+function _focusAuditField(id){
+  const el=document.getElementById(id);
+  if(!el||el.disabled||el.classList.contains('hidden')||el.closest('.hidden'))return false;
+  try{el.focus();}catch(_){return false;}
+  return true;
+}
+function handleAuditFieldKeydown(ev){
+  if(ev.key!=='Enter')return;
+  ev.preventDefault();
+  const mode=String((document.getElementById('aMode')||{}).value||'mes').trim();
+  const currentId=String((ev&&ev.target&&ev.target.id)||'').trim();
+  if(currentId==='aMode'){
+    if(mode==='nfs'){
+      if(_focusAuditField('aNfStart'))return;
+    }else if(mode==='mes'){
+      if(_focusAuditField('aMonth'))return;
+    }
+    loadParcelAudit();
+    return;
+  }
+  if(mode==='mes'){
+    loadParcelAudit();
+    return;
+  }
+  if(mode==='nfs'){
+    if(currentId==='aNfStart'&&_focusAuditField('aNfEnd'))return;
+    loadParcelAudit();
+    return;
+  }
+  loadParcelAudit();
+}
 function _fmtAuditList(values){
   const arr=(Array.isArray(values)?values:[]).map(v=>_compactSpaces(v)).filter(Boolean);
   return arr.length?arr.join(', '):'-';
 }
 function _fmtAuditDate(v){
   const txt=String(v||'').trim();
-  if(!txt)return '-';
+  if(!txt||txt==='-'||txt.toLowerCase()==='invalid date')return '-';
   if(/^\\d{4}-\\d{2}-\\d{2}$/.test(txt)){
     const [y,m,d]=txt.split('-');
     return `${d}/${m}/${y}`;
   }
   if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt))return txt;
   return _fmtDateTime(txt);
+}
+function _initAuditSortHeaders(){
+  const keys=['status','nf','cliente','esperada','lancada','faltando','duplicada','vencimento','local'];
+  const ths=document.querySelectorAll('.audit-table thead th');
+  ths.forEach((th,idx)=>{
+    const key=keys[idx];
+    if(!key)return;
+    th.classList.add('sortable');
+    th.dataset.key=key;
+  });
+}
+function _auditStatusRank(status){
+  const txt=String(status||'').trim().toLowerCase();
+  if(txt==='erro')return 0;
+  if(txt==='aviso')return 1;
+  return 2;
+}
+function _auditDateSortValue(value){
+  const txt=String(value||'').trim();
+  if(!txt||txt==='-')return 0;
+  if(/^\\d{4}-\\d{2}-\\d{2}$/.test(txt))return Date.parse(`${txt}T00:00:00`)||0;
+  if(/^\\d{2}\\/\\d{2}\\/\\d{4}$/.test(txt)){
+    const [d,m,y]=txt.split('/');
+    return Date.parse(`${y}-${m}-${d}T00:00:00`)||0;
+  }
+  const ms=Date.parse(txt);
+  return Number.isFinite(ms)?ms:0;
+}
+function _getAuditSortValue(it,key){
+  if(key==='status')return _auditStatusRank(it.status||'');
+  if(key==='nf')return Number(it.nf||0);
+  if(key==='cliente')return _compactSpaces(it.cliente||it.descricao||'');
+  if(key==='esperada')return Number(it.qtd_esperada||0);
+  if(key==='lancada')return Number(it.qtd_lancada||0);
+  if(key==='faltando')return Number(it.qtd_faltando||0);
+  if(key==='duplicada')return Number(it.qtd_duplicada||0);
+  if(key==='vencimento')return _auditDateSortValue(it.ultimo_vencimento||it.ultimo_lancamento||'');
+  if(key==='local')return _compactSpaces(it.local_lancamento||it.aba||'');
+  return '';
+}
+function _sortAudit(items){
+  const arr=[...(Array.isArray(items)?items:[])];
+  const key=String(_auditSort.key||'').trim();
+  if(!key)return arr;
+  const dir=_auditSort.dir==='desc'?-1:1;
+  return arr.sort((a,b)=>{
+    const va=_getAuditSortValue(a,key);
+    const vb=_getAuditSortValue(b,key);
+    if(va<vb)return -1*dir;
+    if(va>vb)return 1*dir;
+    const na=Number(a&&a.nf||0);
+    const nb=Number(b&&b.nf||0);
+    if(na<nb)return 1;
+    if(na>nb)return -1;
+    return 0;
+  });
+}
+function _setAuditSort(key){
+  const next=String(key||'').trim();
+  if(!next)return;
+  const ths=document.querySelectorAll('.audit-table th.sortable');
+  ths.forEach(th=>{th.classList.remove('asc');th.classList.remove('desc');});
+  if(_auditSort.key===next)_auditSort.dir=_auditSort.dir==='asc'?'desc':'asc';
+  else{_auditSort.key=next;_auditSort.dir='asc';}
+  const active=document.querySelector(`.audit-table th.sortable[data-key="${next}"]`);
+  if(active)active.classList.add(_auditSort.dir);
+  _renderParcelAudit(_auditItems);
+}
+function _bindAuditSortHeaders(){
+  _initAuditSortHeaders();
+  document.querySelectorAll('.audit-table th.sortable').forEach(th=>{
+    if(th.dataset.sortReady==='1')return;
+    th.dataset.sortReady='1';
+    th.addEventListener('click',()=>_setAuditSort(th.dataset.key||''));
+  });
 }
 function _setAuditStatus(message,loading=false){
   const el=document.getElementById('auditStatus');
@@ -6656,9 +6918,10 @@ function _setAuditSummary(summary){
   });
 }
 function _renderParcelAudit(items){
+  _auditItems=Array.isArray(items)?items:[];
   const body=document.getElementById('aBody');
   if(!body)return;
-  const arr=Array.isArray(items)?items:[];
+  const arr=_sortAudit(_auditItems);
   body.innerHTML='';
   if(!arr.length){
     body.innerHTML='<tr><td colspan="9">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
@@ -7040,7 +7303,8 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 ['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleRecoverFieldKeydown);});
 ['recoverNfStart','recoverNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
-document.querySelectorAll('#aMode,#aMonth,#aNfStart,#aNfEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadParcelAudit();}});});
+['aMode','aMonth','aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleAuditFieldKeydown);});
+['aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();searchOpenBoletos();}});});
 ['continueReprocessQty'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();continueReprocessFromPrompt();}});});
@@ -7380,7 +7644,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
                     except Exception:
                         max_messages = 100
-                    mark_unread = bool(data.get("mark_unread", True))
+                    mark_unread = bool(data.get("mark_unread", False))
                     continue_after_id = str(data.get("continue_after_id", "") or "").strip()
                     started, info = _start_reprocess_background(
                         max_messages=max_messages,

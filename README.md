@@ -79,6 +79,7 @@ No `instances.json` do Hub, use:
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.
 - Se o loop automático estiver ativo, `Reprocessar agora` interrompe esse ciclo, remarca as mensagens, executa a leitura manual e retoma o monitoramento no fim.
 - O reprocessamento agora usa apenas `Limite de mensagens`, buscando por padrão as mensagens mais recentes ainda marcadas com a label do Botana nas últimas duas semanas.
+- A opção `Marcar como não lido` foi removida do painel porque o reprocessamento não depende do estado de leitura do Gmail para funcionar.
 - A explicação desse fluxo no card `Reprocessar e-mails` fica sob um ícone pequeno de `?`, em vez de texto fixo ocupando espaço no painel.
 - Os cards `Reprocessar e-mails` e `Recuperar e-mails` agora mostram esse `?` ao lado do próprio título, em vez de deixar a ajuda solta abaixo dos campos.
 - O balão de ajuda desses `?` abre alinhado ao ícone e foi ajustado para não ser cortado pela lateral do painel.
@@ -131,7 +132,11 @@ No `instances.json` do Hub, use:
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
 - No filtro por `Faixa de NF`, a `Conferência` também passa a incluir linhas sintéticas de `NF ausente` quando algum número do intervalo não existe na planilha, com `-` nos campos textuais para não poluir a leitura da grade.
+- No filtro por `Mês do lançamento`, a `Conferência` também cruza divergências conhecidas do Gmail e pode promover NFs ausentes para o topo quando assunto/PDF e XML apontarem números diferentes.
 - Quando a `NF ausente` puder ser explicada pelo Gmail, a linha mostra esse motivo no hover; badges de `Status` só ficam clicáveis quando há linhas reais para limpar.
+- As colunas da `Conferência` podem ser clicadas para ordenar a grade em ordem crescente ou decrescente sem perder o conteúdo já carregado.
+- No filtro `Faixa de NF` da `Conferência`, o primeiro `Enter` em `NF inicial` agora avança para `NF final`, e só depois confirma a busca.
+- Os textos explicativos longos de `Conferência` e `Prazos` passaram a ficar em `?` ao lado do título da seção, para a interface ficar mais limpa.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
 
 ## Prazos no painel
