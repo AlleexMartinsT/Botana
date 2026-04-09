@@ -90,6 +90,18 @@ _AUDIT_DELETE_CACHE = {
     "at": 0.0,
     "items": {},
 }
+_AUDIT_MONTH_MISSING_CACHE_LOCK = threading.Lock()
+_AUDIT_MONTH_MISSING_CACHE = {}
+_AUDIT_MONTH_MISSING_CACHE_TTL = 10 * 60
+_AUDIT_MONTH_GAP_LIMIT = 12
+_AUDIT_MONTH_MAX_GAP_CHECKS = 18
+_AUDIT_SHEET_CACHE_LOCK = threading.Lock()
+_AUDIT_SHEET_CACHE = {
+    "at": 0.0,
+    "rows": [],
+    "meta": {},
+}
+_AUDIT_SHEET_CACHE_TTL = 12
 _PROCESS_STATS = {
     "current": {
         "active": False,
@@ -2483,7 +2495,16 @@ def _audit_sheet_values(worksheet) -> list[list[str]]:
     return []
 
 
-def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
+def _load_audit_sheet_rows(force_refresh: bool = False) -> tuple[list[dict], dict]:
+    if not force_refresh:
+        with _AUDIT_SHEET_CACHE_LOCK:
+            cache_at = float(_AUDIT_SHEET_CACHE.get("at", 0.0) or 0.0)
+            if cache_at and (time.time() - cache_at) <= _AUDIT_SHEET_CACHE_TTL:
+                cached_rows = [dict(item or {}) for item in list(_AUDIT_SHEET_CACHE.get("rows") or [])]
+                cached_meta = dict(_AUDIT_SHEET_CACHE.get("meta") or {})
+                if cached_rows and cached_meta:
+                    return cached_rows, cached_meta
+
     creds = Credentials.from_service_account_file(
         GOOGLE_CREDENTIALS_SHEETS,
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
@@ -2563,6 +2584,10 @@ def _load_audit_sheet_rows() -> tuple[list[dict], dict]:
         "linhas_lidas": len(rows),
         "source": "planilhas",
     }
+    with _AUDIT_SHEET_CACHE_LOCK:
+        _AUDIT_SHEET_CACHE["at"] = time.time()
+        _AUDIT_SHEET_CACHE["rows"] = [dict(item or {}) for item in rows]
+        _AUDIT_SHEET_CACHE["meta"] = dict(meta)
     return rows, meta
 
 
@@ -3055,7 +3080,11 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             resumo["nfs_com_divergencia"] += 1
 
     if filtro_normalizado == "mes" and str(mes or "").strip():
-        for missing_item in _audit_missing_nf_candidates_for_month(mes, existing_nfs=nfs_vistas_no_escopo):
+        for missing_item in _audit_missing_nf_candidates_for_month(
+            mes,
+            month_rows=linhas,
+            existing_nfs=nfs_vistas_no_escopo,
+        ):
             nf_num = _audit_safe_int(missing_item.get("nf"), 0)
             if nf_num <= 0 or nf_num in nfs_vistas_no_escopo:
                 continue
@@ -4195,106 +4224,72 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
     return ""
 
 
-def _audit_missing_nf_candidates_for_month(mes: str, existing_nfs=None) -> list[dict]:
+def _audit_month_gap_candidates(month_rows, month_key: str) -> list[int]:
+    if not month_rows or not str(month_key or "").strip():
+        return []
+    groups = {}
+    for item in list(month_rows or []):
+        if str((item or {}).get("scope_month") or "").strip() != month_key:
+            continue
+        nf_num = _audit_safe_int((item or {}).get("nf_num"), 0)
+        if nf_num <= 0:
+            continue
+        group_key = (
+            str((item or {}).get("sheet_type") or "").strip(),
+            str((item or {}).get("sheet_year") or "").strip(),
+        )
+        groups.setdefault(group_key, set()).add(nf_num)
+
+    out = []
+    seen = set()
+    for numbers in groups.values():
+        ordered = sorted(int(n) for n in numbers if int(n or 0) > 0)
+        for prev_nf, next_nf in reversed(list(zip(ordered, ordered[1:]))):
+            gap = int(next_nf) - int(prev_nf) - 1
+            if gap <= 0 or gap > _AUDIT_MONTH_GAP_LIMIT:
+                continue
+            for nf_num in range(int(next_nf) - 1, int(prev_nf), -1):
+                if nf_num in seen:
+                    continue
+                seen.add(nf_num)
+                out.append(nf_num)
+                if len(out) >= _AUDIT_MONTH_MAX_GAP_CHECKS:
+                    return out
+    return out
+
+
+def _audit_missing_nf_candidates_for_month(mes: str, month_rows=None, existing_nfs=None) -> list[dict]:
     month_key = str(mes or "").strip()
     if not re.match(r"^\d{4}-\d{2}$", month_key):
         return []
-    try:
-        start_date = datetime.strptime(f"{month_key}-01", "%Y-%m-%d").date()
-    except Exception:
-        return []
-    try:
-        if start_date.month == 12:
-            next_month = start_date.replace(year=start_date.year + 1, month=1, day=1)
-        else:
-            next_month = start_date.replace(month=start_date.month + 1, day=1)
-        end_date = next_month - timedelta(days=1)
-    except Exception:
-        return []
     seen_nfs = {int(n) for n in (existing_nfs or set()) if int(n or 0) > 0}
-    try:
-        service = _get_gmail_service_locked(timeout=0.5)
-    except Exception:
+    candidates = [nf for nf in _audit_month_gap_candidates(month_rows or [], month_key) if nf not in seen_nfs]
+    if not candidates:
         return []
 
-    attachment_text_cache = {}
+    signature_src = ",".join(str(nf) for nf in candidates)
+    signature = hashlib.sha1(signature_src.encode("utf-8")).hexdigest()
+    cache_key = f"{month_key}:{signature}"
+    now = time.time()
+    with _AUDIT_MONTH_MISSING_CACHE_LOCK:
+        cache_entry = dict(_AUDIT_MONTH_MISSING_CACHE.get(cache_key) or {})
+        if cache_entry and (now - float(cache_entry.get("at", 0.0) or 0.0) <= _AUDIT_MONTH_MISSING_CACHE_TTL):
+            return list(cache_entry.get("items") or [])
+
+    state = {}
     out = []
-    found = set()
-    page_size = max(20, min(60, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
-    page_limit = max(4, min(8, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3) + 4))
-    query = _recover_search_query(
-        mode="period",
-        date_from=start_date.isoformat(),
-        date_to=end_date.isoformat(),
-    )
-    page_token = None
-    pages = 0
-    seen_ids = set()
-    while pages < page_limit and len(out) < 25:
-        try:
-            batch, next_page_token = buscarMessagesEnviadosPagina(
-                service,
-                max_results=page_size,
-                page_token=page_token,
-                query=query,
-            )
-        except Exception as exc:
-            logger.warning("Falha ao varrer Gmail para NFs ausentes da conferencia (%s): %s", month_key, exc)
-            break
-        pages += 1
-        if not batch and not next_page_token:
-            break
-        for item in batch:
-            msg_id = str(item.get("id", "")).strip()
-            if not msg_id or msg_id in seen_ids:
-                continue
-            seen_ids.add(msg_id)
-            preview = _preview_from_message_item(item)
-            attachment_text = str(attachment_text_cache.get(msg_id, "") or "").strip()
-            if not attachment_text:
-                attachment_text = _message_attachment_text(service, msg_id)
-                attachment_text_cache[msg_id] = attachment_text
-            xml_numbers = set(_extract_xml_hint_numbers(attachment_text))
-            if not xml_numbers:
-                continue
-            preview_text = " ".join(
-                x
-                for x in (
-                    str(preview.get("subject", "") or "").strip(),
-                    str(preview.get("snippet", "") or "").strip(),
-                )
-                if x
-            )
-            preview_numbers = set(_extract_nf_numbers_from_text(preview_text))
-            attachment_numbers = set(_extract_nf_numbers_from_text(attachment_text))
-            hinted_numbers = sorted((preview_numbers | attachment_numbers) - xml_numbers)
-            if not hinted_numbers:
-                continue
-            xml_label = ", ".join(str(numero) for numero in sorted(xml_numbers))
-            subject_view = str(preview.get("subject", "") or "").strip()
-            date_view = str(preview.get("date", "") or "").strip()
-            context = " | ".join(part for part in (date_view, subject_view) if part)
-            for nf_candidate in hinted_numbers:
-                if nf_candidate in seen_nfs or nf_candidate in found:
-                    continue
-                if nf_candidate in preview_numbers and nf_candidate in attachment_numbers:
-                    source_label = "Assunto/PDF"
-                elif nf_candidate in preview_numbers:
-                    source_label = "Assunto/snippet"
-                else:
-                    source_label = "PDF/anexos"
-                reason = f"{source_label} indicavam {nf_candidate}, mas o XML indicava {xml_label}."
-                if context:
-                    reason = f"{reason} E-mail: {context}."
-                found.add(nf_candidate)
-                out.append({"nf": nf_candidate, "reason_hint": reason})
-                if len(out) >= 25:
-                    break
-            if len(out) >= 25:
-                break
-        if not next_page_token:
-            break
-        page_token = next_page_token
+    for nf_num in candidates:
+        reason_hint = _audit_missing_nf_reason(nf_num, state=state)
+        if not reason_hint:
+            continue
+        out.append({"nf": nf_num, "reason_hint": reason_hint})
+
+    with _AUDIT_MONTH_MISSING_CACHE_LOCK:
+        _AUDIT_MONTH_MISSING_CACHE.clear()
+        _AUDIT_MONTH_MISSING_CACHE[cache_key] = {
+            "at": now,
+            "items": list(out),
+        }
     return out
 
 

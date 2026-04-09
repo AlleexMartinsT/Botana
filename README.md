@@ -133,6 +133,8 @@ No `instances.json` do Hub, use:
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
 - No filtro por `Faixa de NF`, a `Conferência` também passa a incluir linhas sintéticas de `NF ausente` quando algum número do intervalo não existe na planilha, com `-` nos campos textuais para não poluir a leitura da grade.
 - No filtro por `Mês do lançamento`, a `Conferência` também cruza divergências conhecidas do Gmail e pode promover NFs ausentes para o topo quando assunto/PDF e XML apontarem números diferentes.
+- No modo mensal, essa conferência cruza apenas lacunas curtas entre NFs já vistas na planilha e consulta o Gmail de forma pontual/cacheada para evitar leituras longas e erros `502`.
+- Leituras seguidas de `Conferência` e `Prazos` reaproveitam por alguns segundos o snapshot recém-lido das planilhas, reduzindo rate limit do Google Sheets sem mudar a lógica da tela.
 - Quando a `NF ausente` puder ser explicada pelo Gmail, a linha mostra esse motivo no hover; badges de `Status` só ficam clicáveis quando há linhas reais para limpar.
 - As colunas da `Conferência` podem ser clicadas para ordenar a grade em ordem crescente ou decrescente sem perder o conteúdo já carregado.
 - No filtro `Faixa de NF` da `Conferência`, o primeiro `Enter` em `NF inicial` agora avança para `NF final`, e só depois confirma a busca.
