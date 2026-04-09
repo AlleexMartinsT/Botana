@@ -71,6 +71,8 @@ No `instances.json` do Hub, use:
 - Quando o e-mail vier com boleto PDF válido mas o XML estiver sem parcelas, o Botana agora reconstrói a parcela diretamente do boleto e consegue lançar casos como a `NF 20571`.
 - Na recuperação por NF, o Botana também passou a considerar o nome dos anexos quando o assunto/snippet vierem inconsistentes, então casos como `NF 20451` continuam encontráveis mesmo se o assunto do e-mail estiver errado.
 - Quando essa recuperação precisar confiar nos anexos/XML porque o assunto do e-mail não bate com a NF real, o Botana agora marca esse aviso no estado final para o Hub alertar o usuário.
+- Na recuperação por NF ou faixa, o Botana não aceita mais a mensagem só porque o assunto bate; se os anexos/XML apontarem outra NF, a mensagem é descartada para evitar falso positivo de `já lançada`.
+- Quando isso acontecer, a NF continua marcada como não localizada na recuperação e o estado final passa a registrar a divergência para o Hub alertar que o assunto/PDF não bate com o XML.
 - O card `Ações manuais` mostra estado, mensagem, detalhe e progresso da ação atual.
 - Os resumos de `Executar agora`, `Reprocessar agora` e `Recuperar e-mails` priorizam progresso, falhas e janela do lote, sem expor contadores técnicos de anexos, XML, lançamentos ou duplicidades no painel.
 - Durante a ação manual, o botão fica desabilitado para evitar execuções concorrentes.

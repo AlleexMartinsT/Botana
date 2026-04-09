@@ -3696,6 +3696,32 @@ def _extract_nf_numbers_from_text(text: str) -> list[int]:
     return sorted(set(values))
 
 
+def _extract_nf_numbers_from_xml_filename(filename: str) -> list[int]:
+    text = str(filename or "").strip()
+    upper_name = text.upper()
+    if ".XML" not in upper_name:
+        return []
+    values = set(_extract_nf_numbers_from_text(filename))
+    for chave in re.findall(r"(\d{44})", text):
+        try:
+            numero = int(chave[25:34])
+        except Exception:
+            continue
+        if numero > 0:
+            values.add(numero)
+    return sorted(values)
+
+
+def _extract_xml_hint_numbers(text: str) -> list[int]:
+    values = []
+    for raw in re.findall(r"\bXMLNF\s*0*(\d{3,})\b", str(text or "").upper()):
+        try:
+            values.append(int(raw))
+        except Exception:
+            continue
+    return sorted(set(values))
+
+
 def _format_nf_number_list(values, limit: int = 8) -> str:
     numeros = []
     vistos = set()
@@ -3871,6 +3897,8 @@ def _message_attachment_text(service, msg_id: str) -> str:
         filename = str(part.get("filename", "") or "").strip()
         if filename:
             names.append(filename)
+            for numero in _extract_nf_numbers_from_xml_filename(filename):
+                names.append(f"XMLNF {numero}")
     return " ".join(names).strip()
 
 
@@ -3886,6 +3914,19 @@ def _recovery_match_details(
     end_date=None,
     attachment_text: str = "",
 ) -> dict:
+    def _warning_from_numbers(preview_numbers, attachment_numbers) -> str:
+        if not (preview_numbers or attachment_numbers):
+            return ""
+        preview_label = ", ".join(str(numero) for numero in preview_numbers) if preview_numbers else "nenhuma NF"
+        attachment_label = ", ".join(str(numero) for numero in attachment_numbers) if attachment_numbers else "nenhuma NF"
+        if preview_label == attachment_label:
+            return ""
+        return (
+            f"Assunto/snippet indicavam {preview_label}, "
+            f"mas os anexos/XML indicavam {attachment_label}."
+        )
+
+    mode_norm = _normalize_recovery_mode(mode)
     preview_match = _preview_matches_recovery_filters(
         preview,
         mode=mode,
@@ -3895,17 +3936,9 @@ def _recovery_match_details(
         start_date=start_date,
         end_date=end_date,
     )
-    if preview_match:
-        return {
-            "matched": True,
-            "used_attachment_match": False,
-            "attachment_text": str(attachment_text or "").strip(),
-            "warning_note": "",
-        }
-    mode_norm = _normalize_recovery_mode(mode)
     if mode_norm == "period":
         return {
-            "matched": False,
+            "matched": bool(preview_match),
             "used_attachment_match": False,
             "attachment_text": str(attachment_text or "").strip(),
             "warning_note": "",
@@ -3914,12 +3947,39 @@ def _recovery_match_details(
     if not text:
         text = _message_attachment_text(service, msg_id)
     if not text:
+        if preview_match:
+            return {
+                "matched": True,
+                "used_attachment_match": False,
+                "attachment_text": "",
+                "warning_note": "",
+            }
         return {
             "matched": False,
             "used_attachment_match": False,
             "attachment_text": "",
             "warning_note": "",
         }
+    preview_text = " ".join(
+        x for x in (
+            str(preview.get("subject", "") or "").strip(),
+            str(preview.get("snippet", "") or "").strip(),
+        ) if x
+    )
+    preview_numbers = _extract_nf_numbers_from_text(preview_text)
+    xml_attachment_numbers = _extract_xml_hint_numbers(text)
+    xml_match = False
+    if xml_attachment_numbers:
+        if mode_norm == "range":
+            xml_match = bool(
+                nf_start is not None
+                and nf_end is not None
+                and any(nf_start <= numero <= nf_end for numero in xml_attachment_numbers)
+            )
+        elif mode_norm == "list":
+            wanted = set(_parse_nf_selection_list(nf_list))
+            xml_match = any(numero in wanted for numero in xml_attachment_numbers)
+    attachment_numbers = _extract_nf_numbers_from_text(text)
     merged_preview = dict(preview or {})
     merged_preview["subject"] = " ".join(
         x for x in (
@@ -3936,29 +3996,40 @@ def _recovery_match_details(
         start_date=start_date,
         end_date=end_date,
     )
-    warning_note = ""
-    if attachment_match:
-        preview_text = " ".join(
-            x for x in (
-                str(preview.get("subject", "") or "").strip(),
-                str(preview.get("snippet", "") or "").strip(),
-            ) if x
-        )
-        preview_numbers = _extract_nf_numbers_from_text(preview_text)
-        attachment_numbers = _extract_nf_numbers_from_text(text)
-        if preview_numbers or attachment_numbers:
-            preview_label = ", ".join(str(numero) for numero in preview_numbers) if preview_numbers else "nenhuma NF"
-            attachment_label = ", ".join(str(numero) for numero in attachment_numbers) if attachment_numbers else "nenhuma NF"
-            if preview_label != attachment_label:
-                warning_note = (
-                    f"Assunto/snippet indicavam {preview_label}, "
-                    f"mas os anexos/XML indicavam {attachment_label}."
-                )
+    warning_note = _warning_from_numbers(preview_numbers, xml_attachment_numbers or attachment_numbers)
+    if preview_match and xml_attachment_numbers and not xml_match:
+        return {
+            "matched": False,
+            "used_attachment_match": False,
+            "attachment_text": text,
+            "warning_note": warning_note,
+        }
+    if preview_match and attachment_numbers and not attachment_match:
+        return {
+            "matched": False,
+            "used_attachment_match": False,
+            "attachment_text": text,
+            "warning_note": warning_note,
+        }
+    if not preview_match and xml_attachment_numbers and xml_match:
+        return {
+            "matched": True,
+            "used_attachment_match": True,
+            "attachment_text": text,
+            "warning_note": warning_note,
+        }
+    if preview_match:
+        return {
+            "matched": True,
+            "used_attachment_match": False,
+            "attachment_text": text,
+            "warning_note": warning_note if attachment_match else "",
+        }
     return {
         "matched": bool(attachment_match),
         "used_attachment_match": bool(attachment_match),
         "attachment_text": text,
-        "warning_note": warning_note,
+        "warning_note": warning_note if attachment_match else "",
     }
 
 
@@ -4138,8 +4209,6 @@ def _find_missing_messages_for_nf_list(
                     attachment_text=attachment_text,
                 )
                 attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
-                if not bool(match_info.get("matched")):
-                    continue
                 warning_note = str(match_info.get("warning_note", "") or "").strip()
                 if warning_note:
                     subject_mismatch_count += 1
@@ -4153,6 +4222,8 @@ def _find_missing_messages_for_nf_list(
                         subject_mismatch_notes.append(
                             f"{context} -> {warning_note}" if context else warning_note
                         )
+                if not bool(match_info.get("matched")):
+                    continue
                 found_for_nf = True
                 if nf not in found_nf_numbers:
                     found_nf_numbers.append(nf)
@@ -4475,8 +4546,6 @@ def _find_missing_messages(
                 attachment_text=attachment_text,
             )
             attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
-            if not bool(match_info.get("matched")):
-                continue
             warning_note = str(match_info.get("warning_note", "") or "").strip()
             if warning_note:
                 subject_mismatch_count += 1
@@ -4493,6 +4562,8 @@ def _find_missing_messages(
                     subject_mismatch_notes.append(
                         f"{context} -> {warning_note}" if context else warning_note
                     )
+            if not bool(match_info.get("matched")):
+                continue
             targets.append(
                 {
                     "id": msg_id,
@@ -4695,18 +4766,25 @@ def _start_recover_missing_background(
                     detail = f"{detail} | NFs localizadas: {len(found_nf_numbers)}/{requested_nf_count}"
                     if missing_nf_numbers:
                         detail = f"{detail} | NFs nao localizadas: {_format_nf_number_list(missing_nf_numbers)}"
-                    if ok and subject_mismatch_count <= 0 and missing_nf_numbers:
-                        msg = f"Recuperacao parcial: {len(found_nf_numbers)} de {requested_nf_count} NF(s) localizadas."
-                        if launched > 0:
+                    if ok and missing_nf_numbers:
+                        if subject_mismatch_count > 0:
                             msg = (
-                                f"{msg} {launched} lancamento{'s' if launched != 1 else ''} "
-                                f"adicionado{'s' if launched != 1 else ''} na planilha."
+                                f"Recuperacao parcial com aviso: {len(found_nf_numbers)} de {requested_nf_count} NF(s) localizadas. "
+                                f"Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}. "
+                                "Houve divergencia entre assunto/PDF e XML em pelo menos uma mensagem."
                             )
-                        elif duplicates > 0:
-                            msg = f"{msg} As NFs localizadas ja estavam lancadas."
                         else:
-                            msg = f"{msg} Nada novo entrou na planilha."
-                        msg = f"{msg} Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
+                            msg = f"Recuperacao parcial: {len(found_nf_numbers)} de {requested_nf_count} NF(s) localizadas."
+                            if launched > 0:
+                                msg = (
+                                    f"{msg} {launched} lancamento{'s' if launched != 1 else ''} "
+                                    f"adicionado{'s' if launched != 1 else ''} na planilha."
+                                )
+                            elif duplicates > 0:
+                                msg = f"{msg} As NFs localizadas ja estavam lancadas."
+                            else:
+                                msg = f"{msg} Nada novo entrou na planilha."
+                            msg = f"{msg} Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
                 _manual_action_finish(
                     ok,
                     msg,
@@ -4732,16 +4810,28 @@ def _start_recover_missing_background(
             if resume_loop:
                 restarted = iniciar_verificacao()
                 detail = f"{detail} | Loop automático {'retomado' if restarted else 'não retomado'}."
+            message = (
+                "Nenhum e-mail foi encontrado para os filtros informados."
+                if not missing_nf_numbers
+                else (
+                    "Nenhum e-mail foi encontrado para as NFs selecionadas. "
+                    f"Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
+                )
+            )
+            if subject_mismatch_count > 0 and missing_nf_numbers:
+                message = (
+                    "Nenhum e-mail foi aceito para as NFs selecionadas. "
+                    f"Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}. "
+                    "Os e-mails encontrados tinham divergencia entre assunto/PDF e XML."
+                )
+            elif subject_mismatch_count > 0:
+                message = (
+                    "Nenhum e-mail foi aceito para os filtros informados. "
+                    "Os e-mails encontrados tinham divergencia entre assunto/PDF e XML."
+                )
             _manual_action_finish(
                 True,
-                (
-                    "Nenhum e-mail foi encontrado para os filtros informados."
-                    if not missing_nf_numbers
-                    else (
-                        "Nenhum e-mail foi encontrado para as NFs selecionadas. "
-                        f"Nao localizadas: {_format_nf_number_list(missing_nf_numbers)}."
-                    )
-                ),
+                message,
                 detail=detail,
                 progress_current=matched,
                 progress_total=requested_nf_count if requested_nf_count > 0 else 0,
