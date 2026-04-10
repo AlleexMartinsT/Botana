@@ -6899,13 +6899,31 @@ function _auditStatusCellFormatter(cell){
   if(title)span.title=title;
   return span;
 }
-function _ensureAuditTabulator(){
+async function _setAuditTabulatorData(table,rows){
+  if(!table)return;
+  const nextRows=Array.isArray(rows)?rows:[];
+  try{
+    if(typeof table.clearHeaderFilter==='function')table.clearHeaderFilter();
+  }catch(_){}
+  try{
+    if(typeof table.clearSort==='function')table.clearSort();
+  }catch(_){}
+  await table.setData(nextRows);
+  try{
+    if(typeof table.setPage==='function')table.setPage(1);
+  }catch(_){}
+  try{
+    table.redraw(true);
+  }catch(_){}
+}
+function _ensureAuditTabulator(initialRows){
   if(!_auditHasTabulator())return null;
   if(_auditTable)return _auditTable;
+  const seedRows=Array.isArray(initialRows)?initialRows:[];
   _auditTable=new Tabulator('#auditTableTabulator',{
-    data:[],
-    layout:'fitColumns',
-    responsiveLayout:'collapse',
+    data:seedRows,
+    layout:'fitDataStretch',
+    responsiveLayout:false,
     pagination:'local',
     paginationSize:14,
     paginationCounter:'rows',
@@ -6913,21 +6931,21 @@ function _ensureAuditTabulator(){
     resizableColumns:true,
     placeholder:'Nenhuma NF encontrada para os filtros selecionados',
     columns:[
-      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:108,sorter:function(a,b,aRow,bRow){return (aRow.getData()._status_rank||0)-(bRow.getData()._status_rank||0);},formatter:_auditStatusCellFormatter},
+      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:112,sorter:function(a,b,aRow,bRow){return (aRow.getData()._status_rank||0)-(bRow.getData()._status_rank||0);},formatter:_auditStatusCellFormatter},
       {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:90,sorter:'number',headerFilter:'input'},
-      {title:'Cliente',field:'_cliente_view',minWidth:240,headerFilter:'input'},
-      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
-      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
-      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
-      {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:116,sorter:'number',formatter:function(cell){
+      {title:'Cliente',field:'_cliente_view',minWidth:300,widthGrow:4,headerFilter:'input'},
+      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:112,sorter:'number',formatter:function(cell){
         const data=cell.getRow().getData()||{};
         const count=Number(data.qtd_duplicada||0);
         const txt=String(data._duplicadas_view||'').trim();
         if(count>0&&txt&&txt!=='0'&&txt!=='-')return `<span title="${_esc(txt)}">${count} - ${_esc(txt)}</span>`;
         return String(count||0);
       }},
-      {title:'Últ. venc.',field:'_ultimo_venc_view',hozAlign:'center',headerHozAlign:'center',width:128,sorter:function(a,b,aRow,bRow){return (aRow.getData()._ultimo_venc_sort||0)-(bRow.getData()._ultimo_venc_sort||0);}},
-      {title:'Aba',field:'_local_view',minWidth:150,headerFilter:'input'},
+      {title:'Últ. venc.',field:'_ultimo_venc_view',hozAlign:'center',headerHozAlign:'center',width:118,sorter:function(a,b,aRow,bRow){return (aRow.getData()._ultimo_venc_sort||0)-(bRow.getData()._ultimo_venc_sort||0);}},
+      {title:'Aba',field:'_local_view',minWidth:180,widthGrow:2,headerFilter:'input'},
     ],
     rowFormatter:function(row){
       const el=row.getElement();
@@ -7045,10 +7063,16 @@ function _setAuditSummary(summary){
 function _renderParcelAudit(items){
   _auditItems=Array.isArray(items)?items:[];
   if(_auditHasTabulator()){
-    const table=_ensureAuditTabulator();
+    const rows=_auditItems.map(_mapAuditRow);
+    const isFirstBuild=!_auditTable;
+    const table=_ensureAuditTabulator(rows);
     _toggleAuditRenderMode(!!table);
     if(table){
-      table.setData(_auditItems.map(_mapAuditRow));
+      if(!isFirstBuild){
+        _setAuditTabulatorData(table,rows).catch((err)=>{
+          console.warn('Falha ao atualizar grade da conferência:',err);
+        });
+      }
       return;
     }
   }
@@ -7688,8 +7712,8 @@ function _ensureAuditPreviewTable(){
   if(_auditPreviewTable)return _auditPreviewTable;
   _auditPreviewTable=new Tabulator('#auditPreviewTable',{
     data:[],
-    layout:'fitColumns',
-    responsiveLayout:'collapse',
+    layout:'fitDataStretch',
+    responsiveLayout:false,
     pagination:'local',
     paginationSize:15,
     paginationCounter:'rows',
@@ -7698,15 +7722,15 @@ function _ensureAuditPreviewTable(){
     placeholder:'Nenhuma NF encontrada para os filtros selecionados.',
     initialSort:[{column:'status_rank',dir:'asc'},{column:'nf_num',dir:'desc'}],
     columns:[
-      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:110,sorter:function(a,b,aRow,bRow){return (aRow.getData().status_rank||0)-(bRow.getData().status_rank||0);},formatter:_auditStatusFormatter},
+      {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:112,sorter:function(a,b,aRow,bRow){return (aRow.getData().status_rank||0)-(bRow.getData().status_rank||0);},formatter:_auditStatusFormatter},
       {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:92,sorter:'number',headerFilter:'input'},
-      {title:'Cliente',field:'cliente_view',minWidth:240,headerFilter:'input'},
-      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
-      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
-      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:104,sorter:'number'},
+      {title:'Cliente',field:'cliente_view',minWidth:300,widthGrow:4,headerFilter:'input'},
+      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
       {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:112,sorter:'number',formatter:function(cell){const data=cell.getRow().getData()||{};const count=Number(data.qtd_duplicada||0);const view=String(data.duplicadas_view||'').trim();if(count>0&&view&&view!=='-'){return `<span title="${_esc(view)}">${count} - ${_esc(view)}</span>`;}return String(count||0);}},
-      {title:'Últ. venc.',field:'ultimo_vencimento_view',hozAlign:'center',headerHozAlign:'center',width:128,sorter:function(a,b,aRow,bRow){return (aRow.getData().ultimo_vencimento_sort||0)-(bRow.getData().ultimo_vencimento_sort||0);}},
-      {title:'Aba',field:'local_view',minWidth:150,headerFilter:'input'}
+      {title:'Últ. venc.',field:'ultimo_vencimento_view',hozAlign:'center',headerHozAlign:'center',width:118,sorter:function(a,b,aRow,bRow){return (aRow.getData().ultimo_vencimento_sort||0)-(bRow.getData().ultimo_vencimento_sort||0);}},
+      {title:'Aba',field:'local_view',minWidth:180,widthGrow:2,headerFilter:'input'}
     ],
     rowFormatter:function(row){
       const el=row.getElement();

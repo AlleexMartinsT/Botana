@@ -144,6 +144,8 @@ No `instances.json` do Hub, use:
 - Existe uma rota isolada de preview em `/preview/tabulator/conferencia` para comparar uma versÃ£o Tabulator da `ConferÃªncia`, com paginaÃ§Ã£o local, filtros por coluna e ordenaÃ§Ã£o dinÃ¢mica, sem substituir a aba atual do painel.
 
 - A aba real da `ConferÃªncia` agora usa `Tabulator` no front para ordenaÃ§Ã£o nativa, filtros por coluna, paginaÃ§Ã£o local e resize de colunas, com fallback automÃ¡tico para a grade HTML antiga se a biblioteca nÃ£o carregar.
+- Na primeira carga da `Conferência`, o grid Tabulator já nasce com os dados do lote atual e limpa filtros/ordenação antigos antes de recarregar, evitando o estado em que os totais apareciam no topo mas a tabela ficava vazia.
+- A grade Tabulator da `Conferência` agora mantém todas as colunas na mesma linha com scroll horizontal normal, sem criar linhas extras automáticas de detalhe como `Aba -` embaixo de cada registro.
 
 ## Prazos no painel
 
