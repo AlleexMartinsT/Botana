@@ -97,9 +97,8 @@ _AUDIT_MONTH_GAP_LIMIT = 12
 _AUDIT_MONTH_MAX_GAP_CHECKS = 18
 _AUDIT_SHEET_CACHE_LOCK = threading.Lock()
 _AUDIT_SHEET_CACHE = {
-    "at": 0.0,
-    "rows": [],
-    "meta": {},
+    "MVA": {"at": 0.0, "rows": [], "meta": {}},
+    "EH": {"at": 0.0, "rows": [], "meta": {}},
 }
 _AUDIT_SHEET_CACHE_TTL = 12
 _PROCESS_STATS = {
@@ -2481,6 +2480,15 @@ def _audit_month_key_from_sheet_title(title: str) -> str:
     return f"{int(m.group(2)):04d}-{month_num:02d}"
 
 
+def _normalize_audit_empresa(value: str) -> str:
+    key = _normalize_ascii_key(str(value or "").strip())
+    if key == "MVA":
+        return "MVA"
+    if key == "EH":
+        return "EH"
+    return "todos"
+
+
 def _audit_sheet_values(worksheet) -> list[list[str]]:
     from sheets_writer import apiCooldown
 
@@ -2495,14 +2503,37 @@ def _audit_sheet_values(worksheet) -> list[list[str]]:
     return []
 
 
-def _load_audit_sheet_rows(force_refresh: bool = False) -> tuple[list[dict], dict]:
+def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "todos") -> tuple[list[dict], dict]:
+    empresa = _normalize_audit_empresa(empresa_filter)
+    if empresa == "todos":
+        rows = []
+        metas = []
+        for company in ("MVA", "EH"):
+            if not PLANILHAS.get(company):
+                continue
+            company_rows, company_meta = _load_audit_sheet_rows(force_refresh=force_refresh, empresa_filter=company)
+            rows.extend(company_rows)
+            if company_meta:
+                metas.append(company_meta)
+        meta = {
+            "loaded_at": datetime.now().isoformat(),
+            "planilhas_lidas": sum(int(meta.get("planilhas_lidas") or 0) for meta in metas),
+            "abas_lidas": sum(int(meta.get("abas_lidas") or 0) for meta in metas),
+            "linhas_lidas": len(rows),
+            "source": "planilhas",
+            "empresa": "todos",
+            "empresas_lidas": [str(meta.get("empresa") or "").strip() for meta in metas if str(meta.get("empresa") or "").strip()],
+        }
+        return rows, meta
+
     if not force_refresh:
         with _AUDIT_SHEET_CACHE_LOCK:
-            cache_at = float(_AUDIT_SHEET_CACHE.get("at", 0.0) or 0.0)
+            cache_entry = dict(_AUDIT_SHEET_CACHE.get(empresa) or {})
+            cache_at = float(cache_entry.get("at", 0.0) or 0.0)
             if cache_at and (time.time() - cache_at) <= _AUDIT_SHEET_CACHE_TTL:
-                cached_rows = [dict(item or {}) for item in list(_AUDIT_SHEET_CACHE.get("rows") or [])]
-                cached_meta = dict(_AUDIT_SHEET_CACHE.get("meta") or {})
-                if cached_rows and cached_meta:
+                cached_rows = [dict(item or {}) for item in list(cache_entry.get("rows") or [])]
+                cached_meta = dict(cache_entry.get("meta") or {})
+                if cached_meta:
                     return cached_rows, cached_meta
 
     creds = Credentials.from_service_account_file(
@@ -2514,68 +2545,67 @@ def _load_audit_sheet_rows(force_refresh: bool = False) -> tuple[list[dict], dic
     planilhas_lidas = 0
     abas_lidas = 0
 
-    for tipo_empresa, anos in PLANILHAS.items():
-        for ano, planilha_id in (anos or {}).items():
-            if not planilha_id:
-                continue
+    for ano, planilha_id in (PLANILHAS.get(empresa) or {}).items():
+        if not planilha_id:
+            continue
+        try:
+            planilha = gc.open_by_key(planilha_id)
+            planilhas_lidas += 1
+        except Exception as exc:
+            logger.warning("Falha ao abrir planilha %s %s para conferencia: %s", empresa, ano, exc)
+            continue
+        for worksheet in planilha.worksheets():
+            abas_lidas += 1
             try:
-                planilha = gc.open_by_key(planilha_id)
-                planilhas_lidas += 1
+                linhas = _audit_sheet_values(worksheet)
             except Exception as exc:
-                logger.warning("Falha ao abrir planilha %s %s para conferencia: %s", tipo_empresa, ano, exc)
+                logger.warning("Falha ao ler aba %s/%s: %s", getattr(planilha, "title", empresa), worksheet.title, exc)
                 continue
-            for worksheet in planilha.worksheets():
-                abas_lidas += 1
-                try:
-                    linhas = _audit_sheet_values(worksheet)
-                except Exception as exc:
-                    logger.warning("Falha ao ler aba %s/%s: %s", getattr(planilha, "title", tipo_empresa), worksheet.title, exc)
+            worksheet_month = _audit_month_key_from_sheet_title(worksheet.title)
+            for idx, linha in enumerate(linhas):
+                if idx == 0:
                     continue
-                worksheet_month = _audit_month_key_from_sheet_title(worksheet.title)
-                for idx, linha in enumerate(linhas):
-                    if idx == 0:
-                        continue
-                    row = list(linha or [])
-                    if len(row) < 3:
-                        continue
-                    row += [""] * max(0, 9 - len(row))
-                    nf_raw = str(row[2] or "").strip()
-                    if not nf_raw:
-                        continue
-                    nf_digits = re.sub(r"\D+", "", nf_raw)
-                    if not nf_digits:
-                        continue
-                    vencimento = str(row[0] or "").strip()
-                    descricao = _normalize_report_text(str(row[1] or "").strip())
-                    parcela = _normalize_report_text(str(row[5] or "").strip())
-                    raw_cells = [_normalize_report_text(str(cell or "").strip()) for cell in row]
-                    rows.append(
-                        {
-                            "group_key": f"{tipo_empresa}:{ano}:{nf_digits}",
-                            "planilha_id": str(planilha_id or "").strip(),
-                            "sheet_type": str(tipo_empresa or "").strip(),
-                            "sheet_year": str(ano or "").strip(),
-                            "sheet_title": _normalize_report_text(str(getattr(planilha, "title", "") or "").strip()),
-                            "aba": _normalize_report_text(str(worksheet.title or "").strip()),
-                            "worksheet_title": _normalize_report_text(str(worksheet.title or "").strip()),
-                            "row_number": int(idx + 1),
-                            "scope_month": _audit_month_key_from_value(vencimento) or worksheet_month,
-                            "vencimento": _normalize_report_text(vencimento),
-                            "descricao": descricao,
-                            "cliente": descricao,
-                            "nf": nf_digits,
-                            "nf_num": _audit_safe_int(nf_digits, 0),
-                            "valor_total_raw": _normalize_report_text(str(row[3] or "").strip()),
-                            "valor_total": _audit_safe_float(row[3]),
-                            "qtd_parcelas": max(1, _audit_safe_int(row[4], 1)),
-                            "parcela": parcela,
-                            "valor_parcela_raw": _normalize_report_text(str(row[6] or "").strip()),
-                            "valor_parcela": _audit_safe_float(row[6]),
-                            "valor_pago": _normalize_report_text(str(row[7] or "").strip()),
-                            "status_planilha": _normalize_report_text(str(row[8] or "").strip()),
-                            "raw_cells": raw_cells,
-                        }
-                    )
+                row = list(linha or [])
+                if len(row) < 3:
+                    continue
+                row += [""] * max(0, 9 - len(row))
+                nf_raw = str(row[2] or "").strip()
+                if not nf_raw:
+                    continue
+                nf_digits = re.sub(r"\D+", "", nf_raw)
+                if not nf_digits:
+                    continue
+                vencimento = str(row[0] or "").strip()
+                descricao = _normalize_report_text(str(row[1] or "").strip())
+                parcela = _normalize_report_text(str(row[5] or "").strip())
+                raw_cells = [_normalize_report_text(str(cell or "").strip()) for cell in row]
+                rows.append(
+                    {
+                        "group_key": f"{empresa}:{ano}:{nf_digits}",
+                        "planilha_id": str(planilha_id or "").strip(),
+                        "sheet_type": str(empresa or "").strip(),
+                        "sheet_year": str(ano or "").strip(),
+                        "sheet_title": _normalize_report_text(str(getattr(planilha, "title", "") or "").strip()),
+                        "aba": _normalize_report_text(str(worksheet.title or "").strip()),
+                        "worksheet_title": _normalize_report_text(str(worksheet.title or "").strip()),
+                        "row_number": int(idx + 1),
+                        "scope_month": _audit_month_key_from_value(vencimento) or worksheet_month,
+                        "vencimento": _normalize_report_text(vencimento),
+                        "descricao": descricao,
+                        "cliente": descricao,
+                        "nf": nf_digits,
+                        "nf_num": _audit_safe_int(nf_digits, 0),
+                        "valor_total_raw": _normalize_report_text(str(row[3] or "").strip()),
+                        "valor_total": _audit_safe_float(row[3]),
+                        "qtd_parcelas": max(1, _audit_safe_int(row[4], 1)),
+                        "parcela": parcela,
+                        "valor_parcela_raw": _normalize_report_text(str(row[6] or "").strip()),
+                        "valor_parcela": _audit_safe_float(row[6]),
+                        "valor_pago": _normalize_report_text(str(row[7] or "").strip()),
+                        "status_planilha": _normalize_report_text(str(row[8] or "").strip()),
+                        "raw_cells": raw_cells,
+                    }
+                )
 
     meta = {
         "loaded_at": datetime.now().isoformat(),
@@ -2583,11 +2613,15 @@ def _load_audit_sheet_rows(force_refresh: bool = False) -> tuple[list[dict], dic
         "abas_lidas": abas_lidas,
         "linhas_lidas": len(rows),
         "source": "planilhas",
+        "empresa": empresa,
+        "empresas_lidas": [empresa],
     }
     with _AUDIT_SHEET_CACHE_LOCK:
-        _AUDIT_SHEET_CACHE["at"] = time.time()
-        _AUDIT_SHEET_CACHE["rows"] = [dict(item or {}) for item in rows]
-        _AUDIT_SHEET_CACHE["meta"] = dict(meta)
+        _AUDIT_SHEET_CACHE[empresa] = {
+            "at": time.time(),
+            "rows": [dict(item or {}) for item in rows],
+            "meta": dict(meta),
+        }
     return rows, meta
 
 
@@ -2606,6 +2640,11 @@ def _audit_row_is_safe_delete(item: dict) -> bool:
     if _sheet_watch_is_baixado(item):
         return False
     return _sheet_status_is_pending(str((item or {}).get("status_planilha") or ""))
+
+
+def _audit_row_can_delete_duplicate_extra(item: dict) -> bool:
+    row_number = max(0, _audit_safe_int((item or {}).get("row_number"), 0))
+    return row_number > 1
 
 
 def _audit_row_keep_key(item: dict):
@@ -2656,7 +2695,7 @@ def _audit_delete_candidates(nf_items: list[dict], qtd_esperada: int) -> list[di
             continue
         keepers[identity] = ordered[0]
         for extra in ordered[1:]:
-            if _audit_row_is_safe_delete(extra):
+            if _audit_row_is_safe_delete(extra) or _audit_row_can_delete_duplicate_extra(extra):
                 removable[_audit_row_ref(extra)] = extra
 
     if qtd_esperada > 0 and len(keepers) > qtd_esperada:
@@ -2847,11 +2886,12 @@ def _delete_audit_rows(audit_keys) -> dict:
     }
 
 
-def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str) -> dict:
+def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
     filtro_normalizado = str(filtro or "mes").strip().lower()
     if filtro_normalizado not in {"mes", "nfs", "todos"}:
         filtro_normalizado = "mes"
-    linhas, meta = _load_audit_sheet_rows()
+    empresa_normalizada = _normalize_audit_empresa(empresa)
+    linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa_normalizada)
     grupos = {}
     for item in linhas:
         group_key = str(item.get("group_key") or "").strip()
@@ -3129,6 +3169,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "mes": mes,
         "nf_inicio": nf_inicio_num,
         "nf_fim": nf_fim_num,
+        "empresa": empresa_normalizada,
         "summary": resumo,
         "meta": meta,
         "items": itens_saida,
@@ -5360,10 +5401,21 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-table th.is-resizing{background:#ffe5cf}
 .col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
 .col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
-.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,180px));gap:8px;align-items:end;justify-content:center;max-width:980px;margin:0 auto}
+.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:8px;align-items:end;justify-content:center;max-width:1120px;margin:0 auto}
 .audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
 .audit-filters > div label{width:100%;text-align:center}
 .audit-filters > div input,.audit-filters > div select{width:min(180px,100%);text-align:center}
+.audit-source-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
+.audit-source-group{display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.audit-source-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:12px;border:1px solid #d6b18f;background:#fffdfb;color:#6b4126;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease}
+.audit-source-btn:hover{transform:translateY(-1px);box-shadow:0 6px 14px rgba(92,52,28,.12)}
+.audit-source-btn:focus-visible{outline:none;border-color:#a96024;box-shadow:0 0 0 3px rgba(218,122,28,.18)}
+.audit-source-btn.active{background:linear-gradient(180deg,#fff0df,#ffe0bf);border-color:#cf8a4c;color:#5b3118;box-shadow:0 7px 16px rgba(92,52,28,.14)}
+.audit-source-btn svg{width:18px;height:18px;display:block}
+.audit-source-badge{position:absolute;right:4px;bottom:4px;display:inline-flex;align-items:center;justify-content:center;min-width:15px;height:15px;padding:0 4px;border-radius:999px;background:#7a4d30;color:#fff;font-size:.54rem;font-weight:800;line-height:1}
+.audit-source-btn[data-empresa="mva"] .audit-source-badge{background:#d66f17}
+.audit-source-btn[data-empresa="eh"] .audit-source-badge{background:#2d7a78}
+.audit-source-btn[data-empresa="todos"] .audit-source-badge{background:#6b4126}
 .audit-title{text-align:center}
 .audit-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .audit-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -5390,6 +5442,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-status-btn{cursor:pointer;transition:transform .15s ease, box-shadow .15s ease}
 .audit-status-btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(92,52,28,.12)}
 .audit-status-btn[disabled]{cursor:default;opacity:.78;box-shadow:none;transform:none}
+.audit-table th input{ text-align:center }
+.audit-table th input::placeholder{ text-align:center }
 .audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
 .audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
@@ -5410,6 +5464,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-header{border-bottom:1px solid #e7c4a5;background:#fff1e3}
 #auditTableTabulator .tabulator-col,
 #auditTableTabulator .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
+#auditTableTabulator .tabulator-header-filter input{ text-align:center }
+#auditTableTabulator .tabulator-header-filter input::placeholder{ text-align:center }
 #auditTableTabulator .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
 #auditTableTabulator .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
 #auditTableTabulator .tabulator-row:hover,
@@ -5764,15 +5820,32 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <option value="todos">Tudo</option>
           </select>
         </div>
-        <div>
+        <div id="auditMonthField">
           <label>Mês</label>
           <input id="aMonth" type="month"/>
         </div>
-        <div>
+        <div class="audit-source-wrap">
+          <label>Origem</label>
+          <div id="auditEmpresaGroup" class="audit-source-group" data-value="mva" role="group" aria-label="Origem da conferência">
+            <button type="button" class="audit-source-btn active" data-empresa="mva" title="Somente MVA" aria-label="Somente MVA" onclick="setAuditEmpresa('mva')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V8l5 3V8l5 3V6l6 4v10"/><path d="M3 20h18"/><path d="M8 20v-4"/><path d="M13 20v-5"/><path d="M18 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">M</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="eh" title="Somente EH" aria-label="Somente EH" onclick="setAuditEmpresa('eh')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V9l4-2 4 2V6l6 3v11"/><path d="M4 20h16"/><path d="M8 20v-4"/><path d="M12 20v-5"/><path d="M17 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">E</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="todos" title="MVA + EH" aria-label="MVA + EH" onclick="setAuditEmpresa('todos')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="10" height="10" rx="2"/><rect x="10" y="5" width="10" height="12" rx="2"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">+</span>
+            </button>
+          </div>
+        </div>
+        <div id="auditNfStartField" class="hidden">
           <label>NF inicial</label>
           <input id="aNfStart" type="text" placeholder="49001"/>
         </div>
-        <div>
+        <div id="auditNfEndField" class="hidden">
           <label>NF final</label>
           <input id="aNfEnd" type="text" placeholder="49100"/>
         </div>
@@ -5807,15 +5880,14 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th class="sortable" data-key="status">Status</th>
               <th class="sortable" data-key="nf">NF</th>
               <th class="sortable" data-key="cliente">Cliente</th>
-              <th class="sortable" data-key="esperada">Esperadas</th>
-              <th class="sortable" data-key="lancada">Lançadas</th>
+              <th class="sortable" data-key="parcelas">Parc.</th>
               <th class="sortable" data-key="faltando">Faltando</th>
               <th class="sortable" data-key="duplicada">Duplicadas</th>
               <th class="sortable" data-key="vencimento">Últ. venc.</th>
               <th class="sortable" data-key="local">Aba</th>
             </tr>
           </thead>
-          <tbody id="aBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
+          <tbody id="aBody"><tr><td colspan="8">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -6725,7 +6797,7 @@ function _renderHistory(items){
     const clienteView=_compactClienteLabel(it.cliente,it.descricao);
     return {...it,_doc:doc,_local:local,_cliente_view:clienteView};
   });
-  if(!arr.length){body.innerHTML='<tr><td colspan="9">Sem dados para os filtros selecionados</td></tr>';return;}
+  if(!arr.length){body.innerHTML='<tr><td colspan="8">Sem dados para os filtros selecionados</td></tr>';return;}
   arr=_sortHist(arr);
   arr.forEach(it=>{
     const tr=document.createElement('tr');
@@ -6784,19 +6856,164 @@ async function loadHistory(silent=false){
   }catch(err){
     if(!silent)console.warn('Erro ao carregar histórico:',err);
     const body=document.getElementById('hBody');
-    if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
+}
+const _AUDIT_FETCH_CACHE_TTL=15000;
+const _auditFetchCache=new Map();
+function _normalizeAuditEmpresaClient(value){
+  const key=String(value||'todos').trim().toLowerCase();
+  if(key==='mva'||key==='eh')return key;
+  return 'todos';
+}
+function _getAuditEmpresa(){
+  const group=document.getElementById('auditEmpresaGroup');
+  return _normalizeAuditEmpresaClient(group&&group.dataset&&group.dataset.value||'mva');
+}
+function _syncAuditEmpresaButtons(){
+  const active=_getAuditEmpresa();
+  document.querySelectorAll('.audit-source-btn[data-empresa]').forEach((btn)=>{
+    btn.classList.toggle('active',String(btn.dataset.empresa||'')===active);
+  });
+}
+function setAuditEmpresa(value,reload=true){
+  const group=document.getElementById('auditEmpresaGroup');
+  if(!group)return;
+  const next=_normalizeAuditEmpresaClient(value);
+  const prev=_getAuditEmpresa();
+  group.dataset.value=next;
+  _syncAuditEmpresaButtons();
+  if(reload!==false&&prev!==next&&_activeTab==='audit'){
+    loadParcelAudit(false).catch(()=>{});
+  }
+}
+function _readAuditUiState(){
+  const mode=((document.getElementById('aMode')||{}).value||'mes').trim()||'mes';
+  const monthValue=((document.getElementById('aMonth')||{}).value||'').trim();
+  const nfStart=((document.getElementById('aNfStart')||{}).value||'').trim();
+  const nfEnd=((document.getElementById('aNfEnd')||{}).value||'').trim();
+  return {mode,monthValue,nfStart,nfEnd,empresa:_getAuditEmpresa()};
+}
+function _buildAuditQuery(state,empresa){
+  const p=new URLSearchParams();
+  const mode=String(state&&state.mode||'mes').trim()||'mes';
+  const monthValue=String(state&&state.monthValue||'').trim();
+  const nfStart=String(state&&state.nfStart||'').trim();
+  const nfEnd=String(state&&state.nfEnd||'').trim();
+  const company=_normalizeAuditEmpresaClient(empresa||state&&state.empresa||'todos');
+  p.set('filtro',mode);
+  if(mode==='mes'&&monthValue)p.set('mes',monthValue);
+  if(mode==='nfs'&&nfStart)p.set('nf_inicio',nfStart);
+  if(mode==='nfs'&&nfEnd)p.set('nf_fim',nfEnd);
+  p.set('empresa',company);
+  return p;
+}
+function _auditFetchKey(state,empresa){
+  return JSON.stringify({
+    filtro:String(state&&state.mode||'mes'),
+    mes:String(state&&state.monthValue||''),
+    nf_inicio:String(state&&state.nfStart||''),
+    nf_fim:String(state&&state.nfEnd||''),
+    empresa:_normalizeAuditEmpresaClient(empresa||state&&state.empresa||'todos'),
+  });
+}
+function _clearAuditFetchCache(){_auditFetchCache.clear();}
+function _sortAuditServerOrder(items){
+  return [...(Array.isArray(items)?items:[])].sort((a,b)=>{
+    const sa=_auditStatusRank(a&&a.status||'');
+    const sb=_auditStatusRank(b&&b.status||'');
+    if(sa!==sb)return sa-sb;
+    return Number(b&&b.nf||0)-Number(a&&a.nf||0);
+  });
+}
+function _mergeAuditResponses(parts,empresa){
+  const valid=(Array.isArray(parts)?parts:[]).filter((part)=>part&&typeof part==='object');
+  const summary={nfs_verificadas:0,nfs_ok:0,nfs_com_divergencia:0,parcelas_esperadas:0,parcelas_lancadas:0,parcelas_duplicadas:0};
+  const meta={loaded_at:'',planilhas_lidas:0,abas_lidas:0,linhas_lidas:0,source:'planilhas',empresa:_normalizeAuditEmpresaClient(empresa||'todos'),empresas_lidas:[]};
+  const items=[];
+  const seenCompanies=new Set();
+  valid.forEach((part)=>{
+    const s=part.summary||{};
+    Object.keys(summary).forEach((key)=>{summary[key]+=Number(s[key]||0);});
+    items.push(...(Array.isArray(part.items)?part.items:[]));
+    const m=part.meta||{};
+    meta.planilhas_lidas+=Number(m.planilhas_lidas||0);
+    meta.abas_lidas+=Number(m.abas_lidas||0);
+    meta.linhas_lidas+=Number(m.linhas_lidas||0);
+    const loadedAt=String(m.loaded_at||'').trim();
+    if(loadedAt){
+      const loadedMs=Date.parse(loadedAt)||0;
+      const currentMs=Date.parse(meta.loaded_at||'')||0;
+      if(!meta.loaded_at||loadedMs>=currentMs)meta.loaded_at=loadedAt;
+    }
+    const companies=Array.isArray(m.empresas_lidas)&&m.empresas_lidas.length?m.empresas_lidas:[m.empresa];
+    companies.forEach((company)=>{
+      const normalized=String(company||'').trim().toUpperCase();
+      if(normalized&&!seenCompanies.has(normalized)){
+        seenCompanies.add(normalized);
+        meta.empresas_lidas.push(normalized);
+      }
+    });
+  });
+  return {
+    ok:true,
+    empresa:_normalizeAuditEmpresaClient(empresa||'todos'),
+    summary,
+    meta,
+    items:_sortAuditServerOrder(items),
+  };
+}
+function _buildAuditLoadedMessage(meta,prefix){
+  const info=(meta&&typeof meta==='object')?meta:{};
+  const loadedAt=String(info.loaded_at||'').trim();
+  const linhas=Number(info.linhas_lidas||0);
+  const abas=Number(info.abas_lidas||0);
+  const head=loadedAt?`${String(prefix||'Conferência atualizada.')} em ${_fmtDateTime(loadedAt)}`:String(prefix||'Conferência atualizada.');
+  return `${head} | ${linhas} linhas lidas em ${abas} abas`;
+}
+function _prefetchAuditEmpresa(state,empresa){
+  const next=_normalizeAuditEmpresaClient(empresa);
+  if(next==='todos')return;
+  _fetchAuditPayload(state,next).catch(()=>{});
+}
+async function _fetchAuditPayload(state,empresa){
+  const company=_normalizeAuditEmpresaClient(empresa||state&&state.empresa||'todos');
+  const key=_auditFetchKey(state,company);
+  const now=Date.now();
+  const cached=_auditFetchCache.get(key);
+  if(cached){
+    if(cached.data&&(now-Number(cached.at||0))<=_AUDIT_FETCH_CACHE_TTL)return cached.data;
+    if(cached.promise)return cached.promise;
+  }
+  const query=_buildAuditQuery(state,company);
+  const promise=api('/api/conferencia-parcelas?'+query.toString())
+    .then((payload)=>{
+      _auditFetchCache.set(key,{data:payload,at:Date.now()});
+      return payload;
+    })
+    .catch((err)=>{
+      _auditFetchCache.delete(key);
+      throw err;
+    });
+  _auditFetchCache.set(key,{promise,at:now});
+  return promise;
 }
 function toggleAuditFilters(){
   const mode=((document.getElementById('aMode')||{}).value||'mes').trim();
   const monthEl=document.getElementById('aMonth');
   const startEl=document.getElementById('aNfStart');
   const endEl=document.getElementById('aNfEnd');
+  const monthWrap=document.getElementById('auditMonthField');
+  const startWrap=document.getElementById('auditNfStartField');
+  const endWrap=document.getElementById('auditNfEndField');
   const useMonth=mode==='mes';
   const useNf=mode==='nfs';
   if(monthEl)monthEl.disabled=!useMonth;
   if(startEl)startEl.disabled=!useNf;
   if(endEl)endEl.disabled=!useNf;
+  if(monthWrap)monthWrap.classList.toggle('hidden',!useMonth);
+  if(startWrap)startWrap.classList.toggle('hidden',!useNf);
+  if(endWrap)endWrap.classList.toggle('hidden',!useNf);
 }
 function _focusAuditField(id){
   const el=document.getElementById(id);
@@ -6861,10 +7078,13 @@ function _mapAuditRow(it){
   const ultimoVenc=_fmtAuditDate(it.ultimo_vencimento||it.ultimo_lancamento);
   const duplicadasTxt=Number(it.qtd_duplicada||0)>0?_fmtAuditList(it.parcelas_duplicadas):'0';
   const deleteCandidates=Number(it.delete_candidates||0);
+  const esperadas=Number(it.qtd_esperada||0);
+  const lancadas=Number(it.qtd_lancada||0);
   return Object.assign({},it,{
     _nf_num:Number(it.nf||0),
     _status_rank:_auditStatusRank(it.status||''),
     _cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+    _parcelas_view:`${esperadas} / ${lancadas}`,
     _duplicadas_view:duplicadasTxt,
     _local_view:local,
     _ultimo_venc_view:ultimoVenc,
@@ -6934,8 +7154,13 @@ function _ensureAuditTabulator(initialRows){
       {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:112,sorter:function(a,b,aRow,bRow){return (aRow.getData()._status_rank||0)-(bRow.getData()._status_rank||0);},formatter:_auditStatusCellFormatter},
       {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:90,sorter:'number',headerFilter:'input'},
       {title:'Cliente',field:'_cliente_view',minWidth:300,widthGrow:4,headerFilter:'input'},
-      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
-      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Parc.',field:'_parcelas_view',hozAlign:'center',headerHozAlign:'center',width:104,sorter:function(a,b,aRow,bRow){
+        const aData=aRow.getData()||{};
+        const bData=bRow.getData()||{};
+        const esperadasDiff=Number(aData.qtd_esperada||0)-Number(bData.qtd_esperada||0);
+        if(esperadasDiff!==0)return esperadasDiff;
+        return Number(aData.qtd_lancada||0)-Number(bData.qtd_lancada||0);
+      }},
       {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
       {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:112,sorter:'number',formatter:function(cell){
         const data=cell.getRow().getData()||{};
@@ -6963,7 +7188,7 @@ function _ensureAuditTabulator(initialRows){
 }
 function _initAuditSortHeaders(){
   if(_auditHasTabulator())return;
-  const keys=['status','nf','cliente','esperada','lancada','faltando','duplicada','vencimento','local'];
+  const keys=['status','nf','cliente','parcelas','faltando','duplicada','vencimento','local'];
   const ths=document.querySelectorAll('.audit-table thead th');
   ths.forEach((th,idx)=>{
     const key=keys[idx];
@@ -6993,8 +7218,7 @@ function _getAuditSortValue(it,key){
   if(key==='status')return _auditStatusRank(it.status||'');
   if(key==='nf')return Number(it.nf||0);
   if(key==='cliente')return _compactSpaces(it.cliente||it.descricao||'');
-  if(key==='esperada')return Number(it.qtd_esperada||0);
-  if(key==='lancada')return Number(it.qtd_lancada||0);
+  if(key==='parcelas')return (Number(it.qtd_esperada||0)*1000)+Number(it.qtd_lancada||0);
   if(key==='faltando')return Number(it.qtd_faltando||0);
   if(key==='duplicada')return Number(it.qtd_duplicada||0);
   if(key==='vencimento')return _auditDateSortValue(it.ultimo_vencimento||it.ultimo_lancamento||'');
@@ -7082,7 +7306,7 @@ function _renderParcelAudit(items){
   const arr=_sortAudit(_auditItems);
   body.innerHTML='';
   if(!arr.length){
-    body.innerHTML='<tr><td colspan="9">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
+    body.innerHTML='<tr><td colspan="8">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
     return;
   }
   arr.forEach(it=>{
@@ -7103,7 +7327,7 @@ function _renderParcelAudit(items){
     const statusCell=(it.status&&it.status!=='ok'&&deleteCandidates>0)
       ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="${_esc(statusTitle)}" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
       : `<span class="audit-status ${_esc(it.status||'ok')}"${statusTitle?` title="${_esc(statusTitle)}"`:''}>${statusLabel}</span>`;
-    tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(String(it.qtd_esperada||0))}</td><td>${_esc(String(it.qtd_lancada||0))}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
+    tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(`${Number(it.qtd_esperada||0)} / ${Number(it.qtd_lancada||0)}`)}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
 }
@@ -7175,6 +7399,7 @@ async function _flushAuditDeleteQueue(){
     const payload={audit_keys:queued.map(item=>item.auditKey)};
     const r=await api('/api/conferencia-parcelas/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const successMsg=String((r&&r.message)||`${queued.length} limpeza(s) aplicadas com sucesso.`);
+    _clearAuditFetchCache();
     queued.forEach(item=>_markAuditRowDeletedLocal(item.btn,successMsg));
     _setAuditStatus(successMsg,false);
     alert(successMsg);
@@ -7222,27 +7447,53 @@ async function loadParcelAudit(silent=false){
     _setAuditLoading(true,'Conferindo planilhas...');
   }
   try{
-    const p=new URLSearchParams();
-    const mode=((document.getElementById('aMode')||{}).value||'mes').trim()||'mes';
-    const monthValue=((document.getElementById('aMonth')||{}).value||'').trim();
-    const nfStart=((document.getElementById('aNfStart')||{}).value||'').trim();
-    const nfEnd=((document.getElementById('aNfEnd')||{}).value||'').trim();
-    p.set('filtro',mode);
-    if(mode==='mes'&&monthValue)p.set('mes',monthValue);
-    if(mode==='nfs'&&nfStart)p.set('nf_inicio',nfStart);
-    if(mode==='nfs'&&nfEnd)p.set('nf_fim',nfEnd);
-    const j=await api('/api/conferencia-parcelas?'+p.toString());
+    const state=_readAuditUiState();
+    const empresa=state.empresa;
+    const renderResult=(payload)=>{
+      _setAuditSummary(payload&&payload.summary||{});
+      _renderParcelAudit(payload&&payload.items||[]);
+    };
+    if(empresa==='todos'){
+      const mva=await _fetchAuditPayload(state,'mva');
+      if(reqId!==_auditLoadSeq)return;
+      renderResult(mva);
+      _setAuditLoading(false,_buildAuditLoadedMessage((mva&&mva.meta)||{},'MVA pronta. EH carregando em segundo plano'));
+      try{
+        const eh=await _fetchAuditPayload(state,'eh');
+        if(reqId!==_auditLoadSeq)return;
+        const merged=_mergeAuditResponses([mva,eh],'todos');
+        renderResult(merged);
+        _setAuditLoading(false,_buildAuditLoadedMessage((merged&&merged.meta)||{},'Conferência atualizada'));
+      }catch(bgErr){
+        if(reqId!==_auditLoadSeq)return;
+        console.warn('Falha ao completar EH em segundo plano:',bgErr);
+        _setAuditStatus('MVA pronta. EH não terminou o aquecimento em segundo plano.',false);
+      }
+      return;
+    }
+    const payload=await _fetchAuditPayload(state,empresa);
     if(reqId!==_auditLoadSeq)return;
-    _setAuditSummary(j&&j.summary||{});
-    _renderParcelAudit(j&&j.items||[]);
-    const meta=(j&&j.meta)||{};
-    const loadedAt=String(meta.loaded_at||'').trim();
-    const linhas=Number(meta.linhas_lidas||0);
-    const abas=Number(meta.abas_lidas||0);
-    const statusMsg=loadedAt
-      ? `Conferência atualizada em ${_fmtDateTime(loadedAt)} | ${linhas} linhas lidas em ${abas} abas`
-      : 'Conferência atualizada.';
-    _setAuditLoading(false,statusMsg);
+    renderResult(payload);
+    if(empresa==='mva'){
+      _setAuditLoading(false,_buildAuditLoadedMessage((payload&&payload.meta)||{},'MVA pronta. EH aquecendo em segundo plano'));
+      const snapshotKey=_auditFetchKey(state,'mva');
+      window.setTimeout(()=>{
+        _fetchAuditPayload(state,'eh')
+          .then(()=>{
+            const sameScope=_getAuditEmpresa()==='mva'&&_auditFetchKey(_readAuditUiState(),'mva')===snapshotKey;
+            if(reqId===_auditLoadSeq&&sameScope){
+              _setAuditStatus('MVA pronta. EH aquecida para troca rápida.',false);
+            }
+          })
+          .catch(()=>{});
+      },40);
+      return;
+    }
+    if(empresa==='eh'){
+      window.setTimeout(()=>{_prefetchAuditEmpresa(state,'mva');},40);
+    }
+    if(reqId!==_auditLoadSeq)return;
+    _setAuditLoading(false,_buildAuditLoadedMessage((payload&&payload.meta)||{},'Conferência atualizada'));
   }catch(err){
     if(reqId!==_auditLoadSeq)return;
     if(!silent)console.warn('Erro ao carregar conferência:',err);
@@ -7252,7 +7503,7 @@ async function loadParcelAudit(silent=false){
       _toggleAuditRenderMode(true);
     }
     const body=document.getElementById('aBody');
-    if(body)body.innerHTML='<tr><td colspan="9">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
+    if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
     _setAuditLoading(false,'Falha ao conferir as planilhas.');
   }
 }
@@ -7505,6 +7756,7 @@ const _auditMonthEl=document.getElementById('aMonth');
 if(_auditMonthEl&&!_auditMonthEl.value){
   try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
 }
+setAuditEmpresa(_getAuditEmpresa(),false);
 toggleRecoverFilters();
 _renderRecoverNfTags();
 toggleAuditFilters();
@@ -7725,8 +7977,13 @@ function _ensureAuditPreviewTable(){
       {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:112,sorter:function(a,b,aRow,bRow){return (aRow.getData().status_rank||0)-(bRow.getData().status_rank||0);},formatter:_auditStatusFormatter},
       {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:92,sorter:'number',headerFilter:'input'},
       {title:'Cliente',field:'cliente_view',minWidth:300,widthGrow:4,headerFilter:'input'},
-      {title:'Esperadas',field:'qtd_esperada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
-      {title:'Lançadas',field:'qtd_lancada',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
+      {title:'Parc.',field:'parcelas_view',hozAlign:'center',headerHozAlign:'center',width:104,sorter:function(a,b,aRow,bRow){
+        const aData=aRow.getData()||{};
+        const bData=bRow.getData()||{};
+        const esperadasDiff=Number(aData.qtd_esperada||0)-Number(bData.qtd_esperada||0);
+        if(esperadasDiff!==0)return esperadasDiff;
+        return Number(aData.qtd_lancada||0)-Number(bData.qtd_lancada||0);
+      }},
       {title:'Faltando',field:'qtd_faltando',hozAlign:'center',headerHozAlign:'center',width:96,sorter:'number'},
       {title:'Duplicadas',field:'qtd_duplicada',hozAlign:'center',headerHozAlign:'center',width:112,sorter:'number',formatter:function(cell){const data=cell.getRow().getData()||{};const count=Number(data.qtd_duplicada||0);const view=String(data.duplicadas_view||'').trim();if(count>0&&view&&view!=='-'){return `<span title="${_esc(view)}">${count} - ${_esc(view)}</span>`;}return String(count||0);}},
       {title:'Últ. venc.',field:'ultimo_vencimento_view',hozAlign:'center',headerHozAlign:'center',width:118,sorter:function(a,b,aRow,bRow){return (aRow.getData().ultimo_vencimento_sort||0)-(bRow.getData().ultimo_vencimento_sort||0);}},
@@ -7753,10 +8010,13 @@ function _mapAuditItems(items){
     const lastDueRaw=String(it.ultimo_vencimento||it.ultimo_lancamento||'');
     const duplicadasView=Number(it.qtd_duplicada||0)>0?((Array.isArray(it.parcelas_duplicadas)?it.parcelas_duplicadas:[]).map(v=>_compactSpaces(v)).filter(Boolean).join(', ')||'-'):'-';
     const deleteCandidates=Math.max(0,Number(it.delete_candidates||0));
+    const esperadas=Math.max(0,Number(it.qtd_esperada||0));
+    const lancadas=Math.max(0,Number(it.qtd_lancada||0));
     return Object.assign({},it,{
       nf_num:Number(it.nf||0),
       status_rank:_statusRank(it.status||''),
       cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+      parcelas_view:`${esperadas} / ${lancadas}`,
       local_view:_fmtLocal(local),
       ultimo_vencimento_view:_fmtAuditDate(lastDueRaw),
       ultimo_vencimento_sort:_auditDateSortValue(lastDueRaw),
@@ -7979,8 +8239,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 mes = (qs.get("mes", [""])[0] or "").strip()
                 nf_inicio = (qs.get("nf_inicio", [""])[0] or "").strip()
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
-                    resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim)
+                    resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim, empresa)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})

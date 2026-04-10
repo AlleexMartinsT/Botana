@@ -135,11 +135,15 @@ No `instances.json` do Hub, use:
 - No filtro por `Mês do lançamento`, a `Conferência` também cruza divergências conhecidas do Gmail e pode promover NFs ausentes para o topo quando assunto/PDF e XML apontarem números diferentes.
 - No modo mensal, essa conferência cruza apenas lacunas curtas entre NFs já vistas na planilha e consulta o Gmail de forma pontual/cacheada para evitar leituras longas e erros `502`.
 - Leituras seguidas de `Conferência` e `Prazos` reaproveitam por alguns segundos o snapshot recém-lido das planilhas, reduzindo rate limit do Google Sheets sem mudar a lógica da tela.
+- A `Conferência` agora tem um filtro de origem por ícone (`MVA`, `EH` ou ambas): por padrão ela abre em `MVA`, deixa `EH` aquecendo em segundo plano e reutiliza esse cache quando você troca a origem.
+- Os campos de `NF inicial` e `NF final` da `Conferência` só aparecem quando o modo ativo é `Faixa de NF`, evitando espaço morto na linha de filtros.
 - Quando a `NF ausente` puder ser explicada pelo Gmail, a linha mostra esse motivo no hover; badges de `Status` só ficam clicáveis quando há linhas reais para limpar.
 - As colunas da `Conferência` podem ser clicadas para ordenar a grade em ordem crescente ou decrescente sem perder o conteúdo já carregado.
 - No filtro `Faixa de NF` da `Conferência`, o primeiro `Enter` em `NF inicial` agora avança para `NF final`, e só depois confirma a busca.
 - Os textos explicativos longos de `Conferência` e `Prazos` passaram a ficar em `?` ao lado do título da seção, para a interface ficar mais limpa.
-- O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Esperadas`, `Lançadas`, `Faltando` e `Duplicadas` usam largura mais compacta.
+- O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Parc.`, `Faltando` e `Duplicadas` usam largura mais compacta; `Parc.` mostra `esperadas / lançadas` na mesma célula.
+- Os campos de filtro no cabeçalho da `Conferência` ficam centralizados, incluindo o de `Cliente`, para alinhar visualmente com o título da coluna.
+- Duplicatas extras da mesma parcela voltam a ficar limpáveis pelo badge de `Status` mesmo quando a sobra já estiver `Pago` ou `BAIXADO`, desde que exista outra linha mantida como referência da parcela.
 
 - Existe uma rota isolada de preview em `/preview/tabulator/conferencia` para comparar uma versÃ£o Tabulator da `ConferÃªncia`, com paginaÃ§Ã£o local, filtros por coluna e ordenaÃ§Ã£o dinÃ¢mica, sem substituir a aba atual do painel.
 
