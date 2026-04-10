@@ -7504,9 +7504,28 @@ function _auditStatusCellFormatter(cell){
   if(title)span.title=title;
   return span;
 }
+function _captureAuditViewport(){
+  return {
+    x: window.scrollX||window.pageXOffset||0,
+    y: window.scrollY||window.pageYOffset||0,
+  };
+}
+function _restoreAuditViewport(viewport){
+  if(!viewport)return;
+  const x=Number(viewport.x||0);
+  const y=Number(viewport.y||0);
+  const apply=()=>{
+    try{window.scrollTo({left:x,top:y,behavior:'auto'});}
+    catch(_){window.scrollTo(x,y);}
+  };
+  apply();
+  try{window.requestAnimationFrame(()=>window.requestAnimationFrame(apply));}
+  catch(_){setTimeout(apply,0);}
+}
 async function _setAuditTabulatorData(table,rows){
   if(!table)return;
   const nextRows=Array.isArray(rows)?rows:[];
+  const viewport=_captureAuditViewport();
   try{
     if(typeof table.clearHeaderFilter==='function')table.clearHeaderFilter();
   }catch(_){}
@@ -7520,6 +7539,7 @@ async function _setAuditTabulatorData(table,rows){
   try{
     table.redraw(true);
   }catch(_){}
+  _restoreAuditViewport(viewport);
 }
 function _ensureAuditTabulator(initialRows){
   if(!_auditHasTabulator())return null;
@@ -7671,12 +7691,14 @@ function _setAuditSummary(summary){
 }
 function _renderParcelAudit(items){
   _auditItems=Array.isArray(items)?items:[];
+  const viewport=_captureAuditViewport();
   if(_auditHasTabulator()){
     const rows=_auditItems.map(_mapAuditRow);
     const isFirstBuild=!_auditTable;
     const table=_ensureAuditTabulator(rows);
     _toggleAuditRenderMode(!!table);
     if(table){
+      if(isFirstBuild)_restoreAuditViewport(viewport);
       if(!isFirstBuild){
         _setAuditTabulatorData(table,rows).catch((err)=>{
           console.warn('Falha ao atualizar grade da conferência:',err);
@@ -7692,6 +7714,7 @@ function _renderParcelAudit(items){
   body.innerHTML='';
   if(!arr.length){
     body.innerHTML='<tr><td colspan="8">Nenhuma NF encontrada para os filtros selecionados</td></tr>';
+    _restoreAuditViewport(viewport);
     return;
   }
   arr.forEach(it=>{
@@ -7715,6 +7738,7 @@ function _renderParcelAudit(items){
     tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(`${Number(it.qtd_esperada||0)} / ${Number(it.qtd_lancada||0)}`)}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
+  _restoreAuditViewport(viewport);
 }
 function _markAuditRowDeletedLocal(btn,message){
   const auditRow=_auditResolveRowTarget(btn);
@@ -7829,6 +7853,10 @@ async function loadParcelAudit(silent=false){
   const reqId=++_auditLoadSeq;
   const showLoading=!silent||_activeTab==='audit';
   _stopAuditJobPolling();
+  try{
+    const runBtn=document.getElementById('auditRunBtn');
+    if(runBtn&&document.activeElement===runBtn)runBtn.blur();
+  }catch(_){}
   if(showLoading){
     _setAuditLoading(true,'Conferindo planilhas...');
   }

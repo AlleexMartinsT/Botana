@@ -138,6 +138,7 @@ No `instances.json` do Hub, use:
 - A `Conferência` agora tem um filtro de origem por ícone (`MVA`, `EH` ou ambas): por padrão ela abre em `MVA`, deixa `EH` aquecendo em segundo plano e reutiliza esse cache quando você troca a origem.
 - A `Conferência` agora roda em job/snapshot próprio: a aba pode mostrar um resultado parcial assim que as planilhas da origem principal terminam de ler e continua finalizando os diagnósticos em segundo plano.
 - Quando a `Drive API` estiver disponível nas credenciais do serviço, a `Conferência` reaproveita snapshots enquanto `modifiedTime/version` das planilhas não mudarem; no ambiente atual, se a `Drive API` estiver desativada, ela cai automaticamente para um snapshot local curto só para evitar releitura imediata ao sair e voltar da aba.
+- Durante as atualizações parciais/finais da `Conferência`, a aba agora preserva a posição atual da tela para não ficar puxando a viewport para cima enquanto o job ainda está carregando.
 - Os campos de `NF inicial` e `NF final` da `Conferência` só aparecem quando o modo ativo é `Faixa de NF`, evitando espaço morto na linha de filtros.
 - No modo mensal, a `Conferência` não marca mais como `NF ausente` uma NF que já exista em outro mês da mesma empresa; isso corrige casos como a `49511`, cujo e-mail é de abril mas o lançamento foi para `Mai/2026` por causa do vencimento.
 - Quando a `NF ausente` puder ser explicada pelo Gmail, a linha mostra esse motivo no hover; badges de `Status` só ficam clicáveis quando há linhas reais para limpar.
