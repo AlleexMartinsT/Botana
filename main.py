@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
 from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, RELATORIO_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
 from gmail_service import (
     getGmailService,
@@ -101,6 +102,15 @@ _AUDIT_SHEET_CACHE = {
     "EH": {"at": 0.0, "rows": [], "meta": {}},
 }
 _AUDIT_SHEET_CACHE_TTL = 12
+_AUDIT_META_CACHE_LOCK = threading.Lock()
+_AUDIT_META_CACHE = {}
+_AUDIT_META_CACHE_TTL = 20
+_AUDIT_JOB_LOCK = threading.Lock()
+_AUDIT_JOB_SNAPSHOTS = {}
+_AUDIT_JOBS = {}
+_AUDIT_JOBS_BY_REQUEST = {}
+_AUDIT_JOB_SNAPSHOT_TTL = 20 * 60
+_AUDIT_JOB_STATE_TTL = 30 * 60
 _PROCESS_STATS = {
     "current": {
         "active": False,
@@ -2489,6 +2499,184 @@ def _normalize_audit_empresa(value: str) -> str:
     return "todos"
 
 
+def _audit_request_signature(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str) -> str:
+    payload = {
+        "filtro": str(filtro or "mes").strip().lower(),
+        "mes": str(mes or "").strip(),
+        "nf_inicio": re.sub(r"\D+", "", str(nf_inicio or ""))[:12],
+        "nf_fim": re.sub(r"\D+", "", str(nf_fim or ""))[:12],
+        "empresa": _normalize_audit_empresa(empresa),
+    }
+    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def _audit_companies_for_filter(empresa_filter: str) -> list[str]:
+    empresa = _normalize_audit_empresa(empresa_filter)
+    if empresa == "todos":
+        return [company for company in ("MVA", "EH") if PLANILHAS.get(company)]
+    return [empresa] if PLANILHAS.get(empresa) else []
+
+
+def _audit_merge_meta_parts(metas: list[dict], empresa_filter: str = "todos") -> dict:
+    empresa = _normalize_audit_empresa(empresa_filter)
+    out = {
+        "loaded_at": datetime.now().isoformat(),
+        "planilhas_lidas": 0,
+        "abas_lidas": 0,
+        "linhas_lidas": 0,
+        "source": "planilhas",
+        "empresa": empresa,
+        "empresas_lidas": [],
+    }
+    seen = set()
+    latest_loaded_at = ""
+    latest_loaded_ms = 0
+    for meta in list(metas or []):
+        if not isinstance(meta, dict):
+            continue
+        out["planilhas_lidas"] += int(meta.get("planilhas_lidas") or 0)
+        out["abas_lidas"] += int(meta.get("abas_lidas") or 0)
+        out["linhas_lidas"] += int(meta.get("linhas_lidas") or 0)
+        loaded_at = str(meta.get("loaded_at") or "").strip()
+        companies = list(meta.get("empresas_lidas") or [])
+        if not companies and str(meta.get("empresa") or "").strip():
+            companies = [str(meta.get("empresa") or "").strip()]
+        for company in companies:
+            normalized = str(company or "").strip().upper()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                out["empresas_lidas"].append(normalized)
+        try:
+            loaded_ms = int(datetime.fromisoformat(loaded_at).timestamp() * 1000) if loaded_at else 0
+        except Exception:
+            loaded_ms = 0
+        if loaded_ms >= latest_loaded_ms:
+            latest_loaded_ms = loaded_ms
+            latest_loaded_at = loaded_at
+    if latest_loaded_at:
+        out["loaded_at"] = latest_loaded_at
+    return out
+
+
+def _audit_drive_metadata(empresa_filter: str = "todos", force_refresh: bool = False) -> dict:
+    companies = _audit_companies_for_filter(empresa_filter)
+    now = time.time()
+    items = []
+    fallback_key = "__fallback__:" + ",".join(companies)
+    with _AUDIT_META_CACHE_LOCK:
+        cache_snapshot = dict(_AUDIT_META_CACHE)
+    if not force_refresh and cache_snapshot:
+        fallback_entry = dict(cache_snapshot.get(fallback_key) or {})
+        fallback_at = float(fallback_entry.get("at", 0.0) or 0.0)
+        if fallback_at and (now - fallback_at) <= _AUDIT_META_CACHE_TTL:
+            payload = dict(fallback_entry.get("payload") or {})
+            if payload:
+                return payload
+        fresh = True
+        for company in companies:
+            for year, file_id in (PLANILHAS.get(company) or {}).items():
+                if not file_id:
+                    continue
+                entry = dict(cache_snapshot.get(str(file_id)) or {})
+                cache_at = float(entry.get("at", 0.0) or 0.0)
+                if not cache_at or (now - cache_at) > _AUDIT_META_CACHE_TTL:
+                    fresh = False
+                    break
+                item = dict(entry.get("item") or {})
+                if item:
+                    items.append(item)
+            if not fresh:
+                break
+        if fresh and items:
+            signature_src = json.dumps(sorted(items, key=lambda item: (item.get("empresa"), item.get("ano"), item.get("id"))), ensure_ascii=True, sort_keys=True)
+            return {
+                "loaded_at": datetime.now().isoformat(),
+                "items": items,
+                "signature": hashlib.sha1(signature_src.encode("utf-8")).hexdigest(),
+            }
+
+    creds = Credentials.from_service_account_file(
+        GOOGLE_CREDENTIALS_SHEETS,
+        scopes=["https://www.googleapis.com/auth/drive.metadata.readonly"],
+    )
+    try:
+        drive = build("drive", "v3", credentials=creds, cache_discovery=False)
+        cache_updates = {}
+        items = []
+        for company in companies:
+            for year, file_id in (PLANILHAS.get(company) or {}).items():
+                if not file_id:
+                    continue
+                response = (
+                    drive.files()
+                    .get(fileId=str(file_id), fields="id,name,modifiedTime,version")
+                    .execute()
+                )
+                item = {
+                    "empresa": company,
+                    "ano": str(year or "").strip(),
+                    "id": str(response.get("id") or file_id).strip(),
+                    "name": str(response.get("name") or "").strip(),
+                    "modifiedTime": str(response.get("modifiedTime") or "").strip(),
+                    "version": str(response.get("version") or "").strip(),
+                }
+                items.append(item)
+                cache_updates[str(file_id)] = {"at": now, "item": item}
+        with _AUDIT_META_CACHE_LOCK:
+            _AUDIT_META_CACHE.update(cache_updates)
+        signature_src = json.dumps(sorted(items, key=lambda item: (item.get("empresa"), item.get("ano"), item.get("id"))), ensure_ascii=True, sort_keys=True)
+        return {
+            "loaded_at": datetime.now().isoformat(),
+            "items": items,
+            "signature": hashlib.sha1(signature_src.encode("utf-8")).hexdigest(),
+            "mode": "drive",
+        }
+    except Exception as exc:
+        logger.warning("Metadado do Drive indisponível para a conferência. Usando snapshot local curto: %s", exc)
+        fallback = {
+            "loaded_at": datetime.now().isoformat(),
+            "items": [],
+            "signature": f"fallback:{','.join(companies)}:{int(now // _AUDIT_META_CACHE_TTL)}",
+            "mode": "fallback",
+        }
+        with _AUDIT_META_CACHE_LOCK:
+            _AUDIT_META_CACHE[fallback_key] = {"at": now, "payload": dict(fallback)}
+        return fallback
+
+
+def _audit_gc_expired_jobs():
+    cutoff_jobs = time.time() - _AUDIT_JOB_STATE_TTL
+    cutoff_snapshots = time.time() - _AUDIT_JOB_SNAPSHOT_TTL
+    with _AUDIT_JOB_LOCK:
+        for job_id, state in list(_AUDIT_JOBS.items()):
+            updated_at = float(state.get("updated_at_ts", 0.0) or 0.0)
+            if updated_at and updated_at < cutoff_jobs:
+                _AUDIT_JOBS.pop(job_id, None)
+        for request_key, job_id in list(_AUDIT_JOBS_BY_REQUEST.items()):
+            if job_id not in _AUDIT_JOBS:
+                _AUDIT_JOBS_BY_REQUEST.pop(request_key, None)
+        for request_key, snapshot in list(_AUDIT_JOB_SNAPSHOTS.items()):
+            updated_at = float(snapshot.get("updated_at_ts", 0.0) or 0.0)
+            if updated_at and updated_at < cutoff_snapshots:
+                _AUDIT_JOB_SNAPSHOTS.pop(request_key, None)
+
+
+def _audit_job_public_state(state: dict | None) -> dict:
+    data = dict(state or {})
+    return {
+        "job_id": str(data.get("job_id") or "").strip(),
+        "status": str(data.get("status") or "idle").strip(),
+        "message": str(data.get("message") or "").strip(),
+        "started_at": str(data.get("started_at") or "").strip(),
+        "updated_at": str(data.get("updated_at") or "").strip(),
+        "finished_at": str(data.get("finished_at") or "").strip(),
+        "request_signature": str(data.get("request_signature") or "").strip(),
+        "sheet_signature": str(data.get("sheet_signature") or "").strip(),
+        "result": dict(data.get("result") or {}) if data.get("result") else None,
+        "current_result": dict(data.get("current_result") or {}) if data.get("current_result") else None,
+    }
+
 def _audit_sheet_values(worksheet) -> list[list[str]]:
     from sheets_writer import apiCooldown
 
@@ -2886,18 +3074,32 @@ def _delete_audit_rows(audit_keys) -> dict:
     }
 
 
-def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
+def _gerar_conferencia_parcelas_from_rows(
+    filtro: str,
+    mes: str,
+    nf_inicio: str,
+    nf_fim: str,
+    linhas: list[dict],
+    meta: dict | None = None,
+    empresa: str = "todos",
+    include_missing_diagnostics: bool = True,
+) -> dict:
     filtro_normalizado = str(filtro or "mes").strip().lower()
     if filtro_normalizado not in {"mes", "nfs", "todos"}:
         filtro_normalizado = "mes"
     empresa_normalizada = _normalize_audit_empresa(empresa)
-    linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa_normalizada)
+    meta = dict(meta or {})
     grupos = {}
     for item in linhas:
         group_key = str(item.get("group_key") or "").strip()
         if not group_key:
             continue
         grupos.setdefault(group_key, []).append(item)
+    nfs_existentes_em_qualquer_mes = {
+        _audit_safe_int((item or {}).get("nf_num"), 0)
+        for item in list(linhas or [])
+        if _audit_safe_int((item or {}).get("nf_num"), 0) > 0
+    }
 
     try:
         nf_inicio_num = int(re.sub(r"\D+", "", str(nf_inicio or ""))) if str(nf_inicio or "").strip() else None
@@ -2939,7 +3141,7 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "parcelas_duplicadas": 0,
     }
     nfs_vistas_no_escopo = set()
-    diagnose_missing_nfs = (
+    diagnose_missing_nfs = include_missing_diagnostics and (
         filtro_normalizado == "nfs"
         and nf_inicio_num is not None
         and nf_fim_num is not None
@@ -3119,11 +3321,11 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
             resumo["nfs_verificadas"] += 1
             resumo["nfs_com_divergencia"] += 1
 
-    if filtro_normalizado == "mes" and str(mes or "").strip():
+    if include_missing_diagnostics and filtro_normalizado == "mes" and str(mes or "").strip():
         for missing_item in _audit_missing_nf_candidates_for_month(
             mes,
             month_rows=linhas,
-            existing_nfs=nfs_vistas_no_escopo,
+            existing_nfs=nfs_existentes_em_qualquer_mes,
         ):
             nf_num = _audit_safe_int(missing_item.get("nf"), 0)
             if nf_num <= 0 or nf_num in nfs_vistas_no_escopo:
@@ -3174,6 +3376,200 @@ def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: s
         "meta": meta,
         "items": itens_saida,
     }
+
+
+def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
+    empresa_normalizada = _normalize_audit_empresa(empresa)
+    linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa_normalizada)
+    return _gerar_conferencia_parcelas_from_rows(
+        filtro,
+        mes,
+        nf_inicio,
+        nf_fim,
+        linhas,
+        meta=meta,
+        empresa=empresa_normalizada,
+        include_missing_diagnostics=True,
+    )
+
+
+def _audit_update_job_state(job_id: str, **updates):
+    job_key = str(job_id or "").strip()
+    if not job_key:
+        return
+    with _AUDIT_JOB_LOCK:
+        state = dict(_AUDIT_JOBS.get(job_key) or {})
+        if not state:
+            return
+        state.update(updates)
+        state["updated_at"] = datetime.now().isoformat()
+        state["updated_at_ts"] = time.time()
+        _AUDIT_JOBS[job_key] = state
+
+
+def _audit_job_worker(job_id: str):
+    with _AUDIT_JOB_LOCK:
+        state = dict(_AUDIT_JOBS.get(job_id) or {})
+    if not state:
+        return
+    filtro = str(state.get("filtro") or "mes").strip()
+    mes = str(state.get("mes") or "").strip()
+    nf_inicio = str(state.get("nf_inicio") or "").strip()
+    nf_fim = str(state.get("nf_fim") or "").strip()
+    empresa = _normalize_audit_empresa(state.get("empresa"))
+    request_signature = str(state.get("request_signature") or "").strip()
+    sheet_signature = str(state.get("sheet_signature") or "").strip()
+    companies = _audit_companies_for_filter(empresa)
+    rows_by_company = {}
+    metas_by_company = {}
+    try:
+        for idx, company in enumerate(companies):
+            _audit_update_job_state(job_id, status="running", message=f"Lendo planilhas {company}...")
+            company_rows, company_meta = _load_audit_sheet_rows(force_refresh=True, empresa_filter=company)
+            rows_by_company[company] = list(company_rows or [])
+            metas_by_company[company] = dict(company_meta or {})
+            partial_companies = companies[: idx + 1]
+            partial_rows = []
+            partial_metas = []
+            for partial_company in partial_companies:
+                partial_rows.extend(list(rows_by_company.get(partial_company) or []))
+                if metas_by_company.get(partial_company):
+                    partial_metas.append(dict(metas_by_company.get(partial_company) or {}))
+            partial_result = _gerar_conferencia_parcelas_from_rows(
+                filtro,
+                mes,
+                nf_inicio,
+                nf_fim,
+                partial_rows,
+                meta=_audit_merge_meta_parts(partial_metas, empresa_filter=empresa if empresa != "todos" else "todos"),
+                empresa=empresa if empresa != "todos" else "todos",
+                include_missing_diagnostics=False,
+            )
+            stage_label = (
+                f"{company} pronta"
+                if empresa != "todos"
+                else (f"{company} pronta. {companies[idx + 1]} carregando em segundo plano..." if idx + 1 < len(companies) else "Planilhas carregadas. Finalizando diagnósticos...")
+            )
+            _audit_update_job_state(
+                job_id,
+                current_result=partial_result,
+                message=stage_label,
+            )
+
+        final_rows = []
+        final_metas = []
+        for company in companies:
+            final_rows.extend(list(rows_by_company.get(company) or []))
+            if metas_by_company.get(company):
+                final_metas.append(dict(metas_by_company.get(company) or {}))
+        _audit_update_job_state(job_id, status="running", message="Finalizando diagnósticos da conferência...")
+        final_result = _gerar_conferencia_parcelas_from_rows(
+            filtro,
+            mes,
+            nf_inicio,
+            nf_fim,
+            final_rows,
+            meta=_audit_merge_meta_parts(final_metas, empresa_filter=empresa if empresa != "todos" else "todos"),
+            empresa=empresa if empresa != "todos" else "todos",
+            include_missing_diagnostics=True,
+        )
+        finished_at = datetime.now().isoformat()
+        snapshot = {
+            "request_signature": request_signature,
+            "sheet_signature": sheet_signature,
+            "result": final_result,
+            "updated_at": finished_at,
+            "updated_at_ts": time.time(),
+        }
+        with _AUDIT_JOB_LOCK:
+            _AUDIT_JOB_SNAPSHOTS[request_signature] = snapshot
+            state = dict(_AUDIT_JOBS.get(job_id) or {})
+            state.update(
+                {
+                    "status": "done",
+                    "message": "Conferência pronta.",
+                    "result": final_result,
+                    "current_result": final_result,
+                    "finished_at": finished_at,
+                    "updated_at": finished_at,
+                    "updated_at_ts": time.time(),
+                }
+            )
+            _AUDIT_JOBS[job_id] = state
+    except Exception as exc:
+        logger.exception("Falha ao montar job da conferência: %s", exc)
+        _audit_update_job_state(
+            job_id,
+            status="error",
+            message=str(exc),
+            finished_at=datetime.now().isoformat(),
+        )
+
+
+def _start_audit_job(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
+    _audit_gc_expired_jobs()
+    empresa_normalizada = _normalize_audit_empresa(empresa)
+    request_signature = _audit_request_signature(filtro, mes, nf_inicio, nf_fim, empresa_normalizada)
+    metadata = _audit_drive_metadata(empresa_normalizada)
+    sheet_signature = str(metadata.get("signature") or "").strip()
+    metadata_mode = str(metadata.get("mode") or "").strip()
+    with _AUDIT_JOB_LOCK:
+        snapshot = dict(_AUDIT_JOB_SNAPSHOTS.get(request_signature) or {})
+        if snapshot and str(snapshot.get("sheet_signature") or "").strip() == sheet_signature and snapshot.get("result"):
+            return {
+                "job_id": "",
+                "status": "done",
+                "message": "Conferência pronta a partir do snapshot." if metadata_mode == "drive" else "Conferência pronta a partir do snapshot local recente.",
+                "result": dict(snapshot.get("result") or {}),
+                "current_result": dict(snapshot.get("result") or {}),
+                "request_signature": request_signature,
+                "sheet_signature": sheet_signature,
+                "cached": True,
+            }
+
+        existing_job_id = str(_AUDIT_JOBS_BY_REQUEST.get(request_signature) or "").strip()
+        existing_state = dict(_AUDIT_JOBS.get(existing_job_id) or {}) if existing_job_id else {}
+        if existing_state and str(existing_state.get("sheet_signature") or "").strip() == sheet_signature and str(existing_state.get("status") or "").strip() in {"running", "done"}:
+            return _audit_job_public_state(existing_state)
+
+        job_id = secrets.token_hex(8)
+        now_iso = datetime.now().isoformat()
+        state = {
+            "job_id": job_id,
+            "status": "running",
+            "message": "Iniciando conferência..." if metadata_mode == "drive" else "Iniciando conferência com snapshot local curto...",
+            "started_at": now_iso,
+            "updated_at": now_iso,
+            "updated_at_ts": time.time(),
+            "finished_at": "",
+            "filtro": str(filtro or "mes").strip(),
+            "mes": str(mes or "").strip(),
+            "nf_inicio": str(nf_inicio or "").strip(),
+            "nf_fim": str(nf_fim or "").strip(),
+            "empresa": empresa_normalizada,
+            "request_signature": request_signature,
+            "sheet_signature": sheet_signature,
+            "metadata": dict(metadata or {}),
+            "result": None,
+            "current_result": None,
+        }
+        _AUDIT_JOBS[job_id] = state
+        _AUDIT_JOBS_BY_REQUEST[request_signature] = job_id
+    thread = threading.Thread(target=_audit_job_worker, args=(job_id,), daemon=True)
+    thread.start()
+    return _audit_job_public_state(state)
+
+
+def _get_audit_job(job_id: str) -> dict:
+    _audit_gc_expired_jobs()
+    key = str(job_id or "").strip()
+    if not key:
+        raise ValueError("Job da conferência não informado.")
+    with _AUDIT_JOB_LOCK:
+        state = dict(_AUDIT_JOBS.get(key) or {})
+    if not state:
+        raise ValueError("Job da conferência não encontrado ou expirado.")
+    return _audit_job_public_state(state)
 
 
 def _normalize_ascii_key(value: str) -> str:
@@ -6068,6 +6464,9 @@ function switchTab(tab){
   document.getElementById('tabBtnWatch').classList.toggle('active',w);
   document.getElementById('tabBtnDiag').classList.toggle('active',d);
   _activeTab=next;
+  if(next!=='audit'){
+    _stopAuditJobPolling();
+  }
   if(next==='hist'){
     loadHistory().catch(()=>{});
   }
@@ -6859,8 +7258,9 @@ async function loadHistory(silent=false){
     if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
 }
-const _AUDIT_FETCH_CACHE_TTL=15000;
-const _auditFetchCache=new Map();
+let _auditJobPollTimer=null;
+let _auditActiveRequestKey='';
+let _auditActiveJobId='';
 function _normalizeAuditEmpresaClient(value){
   const key=String(value||'todos').trim().toLowerCase();
   if(key==='mva'||key==='eh')return key;
@@ -6917,51 +7317,16 @@ function _auditFetchKey(state,empresa){
     empresa:_normalizeAuditEmpresaClient(empresa||state&&state.empresa||'todos'),
   });
 }
-function _clearAuditFetchCache(){_auditFetchCache.clear();}
-function _sortAuditServerOrder(items){
-  return [...(Array.isArray(items)?items:[])].sort((a,b)=>{
-    const sa=_auditStatusRank(a&&a.status||'');
-    const sb=_auditStatusRank(b&&b.status||'');
-    if(sa!==sb)return sa-sb;
-    return Number(b&&b.nf||0)-Number(a&&a.nf||0);
-  });
+function _stopAuditJobPolling(){
+  if(_auditJobPollTimer){
+    clearTimeout(_auditJobPollTimer);
+    _auditJobPollTimer=null;
+  }
 }
-function _mergeAuditResponses(parts,empresa){
-  const valid=(Array.isArray(parts)?parts:[]).filter((part)=>part&&typeof part==='object');
-  const summary={nfs_verificadas:0,nfs_ok:0,nfs_com_divergencia:0,parcelas_esperadas:0,parcelas_lancadas:0,parcelas_duplicadas:0};
-  const meta={loaded_at:'',planilhas_lidas:0,abas_lidas:0,linhas_lidas:0,source:'planilhas',empresa:_normalizeAuditEmpresaClient(empresa||'todos'),empresas_lidas:[]};
-  const items=[];
-  const seenCompanies=new Set();
-  valid.forEach((part)=>{
-    const s=part.summary||{};
-    Object.keys(summary).forEach((key)=>{summary[key]+=Number(s[key]||0);});
-    items.push(...(Array.isArray(part.items)?part.items:[]));
-    const m=part.meta||{};
-    meta.planilhas_lidas+=Number(m.planilhas_lidas||0);
-    meta.abas_lidas+=Number(m.abas_lidas||0);
-    meta.linhas_lidas+=Number(m.linhas_lidas||0);
-    const loadedAt=String(m.loaded_at||'').trim();
-    if(loadedAt){
-      const loadedMs=Date.parse(loadedAt)||0;
-      const currentMs=Date.parse(meta.loaded_at||'')||0;
-      if(!meta.loaded_at||loadedMs>=currentMs)meta.loaded_at=loadedAt;
-    }
-    const companies=Array.isArray(m.empresas_lidas)&&m.empresas_lidas.length?m.empresas_lidas:[m.empresa];
-    companies.forEach((company)=>{
-      const normalized=String(company||'').trim().toUpperCase();
-      if(normalized&&!seenCompanies.has(normalized)){
-        seenCompanies.add(normalized);
-        meta.empresas_lidas.push(normalized);
-      }
-    });
-  });
-  return {
-    ok:true,
-    empresa:_normalizeAuditEmpresaClient(empresa||'todos'),
-    summary,
-    meta,
-    items:_sortAuditServerOrder(items),
-  };
+function _clearAuditFetchCache(){
+  _stopAuditJobPolling();
+  _auditActiveJobId='';
+  _auditActiveRequestKey='';
 }
 function _buildAuditLoadedMessage(meta,prefix){
   const info=(meta&&typeof meta==='object')?meta:{};
@@ -6971,32 +7336,52 @@ function _buildAuditLoadedMessage(meta,prefix){
   const head=loadedAt?`${String(prefix||'Conferência atualizada.')} em ${_fmtDateTime(loadedAt)}`:String(prefix||'Conferência atualizada.');
   return `${head} | ${linhas} linhas lidas em ${abas} abas`;
 }
-function _prefetchAuditEmpresa(state,empresa){
-  const next=_normalizeAuditEmpresaClient(empresa);
-  if(next==='todos')return;
-  _fetchAuditPayload(state,next).catch(()=>{});
+function _applyAuditPayload(payload){
+  const data=(payload&&typeof payload==='object')?payload:{};
+  const result=(data.current_result&&typeof data.current_result==='object')?data.current_result:((data.result&&typeof data.result==='object')?data.result:null);
+  if(!result)return false;
+  _setAuditSummary(result.summary||{});
+  _renderParcelAudit(result.items||[]);
+  return true;
 }
-async function _fetchAuditPayload(state,empresa){
-  const company=_normalizeAuditEmpresaClient(empresa||state&&state.empresa||'todos');
-  const key=_auditFetchKey(state,company);
-  const now=Date.now();
-  const cached=_auditFetchCache.get(key);
-  if(cached){
-    if(cached.data&&(now-Number(cached.at||0))<=_AUDIT_FETCH_CACHE_TTL)return cached.data;
-    if(cached.promise)return cached.promise;
+function _scheduleAuditJobPoll(jobId,requestKey,delay=900){
+  _stopAuditJobPolling();
+  if(!jobId||requestKey!==_auditActiveRequestKey)return;
+  _auditJobPollTimer=window.setTimeout(()=>{
+    _auditJobPollTimer=null;
+    _pollAuditJob(jobId,requestKey).catch((err)=>console.warn('Falha ao acompanhar job da conferência:',err));
+  },delay);
+}
+async function _pollAuditJob(jobId,requestKey){
+  if(!jobId||requestKey!==_auditActiveRequestKey)return;
+  const data=await api('/api/conferencia-parcelas/job?id='+encodeURIComponent(jobId));
+  if(requestKey!==_auditActiveRequestKey)return;
+  const rendered=_applyAuditPayload(data);
+  const message=String(data&&data.message||'Atualizando conferência...').trim()||'Atualizando conferência...';
+  if(String(data&&data.status||'').trim()==='done'){
+    _auditActiveJobId='';
+    _stopAuditJobPolling();
+    _setAuditLoading(false, rendered ? _buildAuditLoadedMessage((data.result||{}).meta||{},'Conferência atualizada') : message);
+    return;
   }
-  const query=_buildAuditQuery(state,company);
-  const promise=api('/api/conferencia-parcelas?'+query.toString())
-    .then((payload)=>{
-      _auditFetchCache.set(key,{data:payload,at:Date.now()});
-      return payload;
-    })
-    .catch((err)=>{
-      _auditFetchCache.delete(key);
-      throw err;
-    });
-  _auditFetchCache.set(key,{promise,at:now});
-  return promise;
+  if(String(data&&data.status||'').trim()==='error'){
+    _auditActiveJobId='';
+    _stopAuditJobPolling();
+    _setAuditLoading(false, message || 'Falha ao conferir as planilhas.');
+    if(!rendered){
+      _setAuditSummary({});
+      if(_auditHasTabulator()&&_auditTable){
+        _auditTable.setData([]);
+        _toggleAuditRenderMode(true);
+      }
+      const body=document.getElementById('aBody');
+      if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(message)+'</td></tr>';
+    }
+    return;
+  }
+  if(rendered)_setAuditLoading(false, message);
+  else _setAuditLoading(true, message);
+  _scheduleAuditJobPoll(jobId,requestKey, rendered ? 1200 : 700);
 }
 function toggleAuditFilters(){
   const mode=((document.getElementById('aMode')||{}).value||'mes').trim();
@@ -7443,60 +7828,33 @@ async function deleteAuditRows(btn,auditKey,nf,statusLabel,deleteCandidates){
 async function loadParcelAudit(silent=false){
   const reqId=++_auditLoadSeq;
   const showLoading=!silent||_activeTab==='audit';
+  _stopAuditJobPolling();
   if(showLoading){
     _setAuditLoading(true,'Conferindo planilhas...');
   }
   try{
     const state=_readAuditUiState();
-    const empresa=state.empresa;
-    const renderResult=(payload)=>{
-      _setAuditSummary(payload&&payload.summary||{});
-      _renderParcelAudit(payload&&payload.items||[]);
-    };
-    if(empresa==='todos'){
-      const mva=await _fetchAuditPayload(state,'mva');
-      if(reqId!==_auditLoadSeq)return;
-      renderResult(mva);
-      _setAuditLoading(false,_buildAuditLoadedMessage((mva&&mva.meta)||{},'MVA pronta. EH carregando em segundo plano'));
-      try{
-        const eh=await _fetchAuditPayload(state,'eh');
-        if(reqId!==_auditLoadSeq)return;
-        const merged=_mergeAuditResponses([mva,eh],'todos');
-        renderResult(merged);
-        _setAuditLoading(false,_buildAuditLoadedMessage((merged&&merged.meta)||{},'Conferência atualizada'));
-      }catch(bgErr){
-        if(reqId!==_auditLoadSeq)return;
-        console.warn('Falha ao completar EH em segundo plano:',bgErr);
-        _setAuditStatus('MVA pronta. EH não terminou o aquecimento em segundo plano.',false);
-      }
+    const requestKey=_auditFetchKey(state,state.empresa);
+    _auditActiveRequestKey=requestKey;
+    const p=_buildAuditQuery(state,state.empresa);
+    const data=await api('/api/conferencia-parcelas/start?'+p.toString());
+    if(reqId!==_auditLoadSeq||requestKey!==_auditActiveRequestKey)return;
+    const rendered=_applyAuditPayload(data);
+    const message=String(data&&data.message||'Conferindo planilhas...').trim()||'Conferindo planilhas...';
+    if(String(data&&data.status||'').trim()==='done'){
+      _auditActiveJobId='';
+      _setAuditLoading(false, rendered ? _buildAuditLoadedMessage((data.result||{}).meta||{}, 'Conferência atualizada') : message);
       return;
     }
-    const payload=await _fetchAuditPayload(state,empresa);
+    _auditActiveJobId=String(data&&data.job_id||'').trim();
+    if(rendered)_setAuditLoading(false, message);
+    else _setAuditLoading(true, message);
     if(reqId!==_auditLoadSeq)return;
-    renderResult(payload);
-    if(empresa==='mva'){
-      _setAuditLoading(false,_buildAuditLoadedMessage((payload&&payload.meta)||{},'MVA pronta. EH aquecendo em segundo plano'));
-      const snapshotKey=_auditFetchKey(state,'mva');
-      window.setTimeout(()=>{
-        _fetchAuditPayload(state,'eh')
-          .then(()=>{
-            const sameScope=_getAuditEmpresa()==='mva'&&_auditFetchKey(_readAuditUiState(),'mva')===snapshotKey;
-            if(reqId===_auditLoadSeq&&sameScope){
-              _setAuditStatus('MVA pronta. EH aquecida para troca rápida.',false);
-            }
-          })
-          .catch(()=>{});
-      },40);
-      return;
-    }
-    if(empresa==='eh'){
-      window.setTimeout(()=>{_prefetchAuditEmpresa(state,'mva');},40);
-    }
-    if(reqId!==_auditLoadSeq)return;
-    _setAuditLoading(false,_buildAuditLoadedMessage((payload&&payload.meta)||{},'Conferência atualizada'));
+    _scheduleAuditJobPoll(_auditActiveJobId,requestKey, rendered ? 1000 : 500);
   }catch(err){
     if(reqId!==_auditLoadSeq)return;
     if(!silent)console.warn('Erro ao carregar conferência:',err);
+    _auditActiveJobId='';
     _setAuditSummary({});
     if(_auditHasTabulator()&&_auditTable){
       _auditTable.setData([]);
@@ -8242,6 +8600,28 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
                     resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim, empresa)
+                    return _json_response(self, 200, {"ok": True, **resultado})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
+            if parsed.path == "/api/conferencia-parcelas/start":
+                qs = parse_qs(parsed.query or "")
+                filtro = (qs.get("filtro", [""])[0] or "mes").strip()
+                mes = (qs.get("mes", [""])[0] or "").strip()
+                nf_inicio = (qs.get("nf_inicio", [""])[0] or "").strip()
+                nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", [""])[0] or "todos").strip()
+                try:
+                    resultado = _start_audit_job(filtro, mes, nf_inicio, nf_fim, empresa)
+                    return _json_response(self, 200, {"ok": True, **resultado})
+                except Exception as e:
+                    return _json_response(self, 500, {"ok": False, "message": str(e)})
+
+            if parsed.path == "/api/conferencia-parcelas/job":
+                qs = parse_qs(parsed.query or "")
+                job_id = (qs.get("id", [""])[0] or "").strip()
+                try:
+                    resultado = _get_audit_job(job_id)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
