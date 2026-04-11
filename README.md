@@ -118,7 +118,8 @@ No `instances.json` do Hub, use:
 - As colunas podem ser reajustadas arrastando a divisória do cabeçalho, com opção de resetar as larguras no próprio painel.
 - Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
 - Registros com NF/parcela duplicadas ficam destacados em vermelho para facilitar a identificação.
-- O botão `Excluir` remove somente o registro do histórico/relatório (`relatorios/relatorio_*.txt`). Ele não apaga a linha original da planilha.
+- A aba `Histórico` não expõe mais exclusão direta; a limpeza de sobras e duplicidades deve ser feita pela `Conferência`, que atua sobre a planilha real.
+- O toolbar do `Histórico` ficou mais enxuto e mantém apenas o botão de resetar larguras da grade.
 
 ## Conferência de parcelas
 
@@ -127,7 +128,7 @@ No `instances.json` do Hub, use:
 - No filtro por mês, a aba seleciona as NFs relacionadas ao mês escolhido e confere a NF inteira nas planilhas, em vez de depender do histórico.
 - O painel destaca NFs com parcelas faltando, duplicadas ou acima da quantidade esperada, com totais agregados no topo.
 - Ao clicar no badge de `Status` de uma NF com divergência, o Botana pede confirmação e limpa direto na planilha apenas as linhas excedentes/duplicadas identificadas automaticamente para aquela NF, sem reordenar as demais linhas.
-- Depois da exclusão pela `Conferência`, a linha não é recarregada imediatamente; ela fica marcada localmente com um sublinhado amarelo para evitar nova varredura pesada logo após a remoção.
+- Depois da limpeza pela `Conferência`, a linha não é recarregada imediatamente; ela fica marcada localmente em amarelo, com sublinhado, e o badge deixa de ser clicável para evitar uma segunda remoção acidental antes da próxima conferência.
 - Cliques em sequência no `Status` da Conferência entram em uma fila de até `3s` e são enviados em lote, usando o snapshot recém-carregado da aba em vez de reler todas as planilhas a cada exclusão.
 - A tabela da conferência não mostra mais a coluna `Parcelas`.
 - A conferência atualiza automaticamente ao abrir a aba, mostra estado de carregamento fora da tabela e informa quando a leitura das planilhas terminou.
@@ -136,6 +137,7 @@ No `instances.json` do Hub, use:
 - No modo mensal, essa conferência cruza apenas lacunas curtas entre NFs já vistas na planilha e consulta o Gmail de forma pontual/cacheada para evitar leituras longas e erros `502`.
 - Leituras seguidas de `Conferência` e `Prazos` reaproveitam por alguns segundos o snapshot recém-lido das planilhas, reduzindo rate limit do Google Sheets sem mudar a lógica da tela.
 - A `Conferência` agora tem um filtro de origem por ícone (`MVA`, `EH` ou ambas): por padrão ela abre em `MVA`, deixa `EH` aquecendo em segundo plano e reutiliza esse cache quando você troca a origem.
+- A zebra da `Conferência` acompanha a origem selecionada: `MVA` usa branco com laranja claro, `EH` usa branco com azul claro, e em `Todas` cada linha passa a herdar a cor da empresa de origem.
 - A `Conferência` agora roda em job/snapshot próprio: a aba pode mostrar um resultado parcial assim que as planilhas da origem principal terminam de ler e continua finalizando os diagnósticos em segundo plano.
 - Quando a `Drive API` estiver disponível nas credenciais do serviço, a `Conferência` reaproveita snapshots enquanto `modifiedTime/version` das planilhas não mudarem; no ambiente atual, se a `Drive API` estiver desativada, ela cai automaticamente para um snapshot local curto só para evitar releitura imediata ao sair e voltar da aba.
 - Durante as atualizações parciais/finais da `Conferência`, a aba agora preserva a posição atual da tela para não ficar puxando a viewport para cima enquanto o job ainda está carregando.
@@ -145,8 +147,9 @@ No `instances.json` do Hub, use:
 - As colunas da `Conferência` podem ser clicadas para ordenar a grade em ordem crescente ou decrescente sem perder o conteúdo já carregado.
 - No filtro `Faixa de NF` da `Conferência`, o primeiro `Enter` em `NF inicial` agora avança para `NF final`, e só depois confirma a busca.
 - Os textos explicativos longos de `Conferência` e `Prazos` passaram a ficar em `?` ao lado do título da seção, para a interface ficar mais limpa.
+- A linha de filtros da `Conferência` agora usa blocos com largura e espaçamento uniformes, incluindo `Origem` e `Conferir parcelas`, para evitar desalinhamento visual entre os controles.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Parc.`, `Faltando` e `Duplicadas` usam largura mais compacta; `Parc.` mostra `esperadas / lançadas` na mesma célula.
-- Os campos de filtro no cabeçalho da `Conferência` ficam centralizados, incluindo o de `Cliente`, para alinhar visualmente com o título da coluna.
+- Os textos e campos da grade da `Conferência` ficam centralizados; a coluna `Aba` ficou mais compacta, com fonte menor, para liberar mais espaço visual para `Cliente` e para as demais colunas principais.
 - Duplicatas extras da mesma parcela voltam a ficar limpáveis pelo badge de `Status` mesmo quando a sobra já estiver `Pago` ou `BAIXADO`, desde que exista outra linha mantida como referência da parcela.
 
 - Existe uma rota isolada de preview em `/preview/tabulator/conferencia` para comparar uma versÃ£o Tabulator da `ConferÃªncia`, com paginaÃ§Ã£o local, filtros por coluna e ordenaÃ§Ã£o dinÃ¢mica, sem substituir a aba atual do painel.
@@ -168,11 +171,6 @@ No `instances.json` do Hub, use:
 - O campo `Nome do cliente` do popup fica centralizado e usa uma lista própria de sugestões dentro do modal, em vez do `datalist` nativo do navegador.
 - Se não houver pendências para o nome buscado, o popup mostra apenas a mensagem informando que não existem boletos em aberto.
 - O autocomplete mistura os nomes salvos localmente em `%APPDATA%\\Botana\\watch_search_names.txt` com os nomes de clientes que ainda têm boletos em aberto nas planilhas, então buscas parciais como `LOCAR` passam a sugerir nomes maiores correspondentes.
-
-## Exportação do histórico
-
-- A aba `Histórico` agora usa um botão de ícone para `Exportar CSV`, com tooltip no hover.
-- A exportação respeita os mesmos filtros e o mesmo limite aplicados na consulta atual da grade.
 
 ## Ajustes de Prazos
 

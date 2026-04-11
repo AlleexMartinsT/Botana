@@ -3939,66 +3939,6 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
     }
 
 
-def _delete_history_entry(nf: str, parcela: str, at: str) -> dict:
-    """I remove a specific HIST_JSON entry from the report files.
-    # Eu removo uma entrada HIST_JSON especifica dos arquivos de relatorio."""
-    nfAlvo = str(nf or "").strip()
-    parcelaAlvo = str(parcela or "").strip()
-    atAlvo = str(at or "").strip()
-    if not nfAlvo:
-        return {"ok": False, "message": "NF não informada"}
-
-    relDir = Path(RELATORIO_DIR)
-    if not relDir.exists():
-        return {"ok": False, "message": "Diretório de relatórios não encontrado"}
-
-    arquivos = _report_files_for_reading(include_all_txt=False)
-    for arquivo in arquivos:
-        try:
-            linhas = arquivo.read_text(encoding="utf-8", errors="ignore").splitlines()
-        except Exception:
-            continue
-
-        linhasNovas = []
-        removido = False
-        for linha in linhas:
-            textoLinha = str(linha or "").strip()
-            if not textoLinha:
-                linhasNovas.append(linha)
-                continue
-            # I check if this line is the HIST_JSON entry I want to delete.
-            # Eu verifico se esta linha e a entrada HIST_JSON que eu quero deletar.
-            if "HIST_JSON " in textoLinha and not removido:
-                posJson = textoLinha.find("HIST_JSON ")
-                if posJson >= 0:
-                    jsonBruto = textoLinha[posJson + len("HIST_JSON "):].strip()
-                    try:
-                        payload = json.loads(jsonBruto)
-                        nfPayload = str(payload.get("nf") or "").strip()
-                        parcelaPayload = str(payload.get("parcela") or "").strip()
-                        atPayload = str(payload.get("at") or "").strip()
-                        # I match by NF + parcela, and optionally by timestamp.
-                        # Eu faço match por NF + parcela, e opcionalmente pelo timestamp.
-                        if nfPayload == nfAlvo and parcelaPayload == parcelaAlvo:
-                            if not atAlvo or atPayload == atAlvo:
-                                removido = True
-                                continue  # I skip this line (delete it) / Eu pulo esta linha (deleto ela)
-                    except Exception:
-                        pass
-            linhasNovas.append(linha)
-
-        if removido:
-            try:
-                arquivo.write_text("\n".join(linhasNovas) + "\n", encoding="utf-8")
-                logger.info("Entrada NF %s parcela %s removida do relatório %s", nfAlvo, parcelaAlvo, arquivo.name)
-                return {"ok": True, "message": f"NF {nfAlvo} ({parcelaAlvo}) removida com sucesso"}
-            except Exception as exc:
-                logger.exception("Falha ao reescrever relatório %s: %s", arquivo.name, exc)
-                return {"ok": False, "message": f"Falha ao salvar: {exc}"}
-
-    return {"ok": False, "message": f"Entrada NF {nfAlvo} ({parcelaAlvo}) não encontrada nos relatórios"}
-
-
 def _daily_report_data() -> dict:
     report_files = _latest_report_files()
     if not report_files:
@@ -5784,9 +5724,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-filters > div input,.hist-filters > div select{width:100%;text-align:center}
 .table-wrap{width:100%;overflow:auto;border:1px solid #d9af86;border-radius:10px;background:#fffdfb;box-shadow:inset 0 0 0 1px rgba(217,175,134,.22)}
 .hist-toolbar{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
-.hist-note{flex:1 1 420px}
 .hist-reset-btn{padding:6px 10px;font-size:.78rem}
-.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:36px;min-width:36px;padding:6px 0;font-size:1rem;line-height:1}
 .hist-table{width:100%;min-width:1240px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
 .hist-table th,.hist-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hist-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;padding-right:18px;border-bottom:2px solid #cf9c73;overflow:visible}
@@ -5797,12 +5735,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-table th.is-resizing{background:#ffe5cf}
 .col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
 .col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
-.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:8px;align-items:end;justify-content:center;max-width:1120px;margin:0 auto}
-.audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.audit-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:10px 12px;align-items:end;justify-content:center;max-width:1120px;margin:0 auto}
+.audit-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center;width:min(180px,100%);min-height:72px}
 .audit-filters > div label{width:100%;text-align:center}
 .audit-filters > div input,.audit-filters > div select{width:min(180px,100%);text-align:center}
-.audit-source-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
-.audit-source-group{display:inline-flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap}
+.audit-source-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;width:min(180px,100%);min-height:72px}
+.audit-source-group{display:inline-flex;align-items:center;justify-content:center;gap:10px;flex-wrap:nowrap;width:min(180px,100%)}
 .audit-source-btn{position:relative;display:inline-flex;align-items:center;justify-content:center;width:42px;height:42px;border-radius:12px;border:1px solid #d6b18f;background:#fffdfb;color:#6b4126;cursor:pointer;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease,background .15s ease}
 .audit-source-btn:hover{transform:translateY(-1px);box-shadow:0 6px 14px rgba(92,52,28,.12)}
 .audit-source-btn:focus-visible{outline:none;border-color:#a96024;box-shadow:0 0 0 3px rgba(218,122,28,.18)}
@@ -5812,6 +5750,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-source-btn[data-empresa="mva"] .audit-source-badge{background:#d66f17}
 .audit-source-btn[data-empresa="eh"] .audit-source-badge{background:#2d7a78}
 .audit-source-btn[data-empresa="todos"] .audit-source-badge{background:#6b4126}
+.audit-run-wrap{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;width:min(180px,100%);min-height:72px}
+.audit-run-wrap button{width:min(180px,100%)}
 .audit-title{text-align:center}
 .audit-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .audit-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -5820,26 +5760,34 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-summary .k{border:1px solid #e2b58d;border-radius:10px;background:linear-gradient(180deg,#fff7ef,#fff1e3);padding:10px;text-align:center}
 .audit-summary .n{font-size:1.3rem;font-weight:800;color:#7a3d11}
 .audit-summary .t{font-size:.8rem;color:#6b4126}
-.audit-table{width:100%;min-width:1080px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
+.audit-table{width:100%;min-width:1040px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
 .audit-table th,.audit-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .audit-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
 .audit-table th.sortable{cursor:pointer;user-select:none}
 .audit-table th.sortable:after{content:""}
 .audit-table th.sortable.asc,.audit-table th.sortable.desc{background:#fde8d2}
-.audit-col-status{width:92px}
-.audit-col-nf{width:86px}
-.audit-col-cliente{width:260px}
-.audit-col-sm{width:78px}
-.audit-col-date{width:126px}
-.audit-col-aba{width:136px}
-.audit-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
-.audit-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.audit-col-status{width:90px}
+.audit-col-nf{width:84px}
+.audit-col-cliente{width:340px}
+.audit-col-sm{width:82px}
+.audit-col-date{width:118px}
+.audit-col-aba{width:110px}
+.audit-table tbody tr{background:#fffdfb}
+.audit-table.audit-tone-mva tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.audit-table.audit-tone-eh tbody tr:nth-child(even){background:rgba(240,247,255,.96)}
+.audit-table.audit-tone-todos tbody tr.audit-row-tone-mva{background:rgba(255,244,232,.92)}
+.audit-table.audit-tone-todos tbody tr.audit-row-tone-eh{background:rgba(240,247,255,.96)}
+.audit-table.audit-tone-mva tbody tr:hover{background:rgba(255,232,208,.96)!important}
+.audit-table.audit-tone-eh tbody tr:hover{background:rgba(224,239,255,.96)!important}
+.audit-table.audit-tone-todos tbody tr.audit-row-tone-mva:hover{background:rgba(255,232,208,.96)!important}
+.audit-table.audit-tone-todos tbody tr.audit-row-tone-eh:hover{background:rgba(224,239,255,.96)!important}
 .audit-status{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
 .audit-status-btn{cursor:pointer;transition:transform .15s ease, box-shadow .15s ease}
 .audit-status-btn:hover{transform:translateY(-1px);box-shadow:0 4px 10px rgba(92,52,28,.12)}
 .audit-status-btn[disabled]{cursor:default;opacity:.78;box-shadow:none;transform:none}
 .audit-table th input{ text-align:center }
 .audit-table th input::placeholder{ text-align:center }
+.audit-table th.audit-col-aba-head,.audit-table td.audit-cell-local{font-size:.72rem}
 .audit-status.ok{background:#e9f8ec;color:#1c6a32;border-color:#87c69a}
 .audit-status.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .audit-status.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
@@ -5850,8 +5798,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-local-pending{background:rgba(240,198,79,.10)!important}
 .audit-row-local-pending:hover{background:rgba(240,198,79,.16)!important}
 .audit-row-local-pending td{border-bottom:3px dashed #f0c64f!important}
-.audit-row-local-removed{background:transparent!important}
-.audit-row-local-removed:hover{background:transparent!important}
+.audit-row-local-removed{background:rgba(240,198,79,.16)!important}
+.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 .audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
 .audit-tabulator{display:none}
 .audit-tabulator.active{display:block}
@@ -5860,13 +5808,26 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-header{border-bottom:1px solid #e7c4a5;background:#fff1e3}
 #auditTableTabulator .tabulator-col,
 #auditTableTabulator .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
+#auditTableTabulator .tabulator-col-title{display:block;width:100%;text-align:center}
 #auditTableTabulator .tabulator-header-filter input{ text-align:center }
 #auditTableTabulator .tabulator-header-filter input::placeholder{ text-align:center }
 #auditTableTabulator .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
-#auditTableTabulator .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
-#auditTableTabulator .tabulator-row:hover,
-#auditTableTabulator .tabulator-row.tabulator-selectable:hover{background:rgba(238,155,47,.08)}
-#auditTableTabulator .tabulator-cell{border-right:1px solid #f3e8dc;padding:8px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#auditTableTabulator.audit-tone-mva .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
+#auditTableTabulator.audit-tone-eh .tabulator-row:nth-child(even){background:rgba(240,247,255,.96)}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva{background:rgba(255,244,232,.92)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh{background:rgba(240,247,255,.96)!important}
+#auditTableTabulator.audit-tone-mva .tabulator-row:hover,
+#auditTableTabulator.audit-tone-mva .tabulator-row.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
+#auditTableTabulator.audit-tone-eh .tabulator-row:hover,
+#auditTableTabulator.audit-tone-eh .tabulator-row.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva:hover,
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh:hover,
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
+#auditTableTabulator .tabulator-cell{border-right:1px solid #f3e8dc;padding:8px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-col-content{font-size:.72rem}
+#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-header-filter input{font-size:.72rem}
+#auditTableTabulator .tabulator-row .tabulator-cell:last-child{font-size:.72rem}
 #auditTableTabulator .tabulator-footer{border-top:1px solid #e7c4a5;background:#fff8f1;color:#6b4126;font-size:12px;font-weight:700}
 #auditTableTabulator .tabulator-page{border:1px solid #d9d0c5;background:#fff;color:#384658}
 #auditTableTabulator .tabulator-page.active{background:var(--o);color:#2b1408;border-color:var(--o)}
@@ -5876,6 +5837,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-row.audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-pending{background:rgba(240,198,79,.10)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-pending:hover{background:rgba(240,198,79,.16)!important}
+#auditTableTabulator .tabulator-row.audit-row-local-removed{background:rgba(240,198,79,.16)!important}
+#auditTableTabulator .tabulator-row.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
+#auditTableTabulator .tabulator-row.audit-row-local-removed .tabulator-cell{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
 .watch-filters{display:grid;grid-template-columns:1fr;gap:8px;align-items:center;justify-items:center}
 .watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
@@ -5943,8 +5907,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .dup-row{background:rgba(220,53,69,.16)!important}
 .dup-row:hover{background:rgba(220,53,69,.24)!important}
 .dup-badge{display:inline-block;padding:2px 7px;border-radius:999px;font-size:.7rem;font-weight:700;background:#fde7ea;color:#a61d2d;border:1px solid #dc3545;margin-left:4px}
-.del-btn{padding:4px 8px;border:1px solid #e0a0a0;border-radius:6px;background:#fdecec;color:#b42b2b;font-size:.75rem;font-weight:600;cursor:pointer;white-space:nowrap}
-.del-btn:hover{background:#f8d7d7;border-color:#c45050}
 .ov{position:fixed;inset:0;z-index:99999;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.78);backdrop-filter:blur(3px)}
 .ov.show{display:flex}
 .ovb{width:min(440px,92vw);border-radius:14px;border:1px solid #f0c89d;background:linear-gradient(180deg,#fff6ec,#ffe8d4);text-align:center;padding:18px}
@@ -6161,9 +6123,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
       <div class="hist-toolbar">
-        <div class="muted hist-note">O botão Excluir remove somente o registro do histórico/relatório. A linha da planilha não é apagada. Arraste a divisória do cabeçalho para reajustar as colunas.</div>
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <button type="button" class="sec hist-reset-btn icon-btn" onclick="exportHistoryCsv()" title="Exportar CSV" aria-label="Exportar CSV"><span aria-hidden="true">&#8681;</span></button>
           <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
         </div>
       </div>
@@ -6178,7 +6138,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <col id="histCol-vparcela" style="width:130px"/>
             <col id="histCol-vtotal" style="width:130px"/>
             <col id="histCol-local" style="width:150px"/>
-            <col id="histCol-acao" style="width:110px"/>
           </colgroup>
           <thead>
             <tr>
@@ -6190,10 +6149,9 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th class="sortable" data-key="vparcela" data-colid="vparcela">Parcela</th>
               <th class="sortable" data-key="vtotal" data-colid="vtotal">Total</th>
               <th class="sortable" data-key="local" data-colid="local">Aba</th>
-              <th data-colid="acao">Ação</th>
             </tr>
           </thead>
-          <tbody id="hBody"><tr><td colspan="9">Sem dados</td></tr></tbody>
+          <tbody id="hBody"><tr><td colspan="8">Sem dados</td></tr></tbody>
         </table>
       </div>
     </section>
@@ -6245,7 +6203,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <label>NF final</label>
           <input id="aNfEnd" type="text" placeholder="49100"/>
         </div>
-        <div style="display:flex;align-items:end"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
+        <div class="audit-run-wrap"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
       </div>
       <div class="audit-toolbar">
         <div id="auditStatus" class="audit-state">Pronto para conferir.</div>
@@ -6267,7 +6225,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             <col class="audit-col-sm"/>
             <col class="audit-col-sm"/>
             <col class="audit-col-sm"/>
-            <col class="audit-col-sm"/>
             <col class="audit-col-date"/>
             <col class="audit-col-aba"/>
           </colgroup>
@@ -6280,7 +6237,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
               <th class="sortable" data-key="faltando">Faltando</th>
               <th class="sortable" data-key="duplicada">Duplicadas</th>
               <th class="sortable" data-key="vencimento">Últ. venc.</th>
-              <th class="sortable" data-key="local">Aba</th>
+              <th class="sortable audit-col-aba-head" data-key="local">Aba</th>
             </tr>
           </thead>
           <tbody id="aBody"><tr><td colspan="8">Sem dados</td></tr></tbody>
@@ -7205,8 +7162,7 @@ function _renderHistory(items){
     const dupTag=it.duplicata?'<span class="dup-badge">DUPLICADA</span>':'';
     const tituloCliente=_compactSpaces(it.descricao||it.cliente||'-');
     const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" title=\"${_esc(tituloCliente)}\" onclick=\"_toggleMenu(event,this)\">${_esc(it._cliente_view||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
-    const delBtn=`<button class=\"del-btn\" title=\"Remove apenas este registro do histórico\" onclick=\"deleteEntry('${_esc(it.nf||'')}','${_esc(it.parcela||'')}','${_esc(it.at||'')}')\">Excluir</button>`;
-    tr.innerHTML=`<td title=\"${_esc(_fmtDateTime(it.at))}\">${_fmtDateTime(it.at)}</td><td title=\"${_esc(it.vencimento||'-')}\">${_esc(it.vencimento||'-')}</td><td title=\"${_esc(it._doc)}\">${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td title=\"${_esc(it.parcela||'-')}\">${_esc(it.parcela||'-')}</td><td title=\"${_esc(_fmtMoney(it.valor_parcela))}\">${_fmtMoney(it.valor_parcela)}</td><td title=\"${_esc(_fmtMoney(it.valor_total))}\">${_fmtMoney(it.valor_total)}</td><td title=\"${_esc(it._local)}\">${_esc(it._local)}</td><td>${delBtn}</td>`;
+    tr.innerHTML=`<td title=\"${_esc(_fmtDateTime(it.at))}\">${_fmtDateTime(it.at)}</td><td title=\"${_esc(it.vencimento||'-')}\">${_esc(it.vencimento||'-')}</td><td title=\"${_esc(it._doc)}\">${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td title=\"${_esc(it.parcela||'-')}\">${_esc(it.parcela||'-')}</td><td title=\"${_esc(_fmtMoney(it.valor_parcela))}\">${_fmtMoney(it.valor_parcela)}</td><td title=\"${_esc(_fmtMoney(it.valor_total))}\">${_fmtMoney(it.valor_total)}</td><td title=\"${_esc(it._local)}\">${_esc(it._local)}</td>`;
     body.appendChild(tr);
   });
 }
@@ -7275,6 +7231,7 @@ function _syncAuditEmpresaButtons(){
   document.querySelectorAll('.audit-source-btn[data-empresa]').forEach((btn)=>{
     btn.classList.toggle('active',String(btn.dataset.empresa||'')===active);
   });
+  _syncAuditToneMode();
 }
 function setAuditEmpresa(value,reload=true){
   const group=document.getElementById('auditEmpresaGroup');
@@ -7457,6 +7414,40 @@ function _auditResolveRowTarget(target){
   if(target&&target.row&&typeof target.row.getData==='function')return target.row;
   return null;
 }
+function _auditInferEmpresaKey(it){
+  const explicit=_normalizeAuditEmpresaClient((it&&(
+    it.empresa||it.sheet_type||it.empresa_key
+  ))||'todos');
+  if(explicit==='mva'||explicit==='eh')return explicit;
+  const local=String((it&&(it.local_lancamento||it.aba||it._local_view||it.local_view))||'').toUpperCase();
+  if(/(^|\\b)MVA(\\b|$)/.test(local))return 'mva';
+  if(/(^|\\b)EH(\\b|$)/.test(local))return 'eh';
+  const nfNum=Number(it&&it.nf||0);
+  if(nfNum>=40000)return 'mva';
+  if(nfNum>=19000&&nfNum<40000)return 'eh';
+  return '';
+}
+function _auditToneClassForEmpresa(empresaKey){
+  const active=_getAuditEmpresa();
+  const key=String(empresaKey||'').trim().toLowerCase();
+  if(active!=='todos')return '';
+  if(key==='mva')return 'audit-row-tone-mva';
+  if(key==='eh')return 'audit-row-tone-eh';
+  return '';
+}
+function _syncAuditToneMode(){
+  const toneClass=`audit-tone-${_getAuditEmpresa()}`;
+  ['audit-tone-mva','audit-tone-eh','audit-tone-todos'].forEach((cls)=>{
+    const legacy=document.getElementById('auditTableLegacy');
+    const host=document.getElementById('auditTableTabulator');
+    if(legacy)legacy.classList.remove(cls);
+    if(host)host.classList.remove(cls);
+  });
+  const legacy=document.getElementById('auditTableLegacy');
+  const host=document.getElementById('auditTableTabulator');
+  if(legacy)legacy.classList.add(toneClass);
+  if(host)host.classList.add(toneClass);
+}
 function _mapAuditRow(it){
   const reasonHint=_compactSpaces(it.reason_hint||'');
   const local=_fmtLocal(it.local_lancamento||it.aba||'-');
@@ -7465,6 +7456,7 @@ function _mapAuditRow(it){
   const deleteCandidates=Number(it.delete_candidates||0);
   const esperadas=Number(it.qtd_esperada||0);
   const lancadas=Number(it.qtd_lancada||0);
+  const empresaKey=_auditInferEmpresaKey(it);
   return Object.assign({},it,{
     _nf_num:Number(it.nf||0),
     _status_rank:_auditStatusRank(it.status||''),
@@ -7476,6 +7468,8 @@ function _mapAuditRow(it){
     _ultimo_venc_sort:_auditDateSortValue(it.ultimo_vencimento||it.ultimo_lancamento||''),
     _status_title:reasonHint || (deleteCandidates>0 ? 'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha' : ''),
     _delete_enabled:!!(it.status&&it.status!=='ok'&&deleteCandidates>0),
+    _empresa_key:empresaKey,
+    _tone_class:_auditToneClassForEmpresa(empresaKey),
     _local_pending:false,
     _local_removed:false,
   });
@@ -7558,7 +7552,7 @@ function _ensureAuditTabulator(initialRows){
     columns:[
       {title:'Status',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:112,sorter:function(a,b,aRow,bRow){return (aRow.getData()._status_rank||0)-(bRow.getData()._status_rank||0);},formatter:_auditStatusCellFormatter},
       {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:90,sorter:'number',headerFilter:'input'},
-      {title:'Cliente',field:'_cliente_view',minWidth:300,widthGrow:4,headerFilter:'input'},
+      {title:'Cliente',field:'_cliente_view',hozAlign:'center',headerHozAlign:'center',minWidth:360,widthGrow:5,headerFilter:'input'},
       {title:'Parc.',field:'_parcelas_view',hozAlign:'center',headerHozAlign:'center',width:104,sorter:function(a,b,aRow,bRow){
         const aData=aRow.getData()||{};
         const bData=bRow.getData()||{};
@@ -7575,12 +7569,13 @@ function _ensureAuditTabulator(initialRows){
         return String(count||0);
       }},
       {title:'Últ. venc.',field:'_ultimo_venc_view',hozAlign:'center',headerHozAlign:'center',width:118,sorter:function(a,b,aRow,bRow){return (aRow.getData()._ultimo_venc_sort||0)-(bRow.getData()._ultimo_venc_sort||0);}},
-      {title:'Aba',field:'_local_view',minWidth:180,widthGrow:2,headerFilter:'input'},
+      {title:'Aba',field:'_local_view',hozAlign:'center',headerHozAlign:'center',minWidth:120,widthGrow:1,headerFilter:'input'},
     ],
     rowFormatter:function(row){
       const el=row.getElement();
       const data=row.getData()||{};
-      el.classList.remove('audit-row-aviso','audit-row-erro','audit-row-local-pending','audit-row-local-removed');
+      el.classList.remove('audit-row-aviso','audit-row-erro','audit-row-local-pending','audit-row-local-removed','audit-row-tone-mva','audit-row-tone-eh');
+      if(data._tone_class)el.classList.add(String(data._tone_class));
       if(data._local_removed)el.classList.add('audit-row-local-removed');
       else if(data._local_pending)el.classList.add('audit-row-local-pending');
       else if(data.status==='erro')el.classList.add('audit-row-erro');
@@ -7719,6 +7714,8 @@ function _renderParcelAudit(items){
   }
   arr.forEach(it=>{
     const tr=document.createElement('tr');
+    const toneClass=_auditToneClassForEmpresa(_auditInferEmpresaKey(it));
+    if(toneClass)tr.classList.add(toneClass);
     if(it.status==='erro')tr.classList.add('audit-row-erro');
     else if(it.status==='aviso')tr.classList.add('audit-row-aviso');
     const clienteView=_compactClienteLabel(it.cliente,it.descricao);
@@ -7735,7 +7732,7 @@ function _renderParcelAudit(items){
     const statusCell=(it.status&&it.status!=='ok'&&deleteCandidates>0)
       ? `<button type="button" class="audit-status audit-status-btn ${_esc(it.status||'ok')}" title="${_esc(statusTitle)}" onclick="deleteAuditRows(this,'${auditKey}','${nfValue}','${statusLabel}',${deleteCandidates})">${statusLabel}</button>`
       : `<span class="audit-status ${_esc(it.status||'ok')}"${statusTitle?` title="${_esc(statusTitle)}"`:''}>${statusLabel}</span>`;
-    tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(`${Number(it.qtd_esperada||0)} / ${Number(it.qtd_lancada||0)}`)}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
+    tr.innerHTML=`<td>${statusCell}</td><td title="${_esc(reasonHint||nfValue)}">${nfValue}</td><td title="${_esc(reasonHint||_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td>${_esc(`${Number(it.qtd_esperada||0)} / ${Number(it.qtd_lancada||0)}`)}</td><td>${_esc(String(it.qtd_faltando||0))}</td><td title="${_esc(duplicadasTxt)}">${_esc(String(it.qtd_duplicada||0))}${Number(it.qtd_duplicada||0)>0?` - ${_esc(duplicadasTxt)}`:''}</td><td title="${_esc(ultimoVenc)}">${_esc(ultimoVenc)}</td><td class="audit-cell-local" title="${_esc(reasonHint||local)}">${_esc(local)}</td>`;
     body.appendChild(tr);
   });
   _restoreAuditViewport(viewport);
@@ -7743,7 +7740,17 @@ function _renderParcelAudit(items){
 function _markAuditRowDeletedLocal(btn,message){
   const auditRow=_auditResolveRowTarget(btn);
   if(auditRow){
-    try{auditRow.update({_local_pending:false,_local_removed:true});}catch(_){}
+    const data=auditRow.getData&&auditRow.getData()||{};
+    try{
+      auditRow.update({
+        _local_pending:false,
+        _local_removed:true,
+        _delete_enabled:false,
+        _status_title:String(message||'Linhas excedentes/duplicadas já limpas desta NF.'),
+      });
+      if(typeof auditRow.reformat==='function')auditRow.reformat();
+      else if(typeof auditRow.normalizeHeight==='function')auditRow.normalizeHeight();
+    }catch(_){}
     return;
   }
   const row=btn&&btn.closest?btn.closest('tr'):null;
@@ -7759,7 +7766,16 @@ function _markAuditRowDeletedLocal(btn,message){
 function _markAuditRowPendingLocal(btn,message){
   const auditRow=_auditResolveRowTarget(btn);
   if(auditRow){
-    try{auditRow.update({_local_removed:false,_local_pending:true});}catch(_){}
+    try{
+      auditRow.update({
+        _local_removed:false,
+        _local_pending:true,
+        _delete_enabled:true,
+        _status_title:String(message||'Limpeza em fila para envio em lote.'),
+      });
+      if(typeof auditRow.reformat==='function')auditRow.reformat();
+      else if(typeof auditRow.normalizeHeight==='function')auditRow.normalizeHeight();
+    }catch(_){}
     return;
   }
   const row=btn&&btn.closest?btn.closest('tr'):null;
@@ -7775,7 +7791,19 @@ function _markAuditRowPendingLocal(btn,message){
 function _restoreAuditRowDeleteLocal(btn,message){
   const auditRow=_auditResolveRowTarget(btn);
   if(auditRow){
-    try{auditRow.update({_local_pending:false,_local_removed:false});}catch(_){}
+    const data=auditRow.getData&&auditRow.getData()||{};
+    const reasonHint=_compactSpaces(data.reason_hint||'');
+    const defaultTitle=reasonHint || 'Clique para limpar linhas excedentes/duplicadas desta NF direto na planilha';
+    try{
+      auditRow.update({
+        _local_pending:false,
+        _local_removed:false,
+        _delete_enabled:!!(data.status&&data.status!=='ok'&&Number(data.delete_candidates||0)>0),
+        _status_title:String(message||defaultTitle),
+      });
+      if(typeof auditRow.reformat==='function')auditRow.reformat();
+      else if(typeof auditRow.normalizeHeight==='function')auditRow.normalizeHeight();
+    }catch(_){}
     return;
   }
   const row=btn&&btn.closest?btn.closest('tr'):null;
@@ -7829,8 +7857,18 @@ async function deleteAuditRows(btn,auditKey,nf,statusLabel,deleteCandidates){
   const nfView=String(nf||'-').trim()||'-';
   const statusView=String(statusLabel||'-').trim()||'-';
   const count=Math.max(0, Number(deleteCandidates||0));
+  const auditRow=_auditResolveRowTarget(btn);
+  const rowData=auditRow&&auditRow.getData&&auditRow.getData()||null;
   if(!key){
     alert('Não foi possível identificar a NF selecionada.');
+    return;
+  }
+  if(rowData&&rowData._local_removed){
+    _setAuditStatus(`A limpeza da NF ${nfView} já foi aplicada localmente nesta carga.`,false);
+    return;
+  }
+  if(rowData&&rowData._local_pending){
+    _setAuditStatus(`A NF ${nfView} já está na fila de limpeza em lote.`,true);
     return;
   }
   if(count<=0){
@@ -8100,16 +8138,6 @@ async function searchOpenBoletos(){
   }finally{
     if(btn){btn.disabled=false;btn.textContent='Buscar';}
   }
-}
-async function deleteEntry(nf,parcela,at){
-  if(!nf)return;
-  const msg=`Tem certeza que deseja excluir a NF ${nf} (${parcela||'-'})?\nIsso remove apenas o registro do histórico/relatório, não a linha da planilha.`;
-  if(!confirm(msg))return;
-  try{
-    const r=await api('/api/history/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({nf:nf,parcela:parcela,at:at})});
-    if(r&&r.ok){await loadHistory();}
-    else{alert(r&&r.message||'Falha ao excluir');}
-  }catch(err){alert('Erro ao excluir: '+(err&&err.message||err));}
 }
 async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).catch(()=>{});window.location.href=_url('/login');}
 ['mode','maxPages','pageSize','intervalMin'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();saveSettings();}});});
@@ -8902,18 +8930,6 @@ def start_server(host: str, port: int, no_loop: bool = False):
                             return _json_response(self, 409, {"ok": False, "friendly": "Já existe uma correção em andamento."})
                     except Exception as e:
                         return _json_response(self, 500, {"ok": False, "friendly": f"Falha ao iniciar o assistente: {e}"})
-
-                if parsed.path == "/api/history/delete":
-                    if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
-                    nfDel = str(data.get("nf", "")).strip()
-                    parcelaDel = str(data.get("parcela", "")).strip()
-                    atDel = str(data.get("at", "")).strip()
-                    if not nfDel:
-                        return _json_response(self, 400, {"ok": False, "message": "NF não informada"})
-                    resultado = _delete_history_entry(nf=nfDel, parcela=parcelaDel, at=atDel)
-                    statusCode = 200 if resultado.get("ok") else 404
-                    return _json_response(self, statusCode, resultado)
 
                 if parsed.path == "/api/conferencia-parcelas/delete":
                     if not _can_operate(user):
