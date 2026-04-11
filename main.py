@@ -1173,6 +1173,17 @@ def _message_payment_hint(message_meta: dict | None) -> str:
     return ""
 
 
+def _should_ignore_cash_sale_xml(dados_xml: dict | None, message_meta: dict | None = None) -> bool:
+    payload = dict(dados_xml or {})
+    nat_op = str(payload.get("naturezaOperacao") or "").strip().upper()
+    if "VISTA" not in nat_op and "VENDA A VISTA" not in nat_op:
+        return False
+    payment_hint = _message_payment_hint(message_meta)
+    if payment_hint in {"deposito", "boleto"}:
+        return False
+    return True
+
+
 def _message_date_fallback(message_meta: dict | None) -> str:
     if not isinstance(message_meta, dict):
         return ""
@@ -1401,17 +1412,25 @@ def processar_emails_enviados(
                         _sync_progress()
                         try:
                             dados = extrairDadosXML(arquivo)
-                            # Ignora vendas Ã  vista
+                            # Ignora vendas à vista, exceto quando o próprio e-mail indica depósito/boleto,
+                            # porque nesses casos o fallback ainda pode montar a parcela corretamente.
                             nat_op = dados.get("naturezaOperacao", "").strip().upper()
                             dest_nome = dados.get("destinatario", "")
                             dest_cnpj = re.sub(r"\D+", "", str(dados.get("cnpjDestinatario") or ""))
-                            if ( "VISTA" in nat_op or "VENDA A VISTA" in nat_op):
+                            payment_hint = _message_payment_hint(message_meta)
+                            if _should_ignore_cash_sale_xml(dados, message_meta):
                                 # Checa se a mensagem jÃ¡ foi processada no relatÃ³rio atual:
                                 if dados.get('nf') not in consolidarRelatorioTMP():
                                     escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda Ã  vista).")
                                     continue
                                 else: logger.info(f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}")
                                 continue
+                            if ("VISTA" in nat_op or "VENDA A VISTA" in nat_op) and payment_hint in {"deposito", "boleto"}:
+                                logger.info(
+                                    "NF %s mantida para processamento apesar de venda à vista porque o e-mail indica %s.",
+                                    dados.get("nf"),
+                                    payment_hint,
+                                )
                             cnpj_mva = re.sub(r"\D+", "", str(CNPJ_MVA or ""))
                             cnpj_eh = re.sub(r"\D+", "", str(CNPJ_EH or ""))
                             if dest_cnpj and (dest_cnpj == cnpj_mva or dest_cnpj == cnpj_eh):
@@ -5750,7 +5769,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-source-btn[data-empresa="mva"] .audit-source-badge{background:#d66f17}
 .audit-source-btn[data-empresa="eh"] .audit-source-badge{background:#2d7a78}
 .audit-source-btn[data-empresa="todos"] .audit-source-badge{background:#6b4126}
-.audit-run-wrap{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;width:min(180px,100%);min-height:72px}
+.audit-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(180px,100%);min-height:72px}
+.audit-run-wrap label{width:100%;text-align:center;visibility:hidden}
 .audit-run-wrap button{width:min(180px,100%)}
 .audit-title{text-align:center}
 .audit-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
@@ -6203,7 +6223,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <label>NF final</label>
           <input id="aNfEnd" type="text" placeholder="49100"/>
         </div>
-        <div class="audit-run-wrap"><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
+        <div class="audit-run-wrap"><label aria-hidden="true">&nbsp;</label><button id="auditRunBtn" onclick="loadParcelAudit()">Conferir parcelas</button></div>
       </div>
       <div class="audit-toolbar">
         <div id="auditStatus" class="audit-state">Pronto para conferir.</div>

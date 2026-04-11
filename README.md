@@ -108,6 +108,7 @@ No `instances.json` do Hub, use:
 - Quando o XML vier só com a fatura total (`fat`) mas o e-mail trouxer vários boletos PDF, o Botana tenta extrair vencimento e valor de cada boleto para reconstruir as parcelas antes de lançar no financeiro.
 - Esse fallback de boletos PDF também cobre XMLs sem parcelas, desde que os boletos do e-mail tragam vencimento e valor compatíveis com a NF.
 - Quando o XML vier sem parcelas e o e-mail indicar `DEPÓSITO` no assunto ou no corpo, o Botana usa esse sinal para montar um lançamento único de `DEP`, reaproveitando o valor total do XML e a data de emissão como fallback de vencimento.
+- Mesmo quando o XML vier como `VENDA À VISTA`, o Botana não ignora mais a mensagem se o próprio e-mail indicar `DEPÓSITO` ou `BOLETO`; nesses casos ele deixa o fallback completar a parcela antes de decidir o lançamento.
 
 ## Histórico no painel
 
@@ -148,6 +149,7 @@ No `instances.json` do Hub, use:
 - No filtro `Faixa de NF` da `Conferência`, o primeiro `Enter` em `NF inicial` agora avança para `NF final`, e só depois confirma a busca.
 - Os textos explicativos longos de `Conferência` e `Prazos` passaram a ficar em `?` ao lado do título da seção, para a interface ficar mais limpa.
 - A linha de filtros da `Conferência` agora usa blocos com largura e espaçamento uniformes, incluindo `Origem` e `Conferir parcelas`, para evitar desalinhamento visual entre os controles.
+- O botão `Conferir parcelas` agora reserva a mesma altura-base dos campos com label, então ele fica alinhado com `Modo`, `Mês` e `Origem` em vez de subir visualmente na linha.
 - O cabeçalho da conferência fica centralizado e as colunas `Status`, `NF`, `Parc.`, `Faltando` e `Duplicadas` usam largura mais compacta; `Parc.` mostra `esperadas / lançadas` na mesma célula.
 - Os textos e campos da grade da `Conferência` ficam centralizados; a coluna `Aba` ficou mais compacta, com fonte menor, para liberar mais espaço visual para `Cliente` e para as demais colunas principais.
 - Duplicatas extras da mesma parcela voltam a ficar limpáveis pelo badge de `Status` mesmo quando a sobra já estiver `Pago` ou `BAIXADO`, desde que exista outra linha mantida como referência da parcela.
