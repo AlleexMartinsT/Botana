@@ -93,6 +93,8 @@ No `instances.json` do Hub, use:
 - Ao concluir um reprocessamento com mensagens mais antigas ainda disponíveis, o painel abre um popup automático perguntando se você quer continuar do próximo lote; se confirmar, basta informar a quantidade adicional.
 - As duas barras de progresso passam a refletir o reprocessamento ativo, incluindo o limite pedido no painel.
 - As mensagens de status do ciclo manual e automático no painel usam acentuação PT-BR correta.
+- No resumo de `Últimos processados`, linhas consecutivas idênticas do ciclo deixam de aparecer em flood, passam a ser agrupadas com contador (`2x`, `3x` etc.) e a acentuação dos resumos do ciclo é normalizada antes de entrar na lista.
+- As mensagens de ignorar NF por `venda à vista` também passaram a sair com acentuação correta no relatório/painel.
 - Os cards `Configuração do Gmail`, `Autenticação` e `Reprocessar e-mails` usam altura natural no grid principal, sem forçar a mesma altura entre si.
 
 - No modo `Escolha manual`, a recuperação passou a medir o progresso pelo total de NFs pedidas, em vez de começar com um teto genérico como `0/1000`.
@@ -120,6 +122,8 @@ No `instances.json` do Hub, use:
 - Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
 - A aba `Histórico` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), seguindo a mesma lógica visual da `Conferência`.
 - A grade real do `Histórico` agora usa `Tabulator`, com paginação local, filtros por coluna, resize de colunas e fallback para a tabela HTML antiga se a biblioteca não carregar.
+- Quando uma nova consulta do `Histórico` começa, a grade anterior fica coberta por uma tela de loading, em vez de manter os dados velhos aparentes até a resposta chegar.
+- O rótulo curto de `Cliente` passou a ignorar prefixos numéricos no começo da descrição, como CNPJs abreviados (`34.826.916 ...`), e quando o texto terminar só com o número do boleto ele mostra `(... BLT)` sem carregar esse número bruto para a grade.
 - Registros com NF/parcela duplicadas ficam destacados em vermelho para facilitar a identificação.
 - A aba `Histórico` não expõe mais exclusão direta; a limpeza de sobras e duplicidades deve ser feita pela `Conferência`, que atua sobre a planilha real.
 - O toolbar do `Histórico` ficou mais enxuto e mantém apenas o botão de resetar larguras da grade.
@@ -142,6 +146,7 @@ No `instances.json` do Hub, use:
 - A `Conferência` agora tem um filtro de origem por ícone (`MVA`, `EH` ou ambas): por padrão ela abre em `MVA`, deixa `EH` aquecendo em segundo plano e reutiliza esse cache quando você troca a origem.
 - A zebra da `Conferência` acompanha a origem selecionada: `MVA` usa branco com laranja claro, `EH` usa branco com azul claro, e em `Todas` cada linha passa a herdar a cor da empresa de origem.
 - A `Conferência` agora roda em job/snapshot próprio: a aba pode mostrar um resultado parcial assim que as planilhas da origem principal terminam de ler e continua finalizando os diagnósticos em segundo plano.
+- Ao iniciar uma nova `Conferência`, a grade anterior fica coberta por uma tela de loading até o primeiro lote novo do job entrar na tela, evitando a leitura visual do resultado anterior como se ele ainda estivesse válido.
 - Quando a `Drive API` estiver disponível nas credenciais do serviço, a `Conferência` reaproveita snapshots enquanto `modifiedTime/version` das planilhas não mudarem; no ambiente atual, se a `Drive API` estiver desativada, ela cai automaticamente para um snapshot local curto só para evitar releitura imediata ao sair e voltar da aba.
 - Durante as atualizações parciais/finais da `Conferência`, a aba agora preserva a posição atual da tela para não ficar puxando a viewport para cima enquanto o job ainda está carregando.
 - Os campos de `NF inicial` e `NF final` da `Conferência` só aparecem quando o modo ativo é `Faixa de NF`, evitando espaço morto na linha de filtros.
@@ -160,6 +165,7 @@ No `instances.json` do Hub, use:
 
 - A aba real da `ConferÃªncia` agora usa `Tabulator` no front para ordenaÃ§Ã£o nativa, filtros por coluna, paginaÃ§Ã£o local e resize de colunas, com fallback automÃ¡tico para a grade HTML antiga se a biblioteca nÃ£o carregar.
 - Na primeira carga da `Conferência`, o grid Tabulator já nasce com os dados do lote atual e limpa filtros/ordenação antigos antes de recarregar, evitando o estado em que os totais apareciam no topo mas a tabela ficava vazia.
+- Quando a `Conferência` recebe atualizações do mesmo job em segundo plano, a grade preserva a página atual em vez de voltar para a página `1`; ela só reinicia a paginação quando o filtro principal muda.
 - A grade Tabulator da `Conferência` agora mantém todas as colunas na mesma linha com scroll horizontal normal, sem criar linhas extras automáticas de detalhe como `Aba -` embaixo de cada registro.
 
 ## Prazos no painel
@@ -169,9 +175,12 @@ No `instances.json` do Hub, use:
 - O painel separa boletos próximos do vencimento e depósitos atrasados, usando dias úteis e filtros customizáveis de `1` a `7`.
 - Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
-- A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
+- A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos atrasados e depósitos atrasados.
 - A aba `Prazos` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), no mesmo padrão da `Conferência`.
+- Os filtros de `Prazos` agora se dividem em uma caixa `Filtrar em dias:` com os campos compactos de `Boletos` e `Depósitos`, alinhada na mesma linha de `Origem` e do botão `Atualizar relação`.
 - A grade principal de `Prazos` agora usa `Tabulator`, com paginação local, filtros por coluna e fallback para a tabela HTML antiga se a biblioteca não carregar.
+- Ao recarregar `Prazos`, a relação anterior fica coberta por uma tela de loading enquanto a nova leitura das planilhas está em andamento.
+- A grade de `Prazos` também preserva a página atual quando a mesma consulta é atualizada, evitando reset desnecessário da paginação durante recargas equivalentes.
 - Os botões de atualização da relação e da busca por nome ficam em linhas separadas, com espaçamento próprio no card da aba `Prazos`.
 - O botão `Buscar boletos em aberto` abre um popup próprio, fora do front-end nativo do navegador, para consultar por nome do cliente.
 - O campo `Nome do cliente` do popup fica centralizado e usa uma lista própria de sugestões dentro do modal, em vez do `datalist` nativo do navegador.

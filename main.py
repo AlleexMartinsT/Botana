@@ -858,16 +858,22 @@ def _now():
 
 def _normalize_report_text(text: str) -> str:
     out = str(text or "")
-    markers = ("Ãƒ", "Ã‚", "Ã¢", "Ã°Å¸", "ï¿½", "Ñ€ÑŸ")
-    if any(m in out for m in markers):
+    markers = ("Ã", "Â", "Ãƒ", "Ã‚", "Ã¢", "Ã°Å¸", "ï¿½", "Ñ€ÑŸ")
+    for _ in range(3):
+        if not any(m in out for m in markers):
+            break
+        changed = False
         for enc in ("latin-1", "cp1252", "cp1251"):
             try:
                 fixed = out.encode(enc).decode("utf-8")
-                if fixed:
+                if fixed and fixed != out:
                     out = fixed
+                    changed = True
                     break
             except Exception:
                 continue
+        if not changed:
+            break
     replacements = {
         "ÃƒÂ¡": "Ã¡",
         "ÃƒÂ¢": "Ã¢",
@@ -1363,7 +1369,7 @@ def processar_emails_enviados(
 
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
-            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lanÃ§amentos.")
+            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lan\u00e7amentos.")
             _sync_progress()
             return _summary()
 
@@ -1421,7 +1427,7 @@ def processar_emails_enviados(
                             if _should_ignore_cash_sale_xml(dados, message_meta):
                                 # Checa se a mensagem jÃ¡ foi processada no relatÃ³rio atual:
                                 if dados.get('nf') not in consolidarRelatorioTMP():
-                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda Ã  vista).")
+                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda \u00e0 vista).")
                                     continue
                                 else: logger.info(f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}")
                                 continue
@@ -1665,7 +1671,7 @@ def processar_emails_enviados(
         break
     logger.info("Ciclo finalizado. Total processado: %d", total_processados)
     escreverRelatorio(
-        f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lanÃ§amentos."
+        f"{_now()} - CICLO: {total_msgs} e-mails lidos, {anexos_lidos} anexos, {xmls_lidos} XML, {total_processados} lan\u00e7amentos."
     )
     _sync_progress()
     return _summary()
@@ -1683,10 +1689,10 @@ def main_loop():
                 summary = processar_emails_enviados()
             _process_finish(ok=True, error="")
             msg = (
-                f"Ciclo concluÃ­do: {int((summary or {}).get('messages', 0))} e-mails, "
+                f"Ciclo conclu\u00eddo: {int((summary or {}).get('messages', 0))} e-mails, "
                 f"{int((summary or {}).get('attachments', 0))} anexos, "
                 f"{int((summary or {}).get('xmls', 0))} XML, "
-                f"{int((summary or {}).get('launched', 0))} lanÃ§amentos."
+                f"{int((summary or {}).get('launched', 0))} lan\u00e7amentos."
             )
             last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
         except Exception as e:
@@ -2285,6 +2291,32 @@ def _history_from_reports(
         item["duplicata"] = bool(chave[0] and contadorChaves.get(chave, 0) > 1)
 
     return out
+
+
+def _collapse_repeated_messages(items: list[str]) -> list[str]:
+    collapsed: list[str] = []
+    last_text = ""
+    repeat_count = 0
+
+    def _flush() -> None:
+        nonlocal last_text, repeat_count
+        if not last_text:
+            return
+        suffix = f" ({repeat_count}x)" if repeat_count > 1 else ""
+        collapsed.append(f"{last_text}{suffix}")
+
+    for raw in items:
+        text = _normalize_report_text(str(raw or "").strip())
+        if not text:
+            continue
+        if text == last_text:
+            repeat_count += 1
+            continue
+        _flush()
+        last_text = text
+        repeat_count = 1
+    _flush()
+    return collapsed
 
 
 def _report_base_name(path: Path) -> str:
@@ -4046,6 +4078,9 @@ def _daily_report_data() -> dict:
         "avisos_ciclo": len(avisos),
         "avisos_dia": len(avisos),
     }
+    processados_view = _collapse_repeated_messages(processados)
+    ignorados_view = _collapse_repeated_messages(ignorados)
+    avisos_view = _collapse_repeated_messages(avisos)
     latest_mtime = max(fp.stat().st_mtime for fp in report_files)
     updated_at = datetime.fromtimestamp(latest_mtime).strftime("%d/%m/%Y, %H:%M:%S")
     return {
@@ -4053,9 +4088,9 @@ def _daily_report_data() -> dict:
         "path": " | ".join(str(fp) for fp in report_files),
         "updated_at": updated_at,
         "totals": totals,
-        "processados": processados[-8:],
-        "ignorados": ignorados[-8:],
-        "avisos": avisos[-8:],
+        "processados": processados_view[-8:],
+        "ignorados": ignorados_view[-8:],
+        "avisos": avisos_view[-8:],
     }
 
 
@@ -5777,6 +5812,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-run-wrap label{width:100%;text-align:center;visibility:hidden}
 .hist-run-wrap button{width:min(180px,100%)}
 .table-wrap{width:100%;overflow:auto;border:1px solid #d9af86;border-radius:10px;background:#fffdfb;box-shadow:inset 0 0 0 1px rgba(217,175,134,.22)}
+.table-wrap.has-loading{position:relative;min-height:320px}
+.table-loading{position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:7;background:rgba(255,248,241,.92);backdrop-filter:blur(2px)}
+.table-loading.show{display:flex}
+.table-loading-box{display:grid;justify-items:center;gap:10px;padding:20px 24px;border:1px solid rgba(214,177,143,.75);border-radius:16px;background:linear-gradient(180deg,#fffaf4,#fff1e4);box-shadow:0 18px 36px rgba(58,28,12,.14)}
+.table-loading-spinner{width:38px;height:38px;border-radius:50%;border:3px solid rgba(207,138,76,.2);border-top-color:#cf8a4c;animation:table-load-spin .9s linear infinite}
+.table-loading-text{font-size:.84rem;font-weight:700;color:#6b4126;text-align:center;max-width:240px}
+@keyframes table-load-spin{to{transform:rotate(360deg)}}
 .hist-toolbar{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .hist-reset-btn{padding:6px 10px;font-size:.78rem}
 .hist-table{width:100%;min-width:1240px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d}
@@ -5964,13 +6006,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-row.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed .tabulator-cell{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
-.watch-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:10px 12px;align-items:end;justify-content:center;max-width:960px;margin:0 auto}
-.watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center;width:min(180px,100%);min-height:72px}
-.watch-filters > div label{width:100%;text-align:center}
-.watch-filters > div input{width:min(180px,100%);text-align:center}
-.watch-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(180px,100%);min-height:72px}
+.watch-filters{display:grid;grid-template-columns:minmax(320px,380px) minmax(150px,180px) minmax(180px,200px);gap:10px 12px;align-items:end;justify-content:center;max-width:940px;margin:0 auto}
+.watch-days-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;min-height:72px;padding:10px 12px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
+.watch-days-title{width:100%;text-align:center;font-weight:700;color:#5c341c;font-size:.86rem}
+.watch-days-grid{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end}
+.watch-days-field{display:flex;flex-direction:column;align-items:center;justify-content:center}
+.watch-days-field label{width:100%;text-align:center}
+.watch-days-field input{width:52px;min-width:52px;text-align:center}
+.watch-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(200px,100%);min-height:72px}
 .watch-run-wrap label{width:100%;text-align:center;visibility:hidden}
-.watch-run-wrap button{width:min(180px,100%)}
+.watch-run-wrap button{width:min(200px,100%)}
 .watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -6057,8 +6102,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-fields input{width:min(110px,100%);text-align:center}
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(280px,360px) minmax(150px,180px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-days-grid{grid-template-columns:1fr}.watch-run-wrap{grid-column:auto}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
 </style>
 <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
 </head><body>
@@ -6278,7 +6323,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <button type="button" class="sec hist-reset-btn" onclick="resetHistColumnWidths()">Resetar larguras</button>
         </div>
       </div>
-      <div class="table-wrap" style="margin-top:10px">
+      <div class="table-wrap has-loading" style="margin-top:10px">
+        <div id="histTableLoading" class="table-loading" aria-live="polite" aria-hidden="true">
+          <div class="table-loading-box">
+            <div class="table-loading-spinner" aria-hidden="true"></div>
+            <div class="table-loading-text">Carregando histórico...</div>
+          </div>
+        </div>
         <div id="histTableTabulator" class="panel-tabulator"></div>
         <table id="histTableLegacy" class="hist-table">
           <colgroup>
@@ -6318,7 +6369,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </span>
       </div>
       <div class="audit-filters">
-        <div>
+        <div class="watch-days-card">
           <label>Modo</label>
           <select id="aMode" onchange="toggleAuditFilters()">
             <option value="mes">Mês do lançamento</option>
@@ -6367,7 +6418,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="k"><div id="auditK4" class="n">0</div><div class="t">Parcelas lançadas</div></div>
         <div class="k"><div id="auditK5" class="n">0</div><div class="t">Duplicadas</div></div>
       </div>
-      <div class="table-wrap" style="margin-top:10px">
+      <div class="table-wrap has-loading" style="margin-top:10px">
+        <div id="auditTableLoading" class="table-loading" aria-live="polite" aria-hidden="true">
+          <div class="table-loading-box">
+            <div class="table-loading-spinner" aria-hidden="true"></div>
+            <div class="table-loading-text">Conferindo planilhas...</div>
+          </div>
+        </div>
         <div id="auditTableTabulator" class="audit-tabulator"></div>
         <table id="auditTableLegacy" class="audit-table">
           <colgroup>
@@ -6407,13 +6464,18 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </span>
       </div>
       <div class="watch-filters">
-        <div>
-          <label>Boletos em até</label>
-          <input id="wBoletoDays" type="number" min="1" max="7" value="7"/>
-        </div>
-        <div>
-          <label>Depósitos há pelo menos</label>
-          <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
+        <div class="watch-days-card">
+          <div class="watch-days-title">Filtrar em dias:</div>
+          <div class="watch-days-grid">
+            <div class="watch-days-field">
+              <label>Boletos</label>
+              <input id="wBoletoDays" type="number" min="1" max="7" value="7"/>
+            </div>
+            <div class="watch-days-field">
+              <label>Depósitos</label>
+              <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
+            </div>
+          </div>
         </div>
         <div class="audit-source-wrap">
           <label>Origem</label>
@@ -6443,10 +6505,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       <div class="watch-summary">
         <div class="k"><div id="watchK1" class="n">0</div><div class="t">Total na relação</div></div>
         <div class="k"><div id="watchK2" class="n">0</div><div class="t">Boletos a vencer</div></div>
-        <div class="k"><div id="watchK3" class="n">0</div><div class="t">Boletos no limite</div></div>
+        <div class="k"><div id="watchK3" class="n">0</div><div class="t">Boletos atrasados</div></div>
         <div class="k"><div id="watchK4" class="n">0</div><div class="t">Depósitos atrasados</div></div>
       </div>
-      <div class="table-wrap" style="margin-top:10px">
+      <div class="table-wrap has-loading" style="margin-top:10px">
+        <div id="watchTableLoading" class="table-loading" aria-live="polite" aria-hidden="true">
+          <div class="table-loading-box">
+            <div class="table-loading-spinner" aria-hidden="true"></div>
+            <div class="table-loading-text">Carregando prazos...</div>
+          </div>
+        </div>
         <div id="watchTableTabulator" class="panel-tabulator"></div>
         <table id="watchTableLegacy" class="watch-table">
           <colgroup>
@@ -7186,16 +7254,23 @@ function _fmtDateTime(v){
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
 function _compactClienteLabel(cliente,descricao){
-  const fonte=_compactSpaces(descricao||cliente||'');
+  const fonteOriginal=_compactSpaces(descricao||cliente||'');
+  if(!fonteOriginal)return '-';
+  const fonteSemPrefixo=fonteOriginal.replace(/^(?:\\d[\\d.\\-/]{2,}\\s+)+/,'').trim();
+  const fonte=fonteSemPrefixo||fonteOriginal;
   if(!fonte)return '-';
   const blt=(fonte.match(/\\bBLT[\\s:-]*(\\d+(?:-\\d+)*)\\b/i)||[])[1]||'';
+  const hasFallbackBlt=!blt&&/\\s\\d{3,6}(?:-\\d+)?\\s*$/.test(fonte);
   let base=fonte.replace(/\\bBLT[\\s:-]*\\d+(?:-\\d+)*.*$/i,'').trim();
+  if(hasFallbackBlt)base=base.replace(/\\s\\d{3,6}(?:-\\d+)?\\s*$/,'').trim();
   if(!base)base=fonte;
   const palavras=base.split(/\\s+/).filter(Boolean);
   const uteis=palavras.filter(p=>!/^(DE|DA|DO|DAS|DOS|E)$/i.test(p));
   const escolhidas=(uteis.length?uteis:palavras).slice(0,blt?2:3).join(' ');
   const nomeCurto=_compactSpaces(escolhidas||base);
-  return _compactSpaces(blt?`${nomeCurto} ${blt}`:nomeCurto);
+  if(blt)return _compactSpaces(`${nomeCurto} ${blt}`);
+  if(hasFallbackBlt)return _compactSpaces(`${nomeCurto} (BLT)`);
+  return nomeCurto;
 }
 function _toggleMenu(ev,btn){ev.stopPropagation();const wrap=btn.closest('.cell-menu');document.querySelectorAll('.cell-menu.open').forEach(x=>{if(x!==wrap)x.classList.remove('open');});wrap.classList.toggle('open');}
 async function _showCnpj(ev,btn){ev.stopPropagation();const cnpj=btn.getAttribute('data-cnpj')||'-';try{await navigator.clipboard.writeText(cnpj);}catch(_){}const wrap=btn.closest('.cell-menu');if(wrap)wrap.classList.remove('open');}
@@ -7216,6 +7291,11 @@ let _auditSort={key:'',dir:'asc'};
 let _auditTable=null;
 let _historyTable=null;
 let _watchTable=null;
+let _historyGridStateKey='';
+let _historyActiveRequestKey='';
+let _watchGridStateKey='';
+let _watchActiveRequestKey='';
+let _auditGridStateKey='';
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -7366,6 +7446,42 @@ function _toneClassForEmpresa(activeEmpresa,empresaKey){
   if(key==='eh')return 'audit-row-tone-eh';
   return '';
 }
+function _getTabulatorPageSafe(table){
+  if(!table||typeof table.getPage!=='function')return 1;
+  try{
+    const page=Number(table.getPage());
+    return Number.isFinite(page)&&page>0?page:1;
+  }catch(_){
+    return 1;
+  }
+}
+async function _setTabulatorDataPreservingState(table,rows,options={}){
+  if(!table)return;
+  const nextRows=Array.isArray(rows)?rows:[];
+  const resetState=!!(options&&options.resetState);
+  const targetPage=resetState?1:_getTabulatorPageSafe(table);
+  await table.setData(nextRows);
+  try{
+    if(typeof table.setPage==='function'){
+      if(resetState){
+        await table.setPage(1);
+      }else{
+        const maxPage=typeof table.getPageMax==='function'?Number(table.getPageMax()||1):1;
+        const safePage=Math.max(1,Math.min(targetPage,Number.isFinite(maxPage)&&maxPage>0?maxPage:1));
+        await table.setPage(safePage);
+      }
+    }
+  }catch(_){}
+  try{table.redraw(true);}catch(_){}
+}
+function _setTableLoading(id,active,message=''){
+  const el=document.getElementById(id);
+  if(!el)return;
+  const text=el.querySelector('.table-loading-text');
+  if(text&&message)text.textContent=String(message);
+  el.classList.toggle('show',!!active);
+  el.setAttribute('aria-hidden',active?'false':'true');
+}
 function _toggleHistoryRenderMode(useTabulator){
   const host=document.getElementById('histTableTabulator');
   const legacy=document.getElementById('histTableLegacy');
@@ -7457,8 +7573,12 @@ function _renderHistory(items){
   if(_historyHasTabulator()){
     const table=_ensureHistoryTabulator(arr);
     if(table){
+      const resetState=_historyGridStateKey!==_historyActiveRequestKey;
       _toggleHistoryRenderMode(true);
-      try{table.setData(arr);}catch(_){}
+      _setTabulatorDataPreservingState(table,arr,{resetState}).catch((err)=>{
+        console.warn('Falha ao atualizar grade do histórico:',err);
+      });
+      _historyGridStateKey=_historyActiveRequestKey;
       return;
     }
   }
@@ -7518,15 +7638,20 @@ function exportHistoryCsv(){
   }
 }
 async function loadHistory(silent=false){
+  const showOverlay=!silent;
   try{
     const p=_historyParams();
+    _historyActiveRequestKey=p.toString();
+    if(showOverlay)_setTableLoading('histTableLoading',true,'Carregando histórico...');
     const j=await api('/api/history?'+p.toString());
     const items=(j&&Array.isArray(j.items))?j.items:[];
     _renderHistory(items);
+    _setTableLoading('histTableLoading',false);
   }catch(err){
     if(!silent)console.warn('Erro ao carregar histórico:',err);
+    _setTableLoading('histTableLoading',false);
     if(_historyHasTabulator()&&_historyTable){
-      try{_historyTable.setData([]);}catch(_){}
+      try{_setTabulatorDataPreservingState(_historyTable,[],{resetState:true});}catch(_){}
       _toggleHistoryRenderMode(true);
       return;
     }
@@ -7836,23 +7961,11 @@ function _restoreAuditViewport(viewport){
   try{window.requestAnimationFrame(()=>window.requestAnimationFrame(apply));}
   catch(_){setTimeout(apply,0);}
 }
-async function _setAuditTabulatorData(table,rows){
+async function _setAuditTabulatorData(table,rows,options={}){
   if(!table)return;
   const nextRows=Array.isArray(rows)?rows:[];
   const viewport=_captureAuditViewport();
-  try{
-    if(typeof table.clearHeaderFilter==='function')table.clearHeaderFilter();
-  }catch(_){}
-  try{
-    if(typeof table.clearSort==='function')table.clearSort();
-  }catch(_){}
-  await table.setData(nextRows);
-  try{
-    if(typeof table.setPage==='function')table.setPage(1);
-  }catch(_){}
-  try{
-    table.redraw(true);
-  }catch(_){}
+  await _setTabulatorDataPreservingState(table,nextRows,options);
   _restoreAuditViewport(viewport);
 }
 function _ensureAuditTabulator(initialRows){
@@ -7996,6 +8109,7 @@ function _setAuditLoading(active,message=''){
     btn.textContent=active?'Conferindo...':'Conferir parcelas';
   }
   _setAuditStatus(message|| (active?'Conferindo planilhas...':'Pronto para conferir.'),active);
+  _setTableLoading('auditTableLoading',active,message||(active?'Conferindo planilhas...':''));
 }
 function _setAuditSummary(summary){
   const s=summary||{};
@@ -8013,11 +8127,16 @@ function _renderParcelAudit(items){
     const table=_ensureAuditTabulator(rows);
     _toggleAuditRenderMode(!!table);
     if(table){
-      if(isFirstBuild)_restoreAuditViewport(viewport);
+      if(isFirstBuild){
+        _auditGridStateKey=_auditActiveRequestKey;
+        _restoreAuditViewport(viewport);
+      }
       if(!isFirstBuild){
-        _setAuditTabulatorData(table,rows).catch((err)=>{
+        const resetState=_auditGridStateKey!==_auditActiveRequestKey;
+        _setAuditTabulatorData(table,rows,{resetState}).catch((err)=>{
           console.warn('Falha ao atualizar grade da conferência:',err);
         });
+        _auditGridStateKey=_auditActiveRequestKey;
       }
       return;
     }
@@ -8274,6 +8393,7 @@ function _setWatchLoading(active,message=''){
     btn.textContent=active?'Atualizando...':'Atualizar relação';
   }
   _setWatchStatus(message||(active?'Lendo planilhas...':'Pronto para consultar.'),active);
+  _setTableLoading('watchTableLoading',active,message||(active?'Carregando prazos...':''));
 }
 function _getWatchEmpresa(){
   const group=document.getElementById('watchEmpresaGroup');
@@ -8379,8 +8499,12 @@ function _renderDueWatch(items){
   if(_historyHasTabulator()){
     const table=_ensureWatchTabulator(arr);
     if(table){
+      const resetState=_watchGridStateKey!==_watchActiveRequestKey;
       _toggleWatchRenderMode(true);
-      try{table.setData(arr);}catch(_){}
+      _setTabulatorDataPreservingState(table,arr,{resetState}).catch((err)=>{
+        console.warn('Falha ao atualizar grade de prazos:',err);
+      });
+      _watchGridStateKey=_watchActiveRequestKey;
       return;
     }
   }
@@ -8420,6 +8544,7 @@ async function loadDueWatch(silent=false){
     p.set('boleto_dias',String(boletoDays));
     p.set('deposito_dias',String(depositoDays));
     p.set('empresa',empresa);
+    _watchActiveRequestKey=p.toString();
     const j=await api('/api/prazos?'+p.toString());
     if(reqId!==_watchLoadSeq)return;
     _setWatchSummary(j&&j.summary||{});
@@ -8737,16 +8862,23 @@ async function api(path,opts){const r=await fetch(_url(path),opts);const j=await
 function _esc(s){return String(s??'').replace(/[&<>\"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));}
 function _compactSpaces(s){return String(s||'').replace(/\\s+/g,' ').trim();}
 function _compactClienteLabel(cliente,descricao){
-  const fonte=_compactSpaces(descricao||cliente||'');
+  const fonteOriginal=_compactSpaces(descricao||cliente||'');
+  if(!fonteOriginal)return '-';
+  const fonteSemPrefixo=fonteOriginal.replace(/^(?:\\d[\\d.\\-/]{2,}\\s+)+/,'').trim();
+  const fonte=fonteSemPrefixo||fonteOriginal;
   if(!fonte)return '-';
   const blt=(fonte.match(/\\bBLT[\\s:-]*(\\d+(?:-\\d+)*)\\b/i)||[])[1]||'';
+  const hasFallbackBlt=!blt&&/\\s\\d{3,6}(?:-\\d+)?\\s*$/.test(fonte);
   let base=fonte.replace(/\\bBLT[\\s:-]*\\d+(?:-\\d+)*.*$/i,'').trim();
+  if(hasFallbackBlt)base=base.replace(/\\s\\d{3,6}(?:-\\d+)?\\s*$/,'').trim();
   if(!base)base=fonte;
   const palavras=base.split(/\\s+/).filter(Boolean);
   const uteis=palavras.filter(p=>!/^(DE|DA|DO|DAS|DOS|E)$/i.test(p));
   const escolhidas=(uteis.length?uteis:palavras).slice(0,blt?2:3).join(' ');
   const nomeCurto=_compactSpaces(escolhidas||base);
-  return _compactSpaces(blt?`${nomeCurto} ${blt}`:nomeCurto);
+  if(blt)return _compactSpaces(`${nomeCurto} ${blt}`);
+  if(hasFallbackBlt)return _compactSpaces(`${nomeCurto} (BLT)`);
+  return nomeCurto;
 }
 function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
 function _fmtDateTime(v){const ms=Date.parse(String(v||''));if(!Number.isFinite(ms))return String(v||'-')||'-';return new Date(ms).toLocaleString('pt-BR');}
