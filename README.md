@@ -118,6 +118,8 @@ No `instances.json` do Hub, use:
 - Os títulos ficam centralizados, sem marcadores visuais de ordenação, e as divisórias da grade ficaram mais evidentes.
 - As colunas podem ser reajustadas arrastando a divisória do cabeçalho, com opção de resetar as larguras no próprio painel.
 - Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
+- A aba `Histórico` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), seguindo a mesma lógica visual da `Conferência`.
+- A grade real do `Histórico` agora usa `Tabulator`, com paginação local, filtros por coluna, resize de colunas e fallback para a tabela HTML antiga se a biblioteca não carregar.
 - Registros com NF/parcela duplicadas ficam destacados em vermelho para facilitar a identificação.
 - A aba `Histórico` não expõe mais exclusão direta; a limpeza de sobras e duplicidades deve ser feita pela `Conferência`, que atua sobre a planilha real.
 - O toolbar do `Histórico` ficou mais enxuto e mantém apenas o botão de resetar larguras da grade.
@@ -168,11 +170,14 @@ No `instances.json` do Hub, use:
 - Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
 - A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos no limite e depósitos atrasados.
+- A aba `Prazos` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), no mesmo padrão da `Conferência`.
+- A grade principal de `Prazos` agora usa `Tabulator`, com paginação local, filtros por coluna e fallback para a tabela HTML antiga se a biblioteca não carregar.
 - Os botões de atualização da relação e da busca por nome ficam em linhas separadas, com espaçamento próprio no card da aba `Prazos`.
 - O botão `Buscar boletos em aberto` abre um popup próprio, fora do front-end nativo do navegador, para consultar por nome do cliente.
 - O campo `Nome do cliente` do popup fica centralizado e usa uma lista própria de sugestões dentro do modal, em vez do `datalist` nativo do navegador.
 - Se não houver pendências para o nome buscado, o popup mostra apenas a mensagem informando que não existem boletos em aberto.
 - O autocomplete mistura os nomes salvos localmente em `%APPDATA%\\Botana\\watch_search_names.txt` com os nomes de clientes que ainda têm boletos em aberto nas planilhas, então buscas parciais como `LOCAR` passam a sugerir nomes maiores correspondentes.
+- A busca por nome dentro de `Prazos` passa a respeitar a origem selecionada no painel, então `MVA`, `EH` e `Todas` usam o mesmo recorte tanto na grade quanto no popup.
 
 ## Ajustes de Prazos
 

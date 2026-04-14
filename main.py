@@ -2069,6 +2069,7 @@ def _history_from_reports(
     dt_to: str = "",
     cnpj_emit: str = "",
     cnpj_dest: str = "",
+    empresa_filter: str = "todos",
 ) -> list[dict]:
     out = []
     q = str(query or "").strip().lower()
@@ -2079,6 +2080,7 @@ def _history_from_reports(
     f_aba = str(aba_filter or "").strip().lower()
     f_emit = re.sub(r"\D+", "", str(cnpj_emit or ""))
     f_dest = re.sub(r"\D+", "", str(cnpj_dest or ""))
+    empresa = _normalize_audit_empresa(empresa_filter)
     try:
         dt_from_obj = datetime.strptime(str(dt_from or "").strip(), "%Y-%m-%d").date() if str(dt_from or "").strip() else None
     except Exception:
@@ -2180,7 +2182,11 @@ def _history_from_reports(
                 status = _normalize_report_text(str(payload.get("status") or "").strip())
                 sheet_title = _normalize_report_text(str(payload.get("sheet_title") or "").strip())
                 aba = _normalize_report_text(str(payload.get("aba") or "").strip())
+                empresa_item = _infer_audit_empresa_from_values(sheet_title, aba, nf_value=nf)
                 local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/RelatÃ³rio"
+
+                if empresa != "todos" and empresa_item != empresa:
+                    continue
 
                 at_search_parts = [at]
                 try:
@@ -2232,6 +2238,7 @@ def _history_from_reports(
                     "sheet_title": sheet_title,
                     "aba": aba,
                     "local_lancamento": local,
+                    "empresa": empresa_item,
                     "cnpj_emit": emit,
                     "cnpj_dest": dest,
                     "qtd_parcelas": _safe_int(payload.get("qtd_parcelas"), 1),
@@ -2535,6 +2542,27 @@ def _audit_companies_for_filter(empresa_filter: str) -> list[str]:
     if empresa == "todos":
         return [company for company in ("MVA", "EH") if PLANILHAS.get(company)]
     return [empresa] if PLANILHAS.get(empresa) else []
+
+
+def _infer_audit_empresa_from_values(*values: str, nf_value: str = "") -> str:
+    for raw in values:
+        key = _normalize_ascii_key(raw)
+        if not key:
+            continue
+        if re.search(r"(^|\b)MVA(\b|$)", key):
+            return "MVA"
+        if re.search(r"(^|\b)EH(\b|$)", key):
+            return "EH"
+    nf_digits = re.sub(r"\D+", "", str(nf_value or ""))
+    try:
+        nf_num = int(nf_digits)
+    except Exception:
+        nf_num = 0
+    if nf_num >= 40000:
+        return "MVA"
+    if 19000 <= nf_num < 40000:
+        return "EH"
+    return "todos"
 
 
 def _audit_merge_meta_parts(metas: list[dict], empresa_filter: str = "todos") -> dict:
@@ -3659,7 +3687,7 @@ def _remember_watch_search_names(*values: str):
             logger.warning("Falha ao salvar autocomplete de nomes da busca de prazos: %s", exc)
 
 
-def _load_watch_search_suggestions() -> list[str]:
+def _load_watch_search_suggestions(empresa_filter: str = "todos") -> list[str]:
     out = []
     seen = set()
 
@@ -3677,7 +3705,7 @@ def _load_watch_search_suggestions() -> list[str]:
         add_name(raw)
 
     try:
-        linhas, _ = _load_audit_sheet_rows()
+        linhas, _ = _load_audit_sheet_rows(empresa_filter=_normalize_audit_empresa(empresa_filter))
     except Exception as exc:
         logger.warning("Falha ao montar catálogo de autocomplete da busca de prazos: %s", exc)
         return out[:500]
@@ -3755,10 +3783,11 @@ def _watch_boleto_status_payload(dias_uteis: int) -> tuple[str, str, str]:
     return "erro", "Vencido", _format_days_label(atraso, future=False)
 
 
-def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
+def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int, empresa_filter: str = "todos") -> dict:
     boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
     deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
-    linhas, meta = _load_audit_sheet_rows()
+    empresa = _normalize_audit_empresa(empresa_filter)
+    linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa)
     hoje = datetime.now().date()
     itens = []
     resumo = {
@@ -3822,6 +3851,7 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
                 "valor": valor_base,
                 "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
                 "local": _normalize_report_text(local),
+                "empresa": _normalize_report_text(str(item.get("sheet_type") or "").strip()),
                 "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
                 "_sort_date": venc_date.toordinal(),
                 "_sort_nf": _audit_safe_int(nf, 0),
@@ -3843,18 +3873,19 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int) -> dict:
 
     return {
         "summary": resumo,
-        "meta": {**meta, "loaded_at": datetime.now().isoformat()},
+        "meta": {**meta, "loaded_at": datetime.now().isoformat(), "empresa": empresa},
         "limits": {"boletos_dias": boleto_limit, "depositos_dias": deposito_limit},
         "items": itens,
     }
 
 
-def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
+def _buscar_boletos_em_aberto_por_nome(nome: str, empresa_filter: str = "todos") -> dict:
     nome_busca = _normalize_report_text(str(nome or "").strip())
     termo = _normalize_ascii_key(nome_busca)
     if not termo:
         raise ValueError("Informe um nome para buscar.")
-    linhas, meta = _load_audit_sheet_rows()
+    empresa = _normalize_audit_empresa(empresa_filter)
+    linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa)
     hoje = datetime.now().date()
     tokens = [item for item in termo.split(" ") if item]
     itens = []
@@ -3921,6 +3952,7 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
                 "valor": valor_base,
                 "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
                 "local": _normalize_report_text(local),
+                "empresa": _normalize_report_text(str(item.get("sheet_type") or "").strip()),
                 "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
                 "_sort_date": venc_date.toordinal(),
                 "_sort_nf": _audit_safe_int(nf, 0),
@@ -3952,7 +3984,7 @@ def _buscar_boletos_em_aberto_por_nome(nome: str) -> dict:
         "query": nome_busca,
         "count": count,
         "message": message,
-        "meta": {**meta, "loaded_at": datetime.now().isoformat()},
+        "meta": {**meta, "loaded_at": datetime.now().isoformat(), "empresa": empresa},
         "items": itens,
         "suggestions": suggestions[:500],
     }
@@ -5737,10 +5769,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .action-title{font-size:.84rem;font-weight:700;color:#5b321c}
 .action-detail{font-size:.78rem;color:#6c4a35}
 .action-progress{font-size:.78rem;color:#6b4128}
-.hist-filters{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;align-items:end}
-.hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.hist-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:10px 12px;align-items:end;justify-content:center;max-width:1320px;margin:0 auto}
+.hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center;width:min(180px,100%);min-height:72px}
 .hist-filters > div label{width:100%;text-align:center}
-.hist-filters > div input,.hist-filters > div select{width:100%;text-align:center}
+.hist-filters > div input,.hist-filters > div select{width:min(180px,100%);text-align:center}
+.hist-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(180px,100%);min-height:72px}
+.hist-run-wrap label{width:100%;text-align:center;visibility:hidden}
+.hist-run-wrap button{width:min(180px,100%)}
 .table-wrap{width:100%;overflow:auto;border:1px solid #d9af86;border-radius:10px;background:#fffdfb;box-shadow:inset 0 0 0 1px rgba(217,175,134,.22)}
 .hist-toolbar{margin-top:8px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
 .hist-reset-btn{padding:6px 10px;font-size:.78rem}
@@ -5751,6 +5786,14 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .hist-table th.sortable:after{content:""}
 .hist-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
 .hist-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.hist-table.audit-tone-mva tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.hist-table.audit-tone-eh tbody tr:nth-child(even){background:rgba(240,247,255,.96)}
+.hist-table.audit-tone-todos tbody tr.audit-row-tone-mva{background:rgba(255,244,232,.92)}
+.hist-table.audit-tone-todos tbody tr.audit-row-tone-eh{background:rgba(240,247,255,.96)}
+.hist-table.audit-tone-mva tbody tr:hover{background:rgba(255,232,208,.96)!important}
+.hist-table.audit-tone-eh tbody tr:hover{background:rgba(224,239,255,.96)!important}
+.hist-table.audit-tone-todos tbody tr.audit-row-tone-mva:hover{background:rgba(255,232,208,.96)!important}
+.hist-table.audit-tone-todos tbody tr.audit-row-tone-eh:hover{background:rgba(224,239,255,.96)!important}
 .hist-table th.is-resizing{background:#ffe5cf}
 .col-resizer{position:absolute;top:0;right:-6px;width:12px;height:100%;cursor:col-resize;user-select:none;touch-action:none;z-index:4}
 .col-resizer::after{content:"";position:absolute;top:7px;bottom:7px;left:5px;width:2px;background:#c68551;border-radius:999px;opacity:.78}
@@ -5821,50 +5864,113 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .audit-row-local-removed{background:rgba(240,198,79,.16)!important}
 .audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 .audit-row-local-removed td{border-bottom:3px solid #f0c64f!important}
-.audit-tabulator{display:none}
-.audit-tabulator.active{display:block}
-#auditTableTabulator{border:1px solid #ddb38d;border-radius:10px;overflow:hidden;background:#fffdfb}
-#auditTableTabulator .tabulator{border:none;background:#fffdfb;font-size:.8rem;color:#3f2819}
-#auditTableTabulator .tabulator-header{border-bottom:1px solid #e7c4a5;background:#fff1e3}
+.audit-tabulator,.panel-tabulator{display:none}
+.audit-tabulator.active,.panel-tabulator.active{display:block}
+#auditTableTabulator,#histTableTabulator,#watchTableTabulator{border:1px solid #ddb38d;border-radius:10px;overflow:hidden;background:#fffdfb}
+#auditTableTabulator .tabulator,
+#histTableTabulator .tabulator,
+#watchTableTabulator .tabulator{border:none;background:#fffdfb;font-size:.8rem;color:#3f2819}
+#auditTableTabulator .tabulator-header,
+#histTableTabulator .tabulator-header,
+#watchTableTabulator .tabulator-header{border-bottom:1px solid #e7c4a5;background:#fff1e3}
 #auditTableTabulator .tabulator-col,
-#auditTableTabulator .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
-#auditTableTabulator .tabulator-col-title{display:block;width:100%;text-align:center}
-#auditTableTabulator .tabulator-header-filter input{ text-align:center }
-#auditTableTabulator .tabulator-header-filter input::placeholder{ text-align:center }
-#auditTableTabulator .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
-#auditTableTabulator.audit-tone-mva .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
-#auditTableTabulator.audit-tone-eh .tabulator-row:nth-child(even){background:rgba(240,247,255,.96)}
-#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva{background:rgba(255,244,232,.92)!important}
-#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh{background:rgba(240,247,255,.96)!important}
+#auditTableTabulator .tabulator-header .tabulator-col,
+#histTableTabulator .tabulator-col,
+#histTableTabulator .tabulator-header .tabulator-col,
+#watchTableTabulator .tabulator-col,
+#watchTableTabulator .tabulator-header .tabulator-col{background:transparent;border-right:1px solid #efe0d0;color:#5c341c;font-weight:800}
+#auditTableTabulator .tabulator-col-title,
+#histTableTabulator .tabulator-col-title,
+#watchTableTabulator .tabulator-col-title{display:block;width:100%;text-align:center}
+#auditTableTabulator .tabulator-header-filter input,
+#histTableTabulator .tabulator-header-filter input,
+#watchTableTabulator .tabulator-header-filter input{text-align:center}
+#auditTableTabulator .tabulator-header-filter input::placeholder,
+#histTableTabulator .tabulator-header-filter input::placeholder,
+#watchTableTabulator .tabulator-header-filter input::placeholder{text-align:center}
+#auditTableTabulator .tabulator-row,
+#histTableTabulator .tabulator-row,
+#watchTableTabulator .tabulator-row{border-bottom:1px solid #f0e0cf;background:#fffdfb}
+#auditTableTabulator.audit-tone-mva .tabulator-row:nth-child(even),
+#histTableTabulator.audit-tone-mva .tabulator-row:nth-child(even),
+#watchTableTabulator.audit-tone-mva .tabulator-row:nth-child(even){background:rgba(255,244,232,.92)}
+#auditTableTabulator.audit-tone-eh .tabulator-row:nth-child(even),
+#histTableTabulator.audit-tone-eh .tabulator-row:nth-child(even),
+#watchTableTabulator.audit-tone-eh .tabulator-row:nth-child(even){background:rgba(240,247,255,.96)}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva{background:rgba(255,244,232,.92)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh{background:rgba(240,247,255,.96)!important}
 #auditTableTabulator.audit-tone-mva .tabulator-row:hover,
-#auditTableTabulator.audit-tone-mva .tabulator-row.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
+#auditTableTabulator.audit-tone-mva .tabulator-row.tabulator-selectable:hover,
+#histTableTabulator.audit-tone-mva .tabulator-row:hover,
+#histTableTabulator.audit-tone-mva .tabulator-row.tabulator-selectable:hover,
+#watchTableTabulator.audit-tone-mva .tabulator-row:hover,
+#watchTableTabulator.audit-tone-mva .tabulator-row.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
 #auditTableTabulator.audit-tone-eh .tabulator-row:hover,
-#auditTableTabulator.audit-tone-eh .tabulator-row.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
+#auditTableTabulator.audit-tone-eh .tabulator-row.tabulator-selectable:hover,
+#histTableTabulator.audit-tone-eh .tabulator-row:hover,
+#histTableTabulator.audit-tone-eh .tabulator-row.tabulator-selectable:hover,
+#watchTableTabulator.audit-tone-eh .tabulator-row:hover,
+#watchTableTabulator.audit-tone-eh .tabulator-row.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
 #auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva:hover,
-#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva.tabulator-selectable:hover,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva:hover,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva.tabulator-selectable:hover,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva:hover,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-mva.tabulator-selectable:hover{background:rgba(255,232,208,.96)!important}
 #auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh:hover,
-#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
-#auditTableTabulator .tabulator-cell{border-right:1px solid #f3e8dc;padding:8px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
-#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-col-content{font-size:.72rem}
-#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-header-filter input{font-size:.72rem}
-#auditTableTabulator .tabulator-row .tabulator-cell:last-child{font-size:.72rem}
-#auditTableTabulator .tabulator-footer{border-top:1px solid #e7c4a5;background:#fff8f1;color:#6b4126;font-size:12px;font-weight:700}
-#auditTableTabulator .tabulator-page{border:1px solid #d9d0c5;background:#fff;color:#384658}
-#auditTableTabulator .tabulator-page.active{background:var(--o);color:#2b1408;border-color:var(--o)}
-#auditTableTabulator .tabulator-row.audit-row-aviso{background:rgba(255,193,7,.12)!important}
-#auditTableTabulator .tabulator-row.audit-row-aviso:hover{background:rgba(255,193,7,.2)!important}
-#auditTableTabulator .tabulator-row.audit-row-erro{background:rgba(220,53,69,.14)!important}
-#auditTableTabulator .tabulator-row.audit-row-erro:hover{background:rgba(220,53,69,.22)!important}
+#auditTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh.tabulator-selectable:hover,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh:hover,
+#histTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh.tabulator-selectable:hover,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh:hover,
+#watchTableTabulator.audit-tone-todos .tabulator-row.audit-row-tone-eh.tabulator-selectable:hover{background:rgba(224,239,255,.96)!important}
+#auditTableTabulator .tabulator-cell,
+#histTableTabulator .tabulator-cell,
+#watchTableTabulator .tabulator-cell{border-right:1px solid #f3e8dc;padding:8px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-col-content,
+#histTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-col-content,
+#watchTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-col-content{font-size:.72rem}
+#auditTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-header-filter input,
+#histTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-header-filter input,
+#watchTableTabulator .tabulator-header .tabulator-col:last-child .tabulator-header-filter input{font-size:.72rem}
+#auditTableTabulator .tabulator-row .tabulator-cell:last-child,
+#histTableTabulator .tabulator-row .tabulator-cell:last-child,
+#watchTableTabulator .tabulator-row .tabulator-cell:last-child{font-size:.72rem}
+#auditTableTabulator .tabulator-footer,
+#histTableTabulator .tabulator-footer,
+#watchTableTabulator .tabulator-footer{border-top:1px solid #e7c4a5;background:#fff8f1;color:#6b4126;font-size:12px;font-weight:700}
+#auditTableTabulator .tabulator-page,
+#histTableTabulator .tabulator-page,
+#watchTableTabulator .tabulator-page{border:1px solid #d9d0c5;background:#fff;color:#384658}
+#auditTableTabulator .tabulator-page.active,
+#histTableTabulator .tabulator-page.active,
+#watchTableTabulator .tabulator-page.active{background:var(--o);color:#2b1408;border-color:var(--o)}
+#auditTableTabulator .tabulator-row.audit-row-aviso,
+#watchTableTabulator .tabulator-row.watch-row-aviso{background:rgba(255,193,7,.12)!important}
+#auditTableTabulator .tabulator-row.audit-row-aviso:hover,
+#watchTableTabulator .tabulator-row.watch-row-aviso:hover{background:rgba(255,193,7,.2)!important}
+#auditTableTabulator .tabulator-row.audit-row-erro,
+#watchTableTabulator .tabulator-row.watch-row-erro,
+#histTableTabulator .tabulator-row.dup-row{background:rgba(220,53,69,.14)!important}
+#auditTableTabulator .tabulator-row.audit-row-erro:hover,
+#watchTableTabulator .tabulator-row.watch-row-erro:hover,
+#histTableTabulator .tabulator-row.dup-row:hover{background:rgba(220,53,69,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-pending{background:rgba(240,198,79,.10)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-pending:hover{background:rgba(240,198,79,.16)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed{background:rgba(240,198,79,.16)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed .tabulator-cell{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
-.watch-filters{display:grid;grid-template-columns:1fr;gap:8px;align-items:center;justify-items:center}
-.watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center}
+.watch-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:10px 12px;align-items:end;justify-content:center;max-width:960px;margin:0 auto}
+.watch-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center;width:min(180px,100%);min-height:72px}
 .watch-filters > div label{width:100%;text-align:center}
-.watch-filters > div input{width:min(88px,100%);text-align:center}
+.watch-filters > div input{width:min(180px,100%);text-align:center}
+.watch-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(180px,100%);min-height:72px}
+.watch-run-wrap label{width:100%;text-align:center;visibility:hidden}
+.watch-run-wrap button{width:min(180px,100%)}
 .watch-actions{display:flex;justify-content:center;align-items:center;gap:8px;flex-wrap:wrap;margin-top:14px}
 .watch-toolbar{margin-top:8px;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px}
 .watch-state{min-height:20px;text-align:center;font-size:.83rem;color:#6b4126}
@@ -5886,6 +5992,14 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-col-aba{width:130px}
 .watch-table tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
 .watch-table tbody tr:hover{background:rgba(238,155,47,.08)}
+.watch-table.audit-tone-mva tbody tr:nth-child(even){background:rgba(255,244,232,.92)}
+.watch-table.audit-tone-eh tbody tr:nth-child(even){background:rgba(240,247,255,.96)}
+.watch-table.audit-tone-todos tbody tr.audit-row-tone-mva{background:rgba(255,244,232,.92)}
+.watch-table.audit-tone-todos tbody tr.audit-row-tone-eh{background:rgba(240,247,255,.96)}
+.watch-table.audit-tone-mva tbody tr:hover{background:rgba(255,232,208,.96)!important}
+.watch-table.audit-tone-eh tbody tr:hover{background:rgba(224,239,255,.96)!important}
+.watch-table.audit-tone-todos tbody tr.audit-row-tone-mva:hover{background:rgba(255,232,208,.96)!important}
+.watch-table.audit-tone-todos tbody tr.audit-row-tone-eh:hover{background:rgba(224,239,255,.96)!important}
 .watch-row-aviso{background:rgba(255,193,7,.12)!important}
 .watch-row-aviso:hover{background:rgba(255,193,7,.2)!important}
 .watch-row-erro{background:rgba(220,53,69,.14)!important}
@@ -6134,13 +6248,30 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     <section class="card" style="margin-top:10px">
       <h3>Histórico de processamento e lançamentos</h3>
       <div class="hist-filters">
+        <div class="audit-source-wrap">
+          <label>Origem</label>
+          <div id="historyEmpresaGroup" class="audit-source-group" data-value="mva" role="group" aria-label="Origem do histórico">
+            <button type="button" class="audit-source-btn active" data-empresa="mva" title="Somente MVA" aria-label="Somente MVA" onclick="setHistoryEmpresa('mva')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V8l5 3V8l5 3V6l6 4v10"/><path d="M3 20h18"/><path d="M8 20v-4"/><path d="M13 20v-5"/><path d="M18 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">M</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="eh" title="Somente EH" aria-label="Somente EH" onclick="setHistoryEmpresa('eh')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V9l4-2 4 2V6l6 3v11"/><path d="M4 20h16"/><path d="M8 20v-4"/><path d="M12 20v-5"/><path d="M17 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">E</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="todos" title="MVA + EH" aria-label="MVA + EH" onclick="setHistoryEmpresa('todos')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="10" height="10" rx="2"/><rect x="10" y="5" width="10" height="12" rx="2"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">+</span>
+            </button>
+          </div>
+        </div>
         <div><label>Data / Horário</label><input id="hAt" type="text" placeholder="06/04/2026 12:30 ou 2026-04-06"/></div>
         <div><label>Vencimento</label><input id="hVenc" type="date"/></div>
         <div><label>NF</label><input id="hNf" type="text" placeholder="49001"/></div>
         <div><label>Cliente</label><input id="hCliente" type="text" placeholder="Nome curto ou completo"/></div>
         <div><label>Aba</label><input id="hAba" type="text" placeholder="Janeiro ou MVA/Janeiro"/></div>
         <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
-        <div style="display:flex;align-items:end"><button onclick="loadHistory()">Aplicar filtros</button></div>
+        <div class="hist-run-wrap"><label aria-hidden="true">&nbsp;</label><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
       <div class="hist-toolbar">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -6148,7 +6279,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         </div>
       </div>
       <div class="table-wrap" style="margin-top:10px">
-        <table class="hist-table">
+        <div id="histTableTabulator" class="panel-tabulator"></div>
+        <table id="histTableLegacy" class="hist-table">
           <colgroup>
             <col id="histCol-at" style="width:150px"/>
             <col id="histCol-venc" style="width:110px"/>
@@ -6283,7 +6415,24 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <label>Depósitos há pelo menos</label>
           <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
         </div>
-        <div style="display:flex;align-items:end;justify-content:center"><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
+        <div class="audit-source-wrap">
+          <label>Origem</label>
+          <div id="watchEmpresaGroup" class="audit-source-group" data-value="mva" role="group" aria-label="Origem dos prazos">
+            <button type="button" class="audit-source-btn active" data-empresa="mva" title="Somente MVA" aria-label="Somente MVA" onclick="setWatchEmpresa('mva')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V8l5 3V8l5 3V6l6 4v10"/><path d="M3 20h18"/><path d="M8 20v-4"/><path d="M13 20v-5"/><path d="M18 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">M</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="eh" title="Somente EH" aria-label="Somente EH" onclick="setWatchEmpresa('eh')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 20V9l4-2 4 2V6l6 3v11"/><path d="M4 20h16"/><path d="M8 20v-4"/><path d="M12 20v-5"/><path d="M17 20v-3"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">E</span>
+            </button>
+            <button type="button" class="audit-source-btn" data-empresa="todos" title="MVA + EH" aria-label="MVA + EH" onclick="setWatchEmpresa('todos')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="7" width="10" height="10" rx="2"/><rect x="10" y="5" width="10" height="12" rx="2"/></svg>
+              <span class="audit-source-badge" aria-hidden="true">+</span>
+            </button>
+          </div>
+        </div>
+        <div class="watch-run-wrap"><label aria-hidden="true">&nbsp;</label><button id="watchRunBtn" onclick="loadDueWatch()">Atualizar relação</button></div>
       </div>
       <div class="watch-actions">
         <button type="button" class="sec" onclick="openWatchSearchModal()">Buscar boletos em aberto</button>
@@ -6298,7 +6447,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
         <div class="k"><div id="watchK4" class="n">0</div><div class="t">Depósitos atrasados</div></div>
       </div>
       <div class="table-wrap" style="margin-top:10px">
-        <table class="watch-table">
+        <div id="watchTableTabulator" class="panel-tabulator"></div>
+        <table id="watchTableLegacy" class="watch-table">
           <colgroup>
             <col class="watch-col-type"/>
             <col class="watch-col-status"/>
@@ -7064,6 +7214,8 @@ const _auditDeleteDelayMs=3000;
 let _auditItems=[];
 let _auditSort={key:'',dir:'asc'};
 let _auditTable=null;
+let _historyTable=null;
+let _watchTable=null;
 function _saveHistColWidths(){try{localStorage.setItem(_histColStorageKey,JSON.stringify(_histColWidths));}catch(_){}}
 function _loadHistColWidths(){
   try{
@@ -7088,11 +7240,22 @@ function _applyHistColWidths(){
   });
 }
 function resetHistColumnWidths(){
+  if(_historyHasTabulator()){
+    const host=document.getElementById('histTableTabulator');
+    try{if(_historyTable)_historyTable.destroy();}catch(_){}
+    if(host)host.innerHTML='';
+    _historyTable=null;
+    _ensureHistoryTabulator(_prepareHistoryRows(_histItems));
+    _toggleHistoryRenderMode(true);
+    _syncHistoryToneMode();
+    return;
+  }
   _histColWidths={..._histColDefaults};
   _applyHistColWidths();
   _saveHistColWidths();
 }
 function _initHistoryColumnResize(){
+  if(_historyHasTabulator())return;
   const table=document.querySelector('.hist-table');
   if(!table||table.dataset.resizeReady==='1')return;
   table.dataset.resizeReady='1';
@@ -7133,6 +7296,42 @@ function _initHistoryColumnResize(){
     th.appendChild(handle);
   });
 }
+function _historyHasTabulator(){return typeof window.Tabulator==='function';}
+function _getHistoryEmpresa(){
+  const group=document.getElementById('historyEmpresaGroup');
+  return _normalizeAuditEmpresaClient(group&&group.dataset&&group.dataset.value||'mva');
+}
+function _syncHistoryEmpresaButtons(){
+  const active=_getHistoryEmpresa();
+  document.querySelectorAll('#historyEmpresaGroup .audit-source-btn[data-empresa]').forEach((btn)=>{
+    btn.classList.toggle('active',String(btn.dataset.empresa||'')===active);
+  });
+  _syncHistoryToneMode();
+}
+function _syncHistoryToneMode(){
+  const toneClass=`audit-tone-${_getHistoryEmpresa()}`;
+  ['audit-tone-mva','audit-tone-eh','audit-tone-todos'].forEach((cls)=>{
+    const legacy=document.getElementById('histTableLegacy');
+    const host=document.getElementById('histTableTabulator');
+    if(legacy)legacy.classList.remove(cls);
+    if(host)host.classList.remove(cls);
+  });
+  const legacy=document.getElementById('histTableLegacy');
+  const host=document.getElementById('histTableTabulator');
+  if(legacy)legacy.classList.add(toneClass);
+  if(host)host.classList.add(toneClass);
+}
+function setHistoryEmpresa(value,reload=true){
+  const group=document.getElementById('historyEmpresaGroup');
+  if(!group)return;
+  const next=_normalizeAuditEmpresaClient(value);
+  const prev=_getHistoryEmpresa();
+  group.dataset.value=next;
+  _syncHistoryEmpresaButtons();
+  if(reload!==false&&prev!==next&&_activeTab==='hist'){
+    loadHistory(false).catch(()=>{});
+  }
+}
 function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
 function _fmtMoney(v){
   if(v===null||v===undefined) return '-';
@@ -7148,45 +7347,139 @@ function _fmtMoney(v){
   if(!Number.isFinite(n)) return txt;
   return n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 }
+function _inferEmpresaKeyFromValue(empresa,local,nf){
+  const explicit=_normalizeAuditEmpresaClient(empresa||'todos');
+  if(explicit==='mva'||explicit==='eh')return explicit;
+  const scope=String(local||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
+  if(/(^|\b)MVA(\b|$)/.test(scope))return 'mva';
+  if(/(^|\b)EH(\b|$)/.test(scope))return 'eh';
+  const nfNum=Number(String(nf||'').replace(/\\D+/g,''))||0;
+  if(nfNum>=40000)return 'mva';
+  if(nfNum>=19000&&nfNum<40000)return 'eh';
+  return '';
+}
+function _toneClassForEmpresa(activeEmpresa,empresaKey){
+  const active=_normalizeAuditEmpresaClient(activeEmpresa||'todos');
+  const key=String(empresaKey||'').trim().toLowerCase();
+  if(active!=='todos')return '';
+  if(key==='mva')return 'audit-row-tone-mva';
+  if(key==='eh')return 'audit-row-tone-eh';
+  return '';
+}
+function _toggleHistoryRenderMode(useTabulator){
+  const host=document.getElementById('histTableTabulator');
+  const legacy=document.getElementById('histTableLegacy');
+  if(host)host.classList.toggle('active',!!useTabulator);
+  if(legacy)legacy.style.display=useTabulator?'none':'table';
+}
+function _prepareHistoryRows(items){
+  let arr=(Array.isArray(items)?items:[]).filter((it)=>it&&it.type==='boleto_lancado');
+  arr=arr.map((it)=>{
+    const nf=String(it.nf||it.numero||'').trim();
+    const local=_fmtLocal(it.local_lancamento);
+    const empresaKey=_inferEmpresaKeyFromValue(it.empresa,it.local_lancamento||local,nf);
+    return {
+      ...it,
+      _nf_doc:nf?`NF ${nf}`:'-',
+      _local_view:local,
+      _cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+      _cliente_title:_compactSpaces(it.descricao||it.cliente||'-'),
+      _empresa_key:empresaKey,
+      _tone_class:_toneClassForEmpresa(_getHistoryEmpresa(),empresaKey),
+    };
+  });
+  return _historyHasTabulator()?arr:_sortHist(arr);
+}
+function _historyClienteCellFormatter(cell){
+  const data=cell.getRow().getData()||{};
+  const emit=String(data.cnpj_emit||'-');
+  const title=_esc(String(data._cliente_title||'-'));
+  return `<div class="cell-menu"><button class="cell-btn" title="${title}" onclick="_toggleMenu(event,this)">${_esc(data._cliente_view||'-')}</button><div class="cell-pop"><button data-cnpj="${_esc(emit)}" onclick="_showCnpj(event,this)">Copiar CNPJ emitente</button></div></div>`;
+}
+function _historyDocFormatter(cell){
+  const data=cell.getRow().getData()||{};
+  const base=_esc(String(data._nf_doc||'-'));
+  return `${base}${data.duplicata?'<span class="dup-badge">DUPLICADA</span>':''}`;
+}
+function _historyColumns(){
+  return [
+    {title:'Data',field:'at',hozAlign:'center',headerHozAlign:'center',width:160,sorter:'string',formatter:(cell)=>_fmtDateTime(cell.getValue()||'-'),headerFilter:'input'},
+    {title:'Venc.',field:'vencimento',hozAlign:'center',headerHozAlign:'center',width:112,sorter:(a,b)=>_auditDateSortValue(a)-_auditDateSortValue(b),formatter:(cell)=>_fmtAuditDate(cell.getValue()||'-')||'-',headerFilter:'input'},
+    {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:110,sorter:'number',headerFilter:'input',formatter:_historyDocFormatter},
+    {title:'Cliente',field:'_cliente_view',hozAlign:'center',headerHozAlign:'center',minWidth:280,widthGrow:4,headerFilter:'input',formatter:_historyClienteCellFormatter},
+    {title:'Parc.',field:'parcela',hozAlign:'center',headerHozAlign:'center',width:96,headerFilter:'input'},
+    {title:'Parcela',field:'valor_parcela',hozAlign:'center',headerHozAlign:'center',width:132,sorter:'number',formatter:(cell)=>_fmtMoney(cell.getValue())},
+    {title:'Total',field:'valor_total',hozAlign:'center',headerHozAlign:'center',width:132,sorter:'number',formatter:(cell)=>_fmtMoney(cell.getValue())},
+    {title:'Aba',field:'_local_view',hozAlign:'center',headerHozAlign:'center',minWidth:130,widthGrow:1,headerFilter:'input'},
+  ];
+}
+function _ensureHistoryTabulator(initialRows){
+  if(!_historyHasTabulator())return null;
+  if(_historyTable)return _historyTable;
+  _historyTable=new Tabulator('#histTableTabulator',{
+    data:Array.isArray(initialRows)?initialRows:[],
+    layout:'fitDataStretch',
+    responsiveLayout:false,
+    pagination:'local',
+    paginationSize:14,
+    paginationCounter:'rows',
+    movableColumns:true,
+    resizableColumns:true,
+    placeholder:'Sem dados para os filtros selecionados',
+    columns:_historyColumns(),
+    rowFormatter:function(row){
+      const el=row.getElement();
+      const data=row.getData()||{};
+      el.classList.remove('dup-row','audit-row-tone-mva','audit-row-tone-eh');
+      if(data._tone_class)el.classList.add(String(data._tone_class));
+      if(data.duplicata)el.classList.add('dup-row');
+      el.title=String(data._cliente_title||'').trim();
+    },
+  });
+  return _historyTable;
+}
 function _getSortValue(it,key){
   if(key==='at')return it.at||'';
   if(key==='venc')return it.vencimento||'';
-  if(key==='doc')return it._doc||'';
+  if(key==='doc')return it._nf_doc||it._doc||'';
   if(key==='cliente')return it._cliente_view||it.descricao||it.cliente||'';
   if(key==='parcela')return it.parcela||'';
   if(key==='vparcela')return Number(it.valor_parcela||0);
   if(key==='vtotal')return Number(it.valor_total||0);
-  if(key==='local')return it._local||'';
+  if(key==='local')return it._local_view||it._local||'';
   return '';
 }
 function _sortHist(items){const k=_histSort.key;const dir=_histSort.dir==='asc'?1:-1;return [...items].sort((a,b)=>{const va=_getSortValue(a,k);const vb=_getSortValue(b,k);if(va<vb)return -1*dir;if(va>vb)return 1*dir;return 0;});}
 function _renderHistory(items){
   _histItems=Array.isArray(items)?items:[];
+  const arr=_prepareHistoryRows(_histItems);
+  _syncHistoryToneMode();
+  if(_historyHasTabulator()){
+    const table=_ensureHistoryTabulator(arr);
+    if(table){
+      _toggleHistoryRenderMode(true);
+      try{table.setData(arr);}catch(_){}
+      return;
+    }
+  }
+  _toggleHistoryRenderMode(false);
   const body=document.getElementById('hBody');
   if(!body)return;
   body.innerHTML='';
-  let arr=_histItems.filter(it=>it&&it.type==='boleto_lancado');
-  arr=arr.map(it=>{
-    const nf=String(it.nf||it.numero||'').trim();
-    const doc=nf?`NF ${nf}`:'-';
-    const local=_fmtLocal(it.local_lancamento);
-    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
-    return {...it,_doc:doc,_local:local,_cliente_view:clienteView};
-  });
   if(!arr.length){body.innerHTML='<tr><td colspan="8">Sem dados para os filtros selecionados</td></tr>';return;}
-  arr=_sortHist(arr);
   arr.forEach(it=>{
     const tr=document.createElement('tr');
+    if(it._tone_class)tr.classList.add(String(it._tone_class));
     if(it.duplicata)tr.classList.add('dup-row');
     const emit=String(it.cnpj_emit||'-');
     const dupTag=it.duplicata?'<span class="dup-badge">DUPLICADA</span>':'';
-    const tituloCliente=_compactSpaces(it.descricao||it.cliente||'-');
-    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" title=\"${_esc(tituloCliente)}\" onclick=\"_toggleMenu(event,this)\">${_esc(it._cliente_view||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
-    tr.innerHTML=`<td title=\"${_esc(_fmtDateTime(it.at))}\">${_fmtDateTime(it.at)}</td><td title=\"${_esc(it.vencimento||'-')}\">${_esc(it.vencimento||'-')}</td><td title=\"${_esc(it._doc)}\">${_esc(it._doc)}${dupTag}</td><td>${menu}</td><td title=\"${_esc(it.parcela||'-')}\">${_esc(it.parcela||'-')}</td><td title=\"${_esc(_fmtMoney(it.valor_parcela))}\">${_fmtMoney(it.valor_parcela)}</td><td title=\"${_esc(_fmtMoney(it.valor_total))}\">${_fmtMoney(it.valor_total)}</td><td title=\"${_esc(it._local)}\">${_esc(it._local)}</td>`;
+    const menu=`<div class=\"cell-menu\"><button class=\"cell-btn\" title=\"${_esc(it._cliente_title||'-')}\" onclick=\"_toggleMenu(event,this)\">${_esc(it._cliente_view||'-')}</button><div class=\"cell-pop\"><button data-cnpj=\"${_esc(emit)}\" onclick=\"_showCnpj(event,this)\">Copiar CNPJ emitente</button></div></div>`;
+    tr.innerHTML=`<td title=\"${_esc(_fmtDateTime(it.at))}\">${_fmtDateTime(it.at)}</td><td title=\"${_esc(_fmtAuditDate(it.vencimento||'-'))}\">${_esc(_fmtAuditDate(it.vencimento||'-'))}</td><td title=\"${_esc(it._nf_doc)}\">${_esc(it._nf_doc)}${dupTag}</td><td>${menu}</td><td title=\"${_esc(it.parcela||'-')}\">${_esc(it.parcela||'-')}</td><td title=\"${_esc(_fmtMoney(it.valor_parcela))}\">${_fmtMoney(it.valor_parcela)}</td><td title=\"${_esc(_fmtMoney(it.valor_total))}\">${_fmtMoney(it.valor_total)}</td><td title=\"${_esc(it._local_view)}\">${_esc(it._local_view)}</td>`;
     body.appendChild(tr);
   });
 }
 function _setSort(key){
+  if(_historyHasTabulator())return;
   const ths=document.querySelectorAll('.hist-table th.sortable');
   ths.forEach(th=>{th.classList.remove('asc');th.classList.remove('desc');});
   if(_histSort.key===key){_histSort.dir=_histSort.dir==='asc'?'desc':'asc';}
@@ -7206,11 +7499,13 @@ function _historyParams(){
   const vCliente=((document.getElementById('hCliente')||{}).value||'').trim();
   const vAba=((document.getElementById('hAba')||{}).value||'').trim();
   const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
+  const vEmpresa=_getHistoryEmpresa();
   if(vAt)p.set('at',vAt);
   if(vVenc)p.set('venc',vVenc);
   if(vNf)p.set('nf',vNf);
   if(vCliente)p.set('cliente',vCliente);
   if(vAba)p.set('aba',vAba);
+  p.set('empresa',vEmpresa);
   p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
   return p;
 }
@@ -7230,6 +7525,11 @@ async function loadHistory(silent=false){
     _renderHistory(items);
   }catch(err){
     if(!silent)console.warn('Erro ao carregar histórico:',err);
+    if(_historyHasTabulator()&&_historyTable){
+      try{_historyTable.setData([]);}catch(_){}
+      _toggleHistoryRenderMode(true);
+      return;
+    }
     const body=document.getElementById('hBody');
     if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
   }
@@ -7975,10 +8275,118 @@ function _setWatchLoading(active,message=''){
   }
   _setWatchStatus(message||(active?'Lendo planilhas...':'Pronto para consultar.'),active);
 }
+function _getWatchEmpresa(){
+  const group=document.getElementById('watchEmpresaGroup');
+  return _normalizeAuditEmpresaClient(group&&group.dataset&&group.dataset.value||'mva');
+}
+function _syncWatchEmpresaButtons(){
+  const active=_getWatchEmpresa();
+  document.querySelectorAll('#watchEmpresaGroup .audit-source-btn[data-empresa]').forEach((btn)=>{
+    btn.classList.toggle('active',String(btn.dataset.empresa||'')===active);
+  });
+  _syncWatchToneMode();
+}
+function _syncWatchToneMode(){
+  const toneClass=`audit-tone-${_getWatchEmpresa()}`;
+  ['audit-tone-mva','audit-tone-eh','audit-tone-todos'].forEach((cls)=>{
+    const legacy=document.getElementById('watchTableLegacy');
+    const host=document.getElementById('watchTableTabulator');
+    if(legacy)legacy.classList.remove(cls);
+    if(host)host.classList.remove(cls);
+  });
+  const legacy=document.getElementById('watchTableLegacy');
+  const host=document.getElementById('watchTableTabulator');
+  if(legacy)legacy.classList.add(toneClass);
+  if(host)host.classList.add(toneClass);
+}
+function setWatchEmpresa(value,reload=true){
+  const group=document.getElementById('watchEmpresaGroup');
+  if(!group)return;
+  const next=_normalizeAuditEmpresaClient(value);
+  const prev=_getWatchEmpresa();
+  group.dataset.value=next;
+  _syncWatchEmpresaButtons();
+  if(reload!==false&&prev!==next&&_activeTab==='watch'){
+    loadDueWatch(false).catch(()=>{});
+  }
+}
+function _toggleWatchRenderMode(useTabulator){
+  const host=document.getElementById('watchTableTabulator');
+  const legacy=document.getElementById('watchTableLegacy');
+  if(host)host.classList.toggle('active',!!useTabulator);
+  if(legacy)legacy.style.display=useTabulator?'none':'table';
+}
+function _prepareWatchRows(items){
+  return (Array.isArray(items)?items:[]).map((it)=>{
+    const nf=String(it.nf||'').trim();
+    const local=_compactSpaces(it.local||it.aba||'-');
+    const empresaKey=_inferEmpresaKeyFromValue(it.empresa,it.local||it.aba||'',nf);
+    return {
+      ...it,
+      _cliente_view:_compactClienteLabel(it.cliente,it.descricao),
+      _cliente_title:_compactSpaces(it.descricao||it.cliente||'-'),
+      _local_view:local,
+      _empresa_key:empresaKey,
+      _tone_class:_toneClassForEmpresa(_getWatchEmpresa(),empresaKey),
+    };
+  });
+}
+function _watchStatusFormatter(cell){
+  const data=cell.getRow().getData()||{};
+  return `<span class="watch-badge ${_esc(data.status||'aviso')}">${_esc(data.status_label||'-')}</span>`;
+}
+function _watchColumns(){
+  return [
+    {title:'Tipo',field:'tipo_label',hozAlign:'center',headerHozAlign:'center',width:92},
+    {title:'Situação',field:'status_label',hozAlign:'center',headerHozAlign:'center',width:126,formatter:_watchStatusFormatter},
+    {title:'Vencimento',field:'vencimento',hozAlign:'center',headerHozAlign:'center',width:116,sorter:(a,b)=>_auditDateSortValue(a)-_auditDateSortValue(b),formatter:(cell)=>_fmtAuditDate(cell.getValue()||'-')||'-'},
+    {title:'Dias úteis',field:'dias_label',hozAlign:'center',headerHozAlign:'center',width:136},
+    {title:'Cliente',field:'_cliente_view',hozAlign:'center',headerHozAlign:'center',minWidth:260,widthGrow:4,headerFilter:'input'},
+    {title:'NF',field:'nf',hozAlign:'center',headerHozAlign:'center',width:88,sorter:'number',headerFilter:'input'},
+    {title:'Valor',field:'valor',hozAlign:'center',headerHozAlign:'center',width:124,sorter:'number',formatter:(cell)=>_fmtMoney(cell.getValue())},
+    {title:'Aba',field:'_local_view',hozAlign:'center',headerHozAlign:'center',minWidth:120,widthGrow:1,headerFilter:'input'},
+  ];
+}
+function _ensureWatchTabulator(initialRows){
+  if(!_historyHasTabulator())return null;
+  if(_watchTable)return _watchTable;
+  _watchTable=new Tabulator('#watchTableTabulator',{
+    data:Array.isArray(initialRows)?initialRows:[],
+    layout:'fitDataStretch',
+    responsiveLayout:false,
+    pagination:'local',
+    paginationSize:14,
+    paginationCounter:'rows',
+    movableColumns:true,
+    resizableColumns:true,
+    placeholder:'Nenhum boleto ou depósito pendente encontrado para os limites escolhidos',
+    columns:_watchColumns(),
+    rowFormatter:function(row){
+      const el=row.getElement();
+      const data=row.getData()||{};
+      el.classList.remove('watch-row-aviso','watch-row-erro','audit-row-tone-mva','audit-row-tone-eh');
+      if(data._tone_class)el.classList.add(String(data._tone_class));
+      if(data.status==='erro')el.classList.add('watch-row-erro');
+      else el.classList.add('watch-row-aviso');
+      el.title=String(data._cliente_title||'').trim();
+    },
+  });
+  return _watchTable;
+}
 function _renderDueWatch(items){
+  const arr=_prepareWatchRows(items);
+  _syncWatchToneMode();
+  if(_historyHasTabulator()){
+    const table=_ensureWatchTabulator(arr);
+    if(table){
+      _toggleWatchRenderMode(true);
+      try{table.setData(arr);}catch(_){}
+      return;
+    }
+  }
+  _toggleWatchRenderMode(false);
   const body=document.getElementById('wBody');
   if(!body)return;
-  const arr=Array.isArray(items)?items:[];
   body.innerHTML='';
   if(!arr.length){
     body.innerHTML='<tr><td colspan="8">Nenhum boleto ou depósito pendente encontrado para os limites escolhidos</td></tr>';
@@ -7986,11 +8394,10 @@ function _renderDueWatch(items){
   }
   arr.forEach(it=>{
     const tr=document.createElement('tr');
+    if(it._tone_class)tr.classList.add(String(it._tone_class));
     if(it.status==='erro')tr.classList.add('watch-row-erro');
     else tr.classList.add('watch-row-aviso');
-    const clienteView=_compactClienteLabel(it.cliente,it.descricao);
-    const local=_compactSpaces(it.local||it.aba||'-');
-    tr.innerHTML=`<td>${_esc(it.tipo_label||'-')}</td><td><span class="watch-badge ${_esc(it.status||'aviso')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(_fmtAuditDate(it.vencimento))}">${_esc(_fmtAuditDate(it.vencimento))}</td><td title="${_esc(it.dias_label||'-')}">${_esc(it.dias_label||'-')}</td><td title="${_esc(_compactSpaces(it.descricao||it.cliente||'-'))}">${_esc(clienteView)}</td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_fmtMoney(it.valor))}">${_esc(_fmtMoney(it.valor))}</td><td title="${_esc(local)}">${_esc(local)}</td>`;
+    tr.innerHTML=`<td>${_esc(it.tipo_label||'-')}</td><td><span class="watch-badge ${_esc(it.status||'aviso')}">${_esc(it.status_label||'-')}</span></td><td title="${_esc(_fmtAuditDate(it.vencimento))}">${_esc(_fmtAuditDate(it.vencimento))}</td><td title="${_esc(it.dias_label||'-')}">${_esc(it.dias_label||'-')}</td><td title="${_esc(it._cliente_title||'-')}">${_esc(it._cliente_view||'-')}</td><td title="${_esc(it.nf||'-')}">${_esc(it.nf||'-')}</td><td title="${_esc(_fmtMoney(it.valor))}">${_esc(_fmtMoney(it.valor))}</td><td title="${_esc(it._local_view||'-')}">${_esc(it._local_view||'-')}</td>`;
     body.appendChild(tr);
   });
 }
@@ -7999,6 +8406,7 @@ async function loadDueWatch(silent=false){
   const showLoading=!silent||_activeTab==='watch';
   const boletoInput=document.getElementById('wBoletoDays');
   const depositoInput=document.getElementById('wDepositoDays');
+  const empresa=_getWatchEmpresa();
   let boletoDays=Math.max(1,Math.min(7,Number((boletoInput&&boletoInput.value)||7)||7));
   let depositoDays=Math.max(1,Math.min(7,Number((depositoInput&&depositoInput.value)||7)||7));
   if(boletoInput)boletoInput.value=String(boletoDays);
@@ -8011,6 +8419,7 @@ async function loadDueWatch(silent=false){
     const p=new URLSearchParams();
     p.set('boleto_dias',String(boletoDays));
     p.set('deposito_dias',String(depositoDays));
+    p.set('empresa',empresa);
     const j=await api('/api/prazos?'+p.toString());
     if(reqId!==_watchLoadSeq)return;
     _setWatchSummary(j&&j.summary||{});
@@ -8026,6 +8435,10 @@ async function loadDueWatch(silent=false){
   }catch(err){
     if(reqId!==_watchLoadSeq)return;
     _setWatchSummary({});
+    if(_historyHasTabulator()&&_watchTable){
+      try{_watchTable.setData([]);}catch(_){}
+      _toggleWatchRenderMode(true);
+    }
     const body=document.getElementById('wBody');
     if(body)body.innerHTML='<tr><td colspan="8">Erro de rede: '+_esc(String(err&&err.message||err))+'</td></tr>';
     _setWatchLoading(false,'Falha ao ler as planilhas.');
@@ -8115,7 +8528,7 @@ function useWatchSearchSuggestion(value){
 }
 async function loadWatchSearchSuggestions(){
   try{
-    const j=await api('/api/prazos/search-suggestions');
+    const j=await api('/api/prazos/search-suggestions?empresa='+encodeURIComponent(_getWatchEmpresa()));
     _setWatchSearchCatalog(j&&j.items||[]);
   }catch(err){
     console.warn('Erro ao carregar autocomplete da busca de prazos:',err);
@@ -8149,7 +8562,7 @@ async function searchOpenBoletos(){
   _renderWatchSearchSuggestions('');
   _setWatchSearchState('Consultando boletos em aberto nas planilhas...',true);
   try{
-    const j=await api('/api/prazos/search?nome='+encodeURIComponent(query));
+    const j=await api('/api/prazos/search?nome='+encodeURIComponent(query)+'&empresa='+encodeURIComponent(_getWatchEmpresa()));
     _setWatchSearchCatalog(j&&j.suggestions||[]);
     _renderWatchSearchResults(j&&j.items||[], String((j&&j.message)||'Busca concluída.'));
   }catch(err){
@@ -8190,7 +8603,9 @@ const _auditMonthEl=document.getElementById('aMonth');
 if(_auditMonthEl&&!_auditMonthEl.value){
   try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
 }
+setHistoryEmpresa(_getHistoryEmpresa(),false);
 setAuditEmpresa(_getAuditEmpresa(),false);
+setWatchEmpresa(_getWatchEmpresa(),false);
 toggleRecoverFilters();
 _renderRecoverNfTags();
 toggleAuditFilters();
@@ -8704,6 +9119,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
             if parsed.path == "/api/prazos":
                 qs = parse_qs(parsed.query or "")
+                empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 try:
                     boleto_dias = int((qs.get("boleto_dias", ["7"])[0] or "7").strip())
                 except Exception:
@@ -8713,24 +9129,27 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 except Exception:
                     deposito_dias = 7
                 try:
-                    resultado = _gerar_relacao_pendencias(boleto_dias, deposito_dias)
+                    resultado = _gerar_relacao_pendencias(boleto_dias, deposito_dias, empresa)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
 
             if parsed.path == "/api/prazos/search-suggestions":
                 try:
-                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_suggestions()})
+                    qs = parse_qs(parsed.query or "")
+                    empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
+                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_suggestions(empresa)})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
 
             if parsed.path == "/api/prazos/search":
                 qs = parse_qs(parsed.query or "")
                 nome = (qs.get("nome", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 if not nome:
                     return _json_response(self, 400, {"ok": False, "message": "Informe um nome para consultar."})
                 try:
-                    resultado = _buscar_boletos_em_aberto_por_nome(nome)
+                    resultado = _buscar_boletos_em_aberto_por_nome(nome, empresa)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
@@ -8759,6 +9178,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 dt_to = (qs.get("to", [""])[0] or "").strip()
                 cnpj_emit = (qs.get("cnpj_emit", [""])[0] or "").strip()
                 cnpj_dest = (qs.get("cnpj_dest", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 query = (qs.get("q", [""])[0] or "").strip()
                 try:
                     limit = int((qs.get("limit", ["300"])[0] or "300").strip())
@@ -8776,6 +9196,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     dt_to=dt_to,
                     cnpj_emit=cnpj_emit,
                     cnpj_dest=cnpj_dest,
+                    empresa_filter=empresa,
                 )
                 return _json_response(self, 200, {"items": items})
             if parsed.path == "/api/history/export":
@@ -8789,6 +9210,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 dt_to = (qs.get("to", [""])[0] or "").strip()
                 cnpj_emit = (qs.get("cnpj_emit", [""])[0] or "").strip()
                 cnpj_dest = (qs.get("cnpj_dest", [""])[0] or "").strip()
+                empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 query = (qs.get("q", [""])[0] or "").strip()
                 try:
                     limit = int((qs.get("limit", ["300"])[0] or "300").strip())
@@ -8806,6 +9228,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     dt_to=dt_to,
                     cnpj_emit=cnpj_emit,
                     cnpj_dest=cnpj_dest,
+                    empresa_filter=empresa,
                 )
                 file_name = f"historico_botana_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 return _csv_response(self, 200, file_name, _history_csv_rows(items))
