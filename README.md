@@ -119,7 +119,7 @@ No `instances.json` do Hub, use:
 - As colunas `Descrição`, `Valor Pago` e `Status` não aparecem mais na grade principal.
 - Os títulos ficam centralizados, sem marcadores visuais de ordenação, e as divisórias da grade ficaram mais evidentes.
 - As colunas podem ser reajustadas arrastando a divisória do cabeçalho, com opção de resetar as larguras no próprio painel.
-- Os filtros visíveis agora acompanham a grade: `Data/Horário`, `Vencimento`, `NF`, `Cliente` e `Aba`.
+- Os filtros visíveis agora acompanham a grade: um campo de busca único que muda conforme o tipo selecionado (Data, Data/Hora, Vencimento, NF, Cliente, Aba ou Sem Filtro).
 - A aba `Histórico` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), seguindo a mesma lógica visual da `Conferência`.
 - A grade real do `Histórico` agora usa `Tabulator`, com paginação local, filtros por coluna, resize de colunas e fallback para a tabela HTML antiga se a biblioteca não carregar.
 - Quando uma nova consulta do `Histórico` começa, a grade anterior fica coberta por uma tela de loading, em vez de manter os dados velhos aparentes até a resposta chegar.

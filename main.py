@@ -14,7 +14,16 @@ from urllib.parse import urlparse, parse_qs
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from config import PLANILHAS, CNPJ_MVA, CNPJ_EH, INTERVALO, DOWNLOAD_DIR, RELATORIO_DIR, GOOGLE_CREDENTIALS_SHEETS, GOOGLE_CREDENTIALS_GMAIL
+from config import (
+    PLANILHAS,
+    CNPJ_MVA,
+    CNPJ_EH,
+    INTERVALO,
+    DOWNLOAD_DIR,
+    RELATORIO_DIR,
+    GOOGLE_CREDENTIALS_SHEETS,
+    GOOGLE_CREDENTIALS_GMAIL,
+)
 from gmail_service import (
     getGmailService,
     buscarMessagesEnviadosPagina,
@@ -29,6 +38,7 @@ from reporter import escreverRelatorio, consolidarRelatorioTMP
 from xml_parser import extrairDadosXML
 from sheets_writer import atualizarPlanilha
 from logger_config import logger, cor_ciano, reset
+
 try:
     from tray_icon import run_tray
 except Exception:
@@ -56,10 +66,12 @@ STOP_AFTER_NF = os.environ.get("STOP_AFTER_NF", "False").lower() in ("1", "true"
 # -----------------------
 
 stop_event = threading.Event()  # usado para parar o loop com seguranÃ§a
-running = False # indica se o loop principal estÃ¡ ativo
+running = False  # indica se o loop principal estÃ¡ ativo
 _LOOP_THREAD = None
 last_status = {"ok": True, "message": "Aguardando", "at": None}
-APPDATA_BASE = Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
+APPDATA_BASE = (
+    Path(os.getenv("APPDATA", str(Path.home() / "AppData" / "Roaming"))) / "Botana"
+)
 APPDATA_BASE.mkdir(parents=True, exist_ok=True)
 _SETTINGS_FILE = APPDATA_BASE / "panel_settings.json"
 _AUTH_FILE = APPDATA_BASE / "panel_auth.json"
@@ -283,7 +295,14 @@ def _manual_action_snapshot() -> dict:
         return dict(_MANUAL_ACTION)
 
 
-def _manual_action_begin(kind: str, label: str, message: str, detail: str = "", progress_total: int = 0, **extra) -> tuple[bool, dict]:
+def _manual_action_begin(
+    kind: str,
+    label: str,
+    message: str,
+    detail: str = "",
+    progress_total: int = 0,
+    **extra,
+) -> tuple[bool, dict]:
     with _MANUAL_ACTION_LOCK:
         if bool(_MANUAL_ACTION.get("active")):
             return False, dict(_MANUAL_ACTION)
@@ -354,7 +373,9 @@ def _manual_action_finish(ok: bool, message: str, detail: str = "", **extra) -> 
     with _MANUAL_ACTION_LOCK:
         _MANUAL_ACTION["active"] = False
         _MANUAL_ACTION["status"] = "success" if ok else "error"
-        _MANUAL_ACTION["message"] = str(message or "").strip() or ("Acao concluida." if ok else "Acao concluida com erro.")
+        _MANUAL_ACTION["message"] = str(message or "").strip() or (
+            "Acao concluida." if ok else "Acao concluida com erro."
+        )
         _MANUAL_ACTION["detail"] = str(detail or "").strip()
         _MANUAL_ACTION["finished_at"] = datetime.now().isoformat()
         _MANUAL_ACTION["phase"] = ""
@@ -392,7 +413,9 @@ def _manual_action_busy_message() -> str:
     return ""
 
 
-def _start_run_now_background(max_messages_override: int | None = None) -> tuple[bool, dict]:
+def _start_run_now_background(
+    max_messages_override: int | None = None,
+) -> tuple[bool, dict]:
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -422,7 +445,9 @@ def _start_run_now_background(max_messages_override: int | None = None) -> tuple
                     detail="O loop autom\u00e1tico ser\u00e1 retomado depois da execu\u00e7\u00e3o manual.",
                 )
                 parar_verificacao(wait=True, timeout=120.0)
-                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                if (
+                    _LOOP_THREAD and _LOOP_THREAD.is_alive()
+                ) or not _wait_for_processing_idle(timeout=5.0):
                     _manual_action_finish(
                         False,
                         "N\u00e3o foi poss\u00edvel executar agora.",
@@ -458,14 +483,20 @@ def _start_run_now_background(max_messages_override: int | None = None) -> tuple
                 try:
                     iniciar_verificacao()
                 except Exception:
-                    logger.exception("Falha ao retomar loop automatico apos erro na execucao manual.")
-            _manual_action_finish(False, "Erro na execu\u00e7\u00e3o manual.", detail=str(exc))
+                    logger.exception(
+                        "Falha ao retomar loop automatico apos erro na execucao manual."
+                    )
+            _manual_action_finish(
+                False, "Erro na execu\u00e7\u00e3o manual.", detail=str(exc)
+            )
 
     threading.Thread(target=_worker, daemon=True, name="botana-run-now").start()
     return True, snap
 
 
-def _start_reprocess_background(max_messages: int, mark_unread: bool = False, continue_after_id: str = "") -> tuple[bool, dict]:
+def _start_reprocess_background(
+    max_messages: int, mark_unread: bool = False, continue_after_id: str = ""
+) -> tuple[bool, dict]:
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -506,7 +537,9 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool = False, co
                     detail="O loop autom\u00e1tico ser\u00e1 retomado depois do reprocessamento.",
                 )
                 parar_verificacao(wait=True, timeout=120.0)
-                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                if (
+                    _LOOP_THREAD and _LOOP_THREAD.is_alive()
+                ) or not _wait_for_processing_idle(timeout=5.0):
                     _manual_action_finish(
                         False,
                         "N\u00e3o foi poss\u00edvel iniciar o reprocessamento.",
@@ -537,7 +570,9 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool = False, co
             window_oldest_date = str(result.get("window_oldest_date", "") or "").strip()
             window_newest_date = str(result.get("window_newest_date", "") or "").strip()
             window_selected = int(result.get("window_selected", 0) or 0)
-            next_continue_after_id = str(result.get("continue_after_id", "") or "").strip()
+            next_continue_after_id = str(
+                result.get("continue_after_id", "") or ""
+            ).strip()
             continue_remaining = int(result.get("continue_remaining", 0) or 0)
             window_text = ""
             if window_oldest_date and window_newest_date:
@@ -627,8 +662,15 @@ def _start_reprocess_background(max_messages: int, mark_unread: bool = False, co
                 try:
                     iniciar_verificacao()
                 except Exception:
-                    logger.exception("Falha ao retomar loop automatico apos erro no reprocessamento.")
-            _manual_action_finish(False, "Erro no reprocessamento.", detail=str(exc), requested_limit=int(max_messages))
+                    logger.exception(
+                        "Falha ao retomar loop automatico apos erro no reprocessamento."
+                    )
+            _manual_action_finish(
+                False,
+                "Erro no reprocessamento.",
+                detail=str(exc),
+                requested_limit=int(max_messages),
+            )
 
     threading.Thread(target=_worker, daemon=True, name="botana-reprocess").start()
     return True, snap
@@ -650,11 +692,19 @@ def _get_gmail_service_locked(timeout: float | None = None):
 def _load_settings():
     with _SETTINGS_LOCK:
         if not _SETTINGS_FILE.exists():
-            loop_min = max(1, min(720, int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30))))
+            loop_min = max(
+                1, min(720, int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))
+            )
             out = {
-                "gmail_filter_mode": str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
-                "gmail_max_pages": max(1, min(20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3)))),
-                "gmail_page_size": max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))),
+                "gmail_filter_mode": str(
+                    _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")
+                ),
+                "gmail_max_pages": max(
+                    1, min(20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3)))
+                ),
+                "gmail_page_size": max(
+                    1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))
+                ),
                 "loop_interval_minutes": loop_min,
                 "interval_seconds": max(30, min(86400, loop_min * 60)),
                 "max_messages": max(
@@ -663,14 +713,27 @@ def _load_settings():
                         1000,
                         max(
                             int(_RUNTIME_SETTINGS.get("max_messages", 100)),
-                            max(1, min(20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3))))
-                            * max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)))),
+                            max(
+                                1,
+                                min(
+                                    20, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3))
+                                ),
+                            )
+                            * max(
+                                1,
+                                min(
+                                    500,
+                                    int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)),
+                                ),
+                            ),
                         ),
                     ),
                 ),
             }
             _RUNTIME_SETTINGS.update(out)
-            _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+            _SETTINGS_FILE.write_text(
+                json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
             return dict(out)
         try:
             raw = json.loads(_SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -687,9 +750,40 @@ def _load_settings():
             "current_and_previous_month",
         }:
             mode = "last_30_days"
-        loop_min = max(1, min(720, int(raw.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
-        max_pages = max(1, min(20, int(raw.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
-        page_size = max(1, min(500, int(raw.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
+        loop_min = max(
+            1,
+            min(
+                720,
+                int(
+                    raw.get(
+                        "loop_interval_minutes",
+                        _RUNTIME_SETTINGS.get("loop_interval_minutes", 30),
+                    )
+                ),
+            ),
+        )
+        max_pages = max(
+            1,
+            min(
+                20,
+                int(
+                    raw.get(
+                        "gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)
+                    )
+                ),
+            ),
+        )
+        page_size = max(
+            1,
+            min(
+                500,
+                int(
+                    raw.get(
+                        "gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)
+                    )
+                ),
+            ),
+        )
         effective_max_messages = max(
             max_pages * page_size,
             max(1, min(1000, int(raw.get("max_messages", max_pages * page_size)))),
@@ -711,7 +805,12 @@ def _load_settings():
 
 def _save_settings(data: dict):
     with _SETTINGS_LOCK:
-        mode = str(data.get("gmail_filter_mode", _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days"))).strip()
+        mode = str(
+            data.get(
+                "gmail_filter_mode",
+                _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days"),
+            )
+        ).strip()
         if mode not in {
             "last_15_days",
             "last_30_days",
@@ -722,9 +821,40 @@ def _save_settings(data: dict):
             "current_and_previous_month",
         }:
             mode = "last_30_days"
-        max_pages = max(1, min(20, int(data.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)))))
-        page_size = max(1, min(500, int(data.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)))))
-        loop_min = max(1, min(720, int(data.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)))))
+        max_pages = max(
+            1,
+            min(
+                20,
+                int(
+                    data.get(
+                        "gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)
+                    )
+                ),
+            ),
+        )
+        page_size = max(
+            1,
+            min(
+                500,
+                int(
+                    data.get(
+                        "gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)
+                    )
+                ),
+            ),
+        )
+        loop_min = max(
+            1,
+            min(
+                720,
+                int(
+                    data.get(
+                        "loop_interval_minutes",
+                        _RUNTIME_SETTINGS.get("loop_interval_minutes", 30),
+                    )
+                ),
+            ),
+        )
         effective_max_messages = max(
             max_pages * page_size,
             max(1, min(1000, int(data.get("max_messages", max_pages * page_size)))),
@@ -738,7 +868,9 @@ def _save_settings(data: dict):
             "max_messages": max(1, min(1000, effective_max_messages)),
         }
         _RUNTIME_SETTINGS.update(out)
-        _SETTINGS_FILE.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        _SETTINGS_FILE.write_text(
+            json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         global _NEXT_RUN_AT
         _NEXT_RUN_AT = time.time() + int(out.get("interval_seconds", INTERVALO))
 
@@ -746,7 +878,9 @@ def _save_settings(data: dict):
 def _password_hash(password: str, salt_hex: str) -> str:
     try:
         salt = bytes.fromhex(str(salt_hex or ""))
-        digest = hashlib.pbkdf2_hmac("sha256", (password or "").encode("utf-8"), salt, 120000)
+        digest = hashlib.pbkdf2_hmac(
+            "sha256", (password or "").encode("utf-8"), salt, 120000
+        )
         return digest.hex()
     except Exception:
         return ""
@@ -761,7 +895,11 @@ def _load_auth():
         if _AUTH_FILE.exists():
             try:
                 data = json.loads(_AUTH_FILE.read_text(encoding="utf-8"))
-                if isinstance(data, dict) and isinstance(data.get("users"), list) and data["users"]:
+                if (
+                    isinstance(data, dict)
+                    and isinstance(data.get("users"), list)
+                    and data["users"]
+                ):
                     return data
             except Exception:
                 pass
@@ -777,7 +915,9 @@ def _load_auth():
                 }
             ]
         }
-        _AUTH_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        _AUTH_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         print("[Botana] Login inicial: usuario=dev senha=dev")
         return data
 
@@ -819,7 +959,10 @@ def _can_operate(username: str) -> bool:
 def _create_session(username: str) -> str:
     token = secrets.token_urlsafe(32)
     with _SESSIONS_LOCK:
-        _SESSIONS[token] = {"user": _normalize_username(username), "exp": time.time() + _SESSION_TTL_SECONDS}
+        _SESSIONS[token] = {
+            "user": _normalize_username(username),
+            "exp": time.time() + _SESSION_TTL_SECONDS,
+        }
     return token
 
 
@@ -845,12 +988,14 @@ def _current_session_user(handler: BaseHTTPRequestHandler) -> str | None:
             return None
         return str(item.get("user", "")).strip() or None
 
+
 def escolher_planilha_por_cnpj_e_ano(cnpj: str, ano: str):
     if cnpj == CNPJ_MVA:
         return PLANILHAS["MVA"].get(ano)
     if cnpj == CNPJ_EH:
         return PLANILHAS["EH"].get(ano)
     return None
+
 
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -990,7 +1135,11 @@ def _extract_pdf_text(file_path: str) -> str:
     try:
         reader = PdfReader(file_path)
     except Exception as exc:
-        logger.warning("Falha ao abrir PDF %s para leitura de fallback: %s", os.path.basename(file_path), exc)
+        logger.warning(
+            "Falha ao abrir PDF %s para leitura de fallback: %s",
+            os.path.basename(file_path),
+            exc,
+        )
         return ""
     for page in reader.pages[:3]:
         try:
@@ -1072,9 +1221,13 @@ def _extract_boleto_pdf_info(file_path: str) -> dict | None:
 
 def _boletos_for_xml(dados_xml: dict, boleto_infos: list[dict]) -> list[dict]:
     nf = str(dados_xml.get("nf") or "").strip()
-    candidatos = [dict(item) for item in list(boleto_infos or []) if isinstance(item, dict)]
+    candidatos = [
+        dict(item) for item in list(boleto_infos or []) if isinstance(item, dict)
+    ]
     if nf:
-        matched = [item for item in candidatos if str(item.get("nf") or "").strip() == nf]
+        matched = [
+            item for item in candidatos if str(item.get("nf") or "").strip() == nf
+        ]
         if matched:
             candidatos = matched
     candidatos.sort(
@@ -1094,14 +1247,20 @@ def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) 
     candidatos = _boletos_for_xml(payload, boleto_infos)
     if not candidatos:
         return payload
-    if not all(str(item.get("vencimento") or "").strip() and float(item.get("valor") or 0.0) > 0 for item in candidatos):
+    if not all(
+        str(item.get("vencimento") or "").strip()
+        and float(item.get("valor") or 0.0) > 0
+        for item in candidatos
+    ):
         return payload
     valor_total = float(payload.get("valorTotal") or 0.0)
     source = str(payload.get("parcelas_source") or "").strip().lower()
     if parcelas:
         if source != "fat" or len(parcelas) != 1 or len(candidatos) <= 1:
             return payload
-        soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
+        soma_boletos = round(
+            sum(float(item.get("valor") or 0.0) for item in candidatos), 2
+        )
         if valor_total > 0 and abs(soma_boletos - valor_total) > 0.05:
             logger.warning(
                 "NF %s com XML de fatura unica teve %d boletos PDF, mas a soma %.2f difere do total %.2f. Mantendo XML.",
@@ -1112,7 +1271,9 @@ def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) 
             )
             return payload
     else:
-        soma_boletos = round(sum(float(item.get("valor") or 0.0) for item in candidatos), 2)
+        soma_boletos = round(
+            sum(float(item.get("valor") or 0.0) for item in candidatos), 2
+        )
         if len(candidatos) == 1:
             boleto_valor = round(float(candidatos[0].get("valor") or 0.0), 2)
             if valor_total > 0 and abs(boleto_valor - valor_total) > 0.05:
@@ -1149,10 +1310,16 @@ def _infer_parcelas_from_boleto_pdfs(dados_xml: dict, boleto_infos: list[dict]) 
     payload["numParcela"] = parcelas_inferidas[0]["numParcela"]
     payload["valorParcela"] = parcelas_inferidas[0]["valor"]
     try:
-        payload["anoVencimento"] = datetime.strptime(payload["vencimento"], "%d/%m/%Y").strftime("%Y")
+        payload["anoVencimento"] = datetime.strptime(
+            payload["vencimento"], "%d/%m/%Y"
+        ).strftime("%Y")
     except Exception:
         pass
-    reason = "o XML veio apenas com fatura total" if source == "fat" else "o XML veio sem parcelas"
+    reason = (
+        "o XML veio apenas com fatura total"
+        if source == "fat"
+        else "o XML veio sem parcelas"
+    )
     logger.info(
         "NF %s inferiu %d parcelas a partir dos PDFs de boleto porque %s.",
         payload.get("nf"),
@@ -1166,12 +1333,22 @@ def _message_payment_hint(message_meta: dict | None) -> str:
     if not isinstance(message_meta, dict):
         return ""
     text = " ".join(
-        str(message_meta.get(key, "") or "").strip()
-        for key in ("subject", "snippet")
+        str(message_meta.get(key, "") or "").strip() for key in ("subject", "snippet")
     )
     key = f" {_normalize_ascii_key(text)} "
-    has_boleto = any(token in key for token in (" BOLETO ", " BLT ", " BOLET0 ", " BOLETT "))
-    has_deposito = any(token in key for token in (" DEPOSITO ", " DEP CX ", " DEP BR ", " CONTA CAIXA ", " CONTA BRADESCO "))
+    has_boleto = any(
+        token in key for token in (" BOLETO ", " BLT ", " BOLET0 ", " BOLETT ")
+    )
+    has_deposito = any(
+        token in key
+        for token in (
+            " DEPOSITO ",
+            " DEP CX ",
+            " DEP BR ",
+            " CONTA CAIXA ",
+            " CONTA BRADESCO ",
+        )
+    )
     if has_deposito and not has_boleto:
         return "deposito"
     if has_boleto and not has_deposito:
@@ -1179,7 +1356,9 @@ def _message_payment_hint(message_meta: dict | None) -> str:
     return ""
 
 
-def _should_ignore_cash_sale_xml(dados_xml: dict | None, message_meta: dict | None = None) -> bool:
+def _should_ignore_cash_sale_xml(
+    dados_xml: dict | None, message_meta: dict | None = None
+) -> bool:
     payload = dict(dados_xml or {})
     nat_op = str(payload.get("naturezaOperacao") or "").strip().upper()
     if "VISTA" not in nat_op and "VENDA A VISTA" not in nat_op:
@@ -1205,7 +1384,9 @@ def _message_date_fallback(message_meta: dict | None) -> str:
         return _normalize_ddmmyyyy(raw)
 
 
-def _infer_deposito_parcela_from_preview(dados_xml: dict, message_meta: dict | None, boleto_infos: list[dict]) -> dict:
+def _infer_deposito_parcela_from_preview(
+    dados_xml: dict, message_meta: dict | None, boleto_infos: list[dict]
+) -> dict:
     payload = dict(dados_xml or {})
     if list(payload.get("parcelas") or []):
         return payload
@@ -1236,7 +1417,9 @@ def _infer_deposito_parcela_from_preview(dados_xml: dict, message_meta: dict | N
     payload["numParcela"] = parcela["numParcela"]
     payload["valorParcela"] = valor_total
     try:
-        payload["anoVencimento"] = datetime.strptime(vencimento, "%d/%m/%Y").strftime("%Y")
+        payload["anoVencimento"] = datetime.strptime(vencimento, "%d/%m/%Y").strftime(
+            "%Y"
+        )
     except Exception:
         pass
     logger.info(
@@ -1258,24 +1441,43 @@ def _write_history_launch_event(dados_xml: dict, dados_parcela: dict, result: di
             "type": "boleto_lancado",
             "at": _now(),
             "nf": nf,
-            "cliente": str(dados_parcela.get("destinatario") or dados_xml.get("destinatario") or "").strip(),
+            "cliente": str(
+                dados_parcela.get("destinatario") or dados_xml.get("destinatario") or ""
+            ).strip(),
             "cnpj_emit": re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or "")),
-            "cnpj_dest": re.sub(r"\D+", "", str(dados_xml.get("cnpjDestinatario") or "")),
-            "vencimento": str(result.get("vencimento") or dados_parcela.get("vencimento") or "").strip(),
-            "descricao": str(result.get("descricao") or dados_parcela.get("descricao") or "").strip(),
-            "valor_total": float(result.get("valor_total", dados_parcela.get("valorTotal", 0)) or 0),
-            "qtd_parcelas": int(result.get("qtd_parcelas", dados_parcela.get("qtdParcelas", 1)) or 1),
-            "parcela": str(result.get("parcela") or dados_parcela.get("numParcela") or "").strip(),
-            "valor_parcela": float(result.get("valor_parcela", dados_parcela.get("valorParcela", 0)) or 0),
+            "cnpj_dest": re.sub(
+                r"\D+", "", str(dados_xml.get("cnpjDestinatario") or "")
+            ),
+            "vencimento": str(
+                result.get("vencimento") or dados_parcela.get("vencimento") or ""
+            ).strip(),
+            "descricao": str(
+                result.get("descricao") or dados_parcela.get("descricao") or ""
+            ).strip(),
+            "valor_total": float(
+                result.get("valor_total", dados_parcela.get("valorTotal", 0)) or 0
+            ),
+            "qtd_parcelas": int(
+                result.get("qtd_parcelas", dados_parcela.get("qtdParcelas", 1)) or 1
+            ),
+            "parcela": str(
+                result.get("parcela") or dados_parcela.get("numParcela") or ""
+            ).strip(),
+            "valor_parcela": float(
+                result.get("valor_parcela", dados_parcela.get("valorParcela", 0)) or 0
+            ),
             "valor_pago": str(result.get("valor_pago") or "").strip(),
             "status": str(result.get("status") or "").strip(),
             "sheet_title": str(result.get("sheet_title") or "").strip(),
             "sheet_type": str(result.get("sheet_type") or "").strip(),
             "aba": str(result.get("aba") or "").strip(),
         }
-        escreverRelatorio(f"{_now()} - HIST_JSON {json.dumps(payload, ensure_ascii=False)}")
+        escreverRelatorio(
+            f"{_now()} - HIST_JSON {json.dumps(payload, ensure_ascii=False)}"
+        )
     except Exception as exc:
         logger.warning("Falha ao registrar evento estruturado no historico: %s", exc)
+
 
 def processar_emails_enviados(
     max_messages_override: int | None = None,
@@ -1285,8 +1487,16 @@ def processar_emails_enviados(
     global _IS_READING
     _process_start()
     service = _get_gmail_service_locked()
-    batch_limit = max(1, min(1000, int(max_messages_override or _RUNTIME_SETTINGS.get("max_messages", 100))))
-    page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    batch_limit = max(
+        1,
+        min(
+            1000,
+            int(max_messages_override or _RUNTIME_SETTINGS.get("max_messages", 100)),
+        ),
+    )
+    page_size = max(
+        1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50))
+    )
     max_pages = max(1, min(50, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3)))
     if max_messages_override:
         max_pages = max(max_pages, (batch_limit + page_size - 1) // page_size)
@@ -1304,9 +1514,15 @@ def processar_emails_enviados(
             forced_messages.append(dict(item))
     else:
         try:
-            skip_botana_ids = {str(label_id).strip() for label_id in list_botana_label_ids(service) if str(label_id).strip()}
+            skip_botana_ids = {
+                str(label_id).strip()
+                for label_id in list_botana_label_ids(service)
+                if str(label_id).strip()
+            }
         except Exception as exc:
-            logger.warning("Falha ao carregar labels do Botana para o filtro de leitura: %s", exc)
+            logger.warning(
+                "Falha ao carregar labels do Botana para o filtro de leitura: %s", exc
+            )
     total_msgs = 0
     anexos_lidos = 0
     xmls_lidos = 0
@@ -1318,6 +1534,7 @@ def processar_emails_enviados(
     vistos = set()
     interativo_cmd = bool(sys.stdin and sys.stdin.isatty())
     abort_logged = False
+
     def _summary() -> dict:
         return {
             "messages": int(total_msgs),
@@ -1369,7 +1586,9 @@ def processar_emails_enviados(
 
         if primeira_pagina and not msgs:
             logger.info("Nenhuma mensagem enviada com XML encontrada.")
-            escreverRelatorio(f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lan\u00e7amentos.")
+            escreverRelatorio(
+                f"{_now()} - CICLO: 0 e-mails lidos, 0 anexos, 0 XML, 0 lan\u00e7amentos."
+            )
             _sync_progress()
             return _summary()
 
@@ -1422,16 +1641,25 @@ def processar_emails_enviados(
                             # porque nesses casos o fallback ainda pode montar a parcela corretamente.
                             nat_op = dados.get("naturezaOperacao", "").strip().upper()
                             dest_nome = dados.get("destinatario", "")
-                            dest_cnpj = re.sub(r"\D+", "", str(dados.get("cnpjDestinatario") or ""))
+                            dest_cnpj = re.sub(
+                                r"\D+", "", str(dados.get("cnpjDestinatario") or "")
+                            )
                             payment_hint = _message_payment_hint(message_meta)
                             if _should_ignore_cash_sale_xml(dados, message_meta):
                                 # Checa se a mensagem jÃ¡ foi processada no relatÃ³rio atual:
-                                if dados.get('nf') not in consolidarRelatorioTMP():
-                                    escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (venda \u00e0 vista).")
+                                if dados.get("nf") not in consolidarRelatorioTMP():
+                                    escreverRelatorio(
+                                        f"{_now()} - NF {dados.get('nf')} ignorada (venda \u00e0 vista)."
+                                    )
                                     continue
-                                else: logger.info(f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}")
+                                else:
+                                    logger.info(
+                                        f"{cor_ciano}NF {dados['nf']} jÃ¡ registrada no relatÃ³rio, nÃ£o duplicando a mensagem de ignorada.{reset}"
+                                    )
                                 continue
-                            if ("VISTA" in nat_op or "VENDA A VISTA" in nat_op) and payment_hint in {"deposito", "boleto"}:
+                            if (
+                                "VISTA" in nat_op or "VENDA A VISTA" in nat_op
+                            ) and payment_hint in {"deposito", "boleto"}:
                                 logger.info(
                                     "NF %s mantida para processamento apesar de venda à vista porque o e-mail indica %s.",
                                     dados.get("nf"),
@@ -1439,26 +1667,42 @@ def processar_emails_enviados(
                                 )
                             cnpj_mva = re.sub(r"\D+", "", str(CNPJ_MVA or ""))
                             cnpj_eh = re.sub(r"\D+", "", str(CNPJ_EH or ""))
-                            if dest_cnpj and (dest_cnpj == cnpj_mva or dest_cnpj == cnpj_eh):
-                                logger.info(f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatÃ¡rio Ã© o nosso: {dest_nome} / {dest_cnpj})")
-                                escreverRelatorio(f"{_now()} - NF {dados.get('nf')} ignorada (destinatÃ¡rio Ã© o nosso).")
+                            if dest_cnpj and (
+                                dest_cnpj == cnpj_mva or dest_cnpj == cnpj_eh
+                            ):
+                                logger.info(
+                                    f"[DEBUG IGNORE RESULT] NF {dados['nf']} ignorada (destinatÃ¡rio Ã© o nosso: {dest_nome} / {dest_cnpj})"
+                                )
+                                escreverRelatorio(
+                                    f"{_now()} - NF {dados.get('nf')} ignorada (destinatÃ¡rio Ã© o nosso)."
+                                )
                                 continue
                             if not dados:
-                                motivo = dados.get("motivo_ignoracao", "Desconhecido") if isinstance(dados, dict) else "Desconhecido"
+                                motivo = (
+                                    dados.get("motivo_ignoracao", "Desconhecido")
+                                    if isinstance(dados, dict)
+                                    else "Desconhecido"
+                                )
                                 logger.info(f"Ignorado XML (motivo: {motivo}).")
-                                escreverRelatorio(f"{_now()} - XML {nome_arquivo} ignorado (motivo: {motivo})")
+                                escreverRelatorio(
+                                    f"{_now()} - XML {nome_arquivo} ignorado (motivo: {motivo})"
+                                )
                                 continue
 
                             dados_xmls.append(dados)
 
                         except Exception as e:
-                            escreverRelatorio(f"{_now()} - Erro extraindo XML {nome_arquivo}: {e}")
+                            escreverRelatorio(
+                                f"{_now()} - Erro extraindo XML {nome_arquivo}: {e}"
+                            )
                             logger.exception("Erro extraindo XML %s: %s", arquivo, e)
 
                     # =============================
                     # PDF -> tenta identificar boleto
                     # =============================
-                    elif arquivo.lower().endswith(".pdf"): # mudar pra elif se o bloco de cima for realmente necessÃ¡rio
+                    elif arquivo.lower().endswith(
+                        ".pdf"
+                    ):  # mudar pra elif se o bloco de cima for realmente necessÃ¡rio
                         boleto_info = _extract_boleto_pdf_info(arquivo)
                         if boleto_info:
                             boleto_infos.append(boleto_info)
@@ -1470,10 +1714,15 @@ def processar_emails_enviados(
                                 float(boleto_info.get("valor") or 0.0),
                             )
                         else:
-                            logger.info("PDF ignorado (nÃ£o parece boleto ou nÃ£o foi possÃ­vel extrair metadados): %s", nome_arquivo)
+                            logger.info(
+                                "PDF ignorado (nÃ£o parece boleto ou nÃ£o foi possÃ­vel extrair metadados): %s",
+                                nome_arquivo,
+                            )
 
                     else:
-                        logger.info("Arquivo nÃ£o identificado como boleto: %s", nome_arquivo)
+                        logger.info(
+                            "Arquivo nÃ£o identificado como boleto: %s", nome_arquivo
+                        )
 
                 finally:
                     # Remove sempre o anexo local (independente do tipo)
@@ -1533,7 +1782,9 @@ def processar_emails_enviados(
                     if not processar_emails_enviados._skip_reached:
                         if nf_num == str(SKIP_UNTIL_NF):
                             processar_emails_enviados._skip_reached = True
-                            logger.info(f"SKIP_UNTIL_NF: NF {nf_num} encontrada - a partir daqui serÃ¡ processada.")
+                            logger.info(
+                                f"SKIP_UNTIL_NF: NF {nf_num} encontrada - a partir daqui serÃ¡ processada."
+                            )
                         else:
                             logger.info(f"SKIP_UNTIL_NF ativo, pulando NF {nf_num}")
                             continue
@@ -1543,13 +1794,17 @@ def processar_emails_enviados(
 
                 xml_boletos = _boletos_for_xml(dados_xml, boleto_infos)
                 dados_xml = _infer_parcelas_from_boleto_pdfs(dados_xml, xml_boletos)
-                dados_xml = _infer_deposito_parcela_from_preview(dados_xml, message_meta, xml_boletos)
+                dados_xml = _infer_deposito_parcela_from_preview(
+                    dados_xml, message_meta, xml_boletos
+                )
                 cnpj_emit = re.sub(r"\D+", "", str(dados_xml.get("cnpjEmitente") or ""))
                 ano = dados_xml.get("anoVencimento")
                 planilha_id = escolher_planilha_por_cnpj_e_ano(cnpj_emit, ano)
 
                 if not planilha_id:
-                    logger.warning("CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano)
+                    logger.warning(
+                        "CNPJ %s ou ano %s sem planilha configurada.", cnpj_emit, ano
+                    )
                     continue
 
                 # Itera sobre todas as parcelas - mapeamento correto de boletos -> parcelas
@@ -1566,7 +1821,9 @@ def processar_emails_enviados(
                 else:
                     # Se tiver igual, mapeia 1:1; se menor, preenche em ordem; se maior, usa sÃ³ os primeiros N
                     boletos_map = [
-                        str((xml_boletos[i] or {}).get("numero") or "").strip() if i < n_boletos else None
+                        str((xml_boletos[i] or {}).get("numero") or "").strip()
+                        if i < n_boletos
+                        else None
                         for i in range(n_parcelas)
                     ]
                     if n_boletos > n_parcelas:
@@ -1574,7 +1831,10 @@ def processar_emails_enviados(
                             "Mais boletos (%d) que parcelas (%d). Sobraram: %s",
                             n_boletos,
                             n_parcelas,
-                            [str((item or {}).get("numero") or "").strip() for item in xml_boletos[n_parcelas:]],
+                            [
+                                str((item or {}).get("numero") or "").strip()
+                                for item in xml_boletos[n_parcelas:]
+                            ],
                         )
 
                 # Agora processa 1 vez por parcela, usando o boleto mapeado (ou None)
@@ -1583,21 +1843,29 @@ def processar_emails_enviados(
                         return _summary()
                     num_boleto = boletos_map[idx]
                     dados_parcela = dados_xml.copy()
-                    dados_parcela.update({
-                        "vencimento": parcela["vencimento"],
-                        "numParcela": parcela["numParcela"],
-                        "valorParcela": parcela["valor"],
-                        "boleto": num_boleto  # adiciona campo explÃ­cito (opcional)
-                    })
+                    dados_parcela.update(
+                        {
+                            "vencimento": parcela["vencimento"],
+                            "numParcela": parcela["numParcela"],
+                            "valorParcela": parcela["valor"],
+                            "boleto": num_boleto,  # adiciona campo explÃ­cito (opcional)
+                        }
+                    )
 
                     # Ajusta descriÃ§Ã£o com o boleto mapeado (se houver)
                     if num_boleto:
-                        dados_parcela["descricao"] = f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
+                        dados_parcela["descricao"] = (
+                            f"{dados_parcela['destinatario']} BLT {num_boleto} (Bot)"
+                        )
                     else:
                         if cnpj_emit == "18471209000107":
-                            dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP BR (Bot)"
+                            dados_parcela["descricao"] = (
+                                f"{dados_parcela['destinatario']} DEP BR (Bot)"
+                            )
                         else:
-                            dados_parcela["descricao"] = f"{dados_parcela['destinatario']} DEP CX (Bot)"
+                            dados_parcela["descricao"] = (
+                                f"{dados_parcela['destinatario']} DEP CX (Bot)"
+                            )
 
                     # Tenta atualizar planilha com retry
                     for tentativa in range(5):
@@ -1606,7 +1874,7 @@ def processar_emails_enviados(
                         try:
                             creds = Credentials.from_service_account_file(
                                 GOOGLE_CREDENTIALS_SHEETS,
-                                scopes=["https://www.googleapis.com/auth/spreadsheets"]
+                                scopes=["https://www.googleapis.com/auth/spreadsheets"],
                             )
                             gc = gspread.authorize(creds)
 
@@ -1620,16 +1888,29 @@ def processar_emails_enviados(
 
                             planilha = cache[planilha_id]
                             resultado = atualizarPlanilha(planilha, dados_parcela, gc)
-                            if isinstance(resultado, dict) and bool(resultado.get("inserted")):
+                            if isinstance(resultado, dict) and bool(
+                                resultado.get("inserted")
+                            ):
                                 total_processados += 1
-                                _write_history_launch_event(dados_xml, dados_parcela, resultado)
+                                _write_history_launch_event(
+                                    dados_xml, dados_parcela, resultado
+                                )
                                 _sync_progress()
-                            elif isinstance(resultado, dict) and bool(resultado.get("duplicate")):
+                            elif isinstance(resultado, dict) and bool(
+                                resultado.get("duplicate")
+                            ):
                                 total_duplicados += 1
                                 _sync_progress()
                             # Se NF_ALVO + STOP_AFTER_NF -> encerra o processo principal para anÃ¡lise isolada.
-                            if NF_ALVO and STOP_AFTER_NF and isinstance(resultado, dict) and bool(resultado.get("inserted")):
-                                logger.info(f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execuÃ§Ã£o.")
+                            if (
+                                NF_ALVO
+                                and STOP_AFTER_NF
+                                and isinstance(resultado, dict)
+                                and bool(resultado.get("inserted"))
+                            ):
+                                logger.info(
+                                    f"NF_ALVO {NF_ALVO} processada. STOP_AFTER_NF=True -> encerrando execuÃ§Ã£o."
+                                )
                                 # forÃ§a saÃ­da limpa do loop principal retornando da funÃ§Ã£o
                                 return _summary()
                             break
@@ -1637,13 +1918,16 @@ def processar_emails_enviados(
                         except gspread.exceptions.APIError as e:
                             if "429" in str(e):
                                 from sheets_writer import apiCooldown
+
                                 apiCooldown()
                                 continue
                             else:
                                 logger.exception("Erro ao atualizar planilha: %s", e)
                                 break
                         except Exception as e:
-                            logger.exception("Falha inesperada ao atualizar planilha: %s", e)
+                            logger.exception(
+                                "Falha inesperada ao atualizar planilha: %s", e
+                            )
                             break
 
         if messages_override is not None or total_msgs >= batch_limit:
@@ -1651,14 +1935,21 @@ def processar_emails_enviados(
         skip_reached = bool(getattr(processar_emails_enviados, "_skip_reached", False))
         if SKIP_UNTIL_NF and not skip_reached and next_page_token:
             if interativo_cmd:
-                resposta = input(
-                    f"\nNF {SKIP_UNTIL_NF} nÃ£o encontrada neste lote de {page_size}. "
-                    f"Deseja continuar com mais {page_size}? [s/N]: "
-                ).strip().lower()
+                resposta = (
+                    input(
+                        f"\nNF {SKIP_UNTIL_NF} nÃ£o encontrada neste lote de {page_size}. "
+                        f"Deseja continuar com mais {page_size}? [s/N]: "
+                    )
+                    .strip()
+                    .lower()
+                )
                 if resposta in ("s", "sim", "y", "yes"):
                     page_token = next_page_token
                     continue
-                logger.info("Busca interrompida pelo usuÃ¡rio antes de encontrar a NF %s.", SKIP_UNTIL_NF)
+                logger.info(
+                    "Busca interrompida pelo usuÃ¡rio antes de encontrar a NF %s.",
+                    SKIP_UNTIL_NF,
+                )
             else:
                 logger.info(
                     "NF %s nÃ£o encontrada no lote atual e execuÃ§Ã£o nÃ£o interativa. "
@@ -1676,13 +1967,16 @@ def processar_emails_enviados(
     _sync_progress()
     return _summary()
 
+
 def main_loop():
     global running, last_status, _NEXT_RUN_AT, _IS_READING, _LOOP_THREAD
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     running = True
     logger.info("[Botana] Loop iniciado")
     while not stop_event.is_set():
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         try:
             _IS_READING = True
             with _PROCESS_EXEC_LOCK:
@@ -1698,7 +1992,11 @@ def main_loop():
         except Exception as e:
             logger.exception("Erro no ciclo principal: %s", e)
             _process_finish(ok=False, error=str(e))
-            last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
+            last_status = {
+                "ok": False,
+                "message": f"Erro no ciclo: {e}",
+                "at": datetime.now().isoformat(),
+            }
         finally:
             _IS_READING = False
         if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
@@ -1725,13 +2023,21 @@ def executar_um_ciclo(
         _process_finish(ok=True, error="")
         msg = _format_cycle_status("Execução manual concluída", summary)
         last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         return True, msg
     except Exception as exc:
         logger.exception("Erro na execuÃ§Ã£o manual: %s", exc)
         _process_finish(ok=False, error=str(exc))
-        last_status = {"ok": False, "message": f"Erro na execuÃ§Ã£o manual: {exc}", "at": datetime.now().isoformat()}
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        last_status = {
+            "ok": False,
+            "message": f"Erro na execuÃ§Ã£o manual: {exc}",
+            "at": datetime.now().isoformat(),
+        }
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         return False, str(exc)
     finally:
         _IS_READING = False
@@ -1754,7 +2060,9 @@ def main_loop():
     running = True
     logger.info("[Botana] Loop iniciado")
     while not stop_event.is_set():
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         try:
             _IS_READING = True
             with _PROCESS_EXEC_LOCK:
@@ -1765,7 +2073,11 @@ def main_loop():
         except Exception as e:
             logger.exception("Erro no ciclo principal: %s", e)
             _process_finish(ok=False, error=str(e))
-            last_status = {"ok": False, "message": f"Erro no ciclo: {e}", "at": datetime.now().isoformat()}
+            last_status = {
+                "ok": False,
+                "message": f"Erro no ciclo: {e}",
+                "at": datetime.now().isoformat(),
+            }
         finally:
             _IS_READING = False
         if stop_event.wait(int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))):
@@ -1792,13 +2104,21 @@ def executar_um_ciclo(
         _process_finish(ok=True, error="")
         msg = _format_cycle_status("Execu\u00e7\u00e3o manual conclu\u00edda", summary)
         last_status = {"ok": True, "message": msg, "at": datetime.now().isoformat()}
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         return True, msg
     except Exception as exc:
         logger.exception("Erro na execu\u00e7\u00e3o manual: %s", exc)
         _process_finish(ok=False, error=str(exc))
-        last_status = {"ok": False, "message": f"Erro na execu\u00e7\u00e3o manual: {exc}", "at": datetime.now().isoformat()}
-        _NEXT_RUN_AT = time.time() + int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO))
+        last_status = {
+            "ok": False,
+            "message": f"Erro na execu\u00e7\u00e3o manual: {exc}",
+            "at": datetime.now().isoformat(),
+        }
+        _NEXT_RUN_AT = time.time() + int(
+            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+        )
         return False, str(exc)
     finally:
         _IS_READING = False
@@ -1824,7 +2144,12 @@ def parar_verificacao(wait: bool = False, timeout: float = 30.0):
         return False
     stop_event.set()
     running = False
-    if wait and thread and thread.is_alive() and thread is not threading.current_thread():
+    if (
+        wait
+        and thread
+        and thread.is_alive()
+        and thread is not threading.current_thread()
+    ):
         thread.join(max(0.1, float(timeout or 0.1)))
         if not thread.is_alive():
             _LOOP_THREAD = None
@@ -1853,7 +2178,12 @@ def _read_json(handler: BaseHTTPRequestHandler) -> dict:
         return {}
 
 
-def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict, extra_headers: dict | None = None):
+def _json_response(
+    handler: BaseHTTPRequestHandler,
+    status: int,
+    payload: dict,
+    extra_headers: dict | None = None,
+):
     raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
@@ -1877,7 +2207,10 @@ def _csv_response(
     for row in rows:
         writer.writerow(row)
     raw = buffer.getvalue().encode("utf-8-sig")
-    safe_name = re.sub(r'[^A-Za-z0-9._-]+', "_", str(filename or "export.csv")).strip("._") or "export.csv"
+    safe_name = (
+        re.sub(r"[^A-Za-z0-9._-]+", "_", str(filename or "export.csv")).strip("._")
+        or "export.csv"
+    )
     if not safe_name.lower().endswith(".csv"):
         safe_name += ".csv"
     handler.send_response(status)
@@ -1948,8 +2281,9 @@ def _send_store_image(handler: BaseHTTPRequestHandler) -> bool:
         return False
 
 
-
-def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str) -> dict:
+def _gerar_relatorio_nfs(
+    filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str
+) -> dict:
     """Retorna as NFs faltantes dentro de um intervalo.
     # I collect all existing NF numbers then compare with the expected range.
     # Eu coleto todos os numeros de NF existentes e comparo com o intervalo esperado.
@@ -1960,7 +2294,7 @@ def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str, emp
 
     creds = Credentials.from_service_account_file(
         GOOGLE_CREDENTIALS_SHEETS,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
     )
     gc = gspread.authorize(creds)
 
@@ -2063,6 +2397,7 @@ def _gerar_relatorio_nfs(filtro: str, mes: str, nf_inicio: str, nf_fim: str, emp
         "totalFaltante": len(faltantes),
     }
 
+
 def _history_from_reports(
     limit: int = 300,
     query: str = "",
@@ -2088,11 +2423,19 @@ def _history_from_reports(
     f_dest = re.sub(r"\D+", "", str(cnpj_dest or ""))
     empresa = _normalize_audit_empresa(empresa_filter)
     try:
-        dt_from_obj = datetime.strptime(str(dt_from or "").strip(), "%Y-%m-%d").date() if str(dt_from or "").strip() else None
+        dt_from_obj = (
+            datetime.strptime(str(dt_from or "").strip(), "%Y-%m-%d").date()
+            if str(dt_from or "").strip()
+            else None
+        )
     except Exception:
         dt_from_obj = None
     try:
-        dt_to_obj = datetime.strptime(str(dt_to or "").strip(), "%Y-%m-%d").date() if str(dt_to or "").strip() else None
+        dt_to_obj = (
+            datetime.strptime(str(dt_to or "").strip(), "%Y-%m-%d").date()
+            if str(dt_to or "").strip()
+            else None
+        )
     except Exception:
         dt_to_obj = None
 
@@ -2139,7 +2482,9 @@ def _history_from_reports(
     files = _report_files_for_reading(include_all_txt=True)
     for fp in files:
         try:
-            for raw_line in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
+            for raw_line in fp.read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines():
                 line = str(raw_line or "").strip()
                 if not line:
                     continue
@@ -2177,19 +2522,36 @@ def _history_from_reports(
                     continue
 
                 nf = _normalize_report_text(str(payload.get("nf") or "").strip())
-                cliente = _normalize_report_text(str(payload.get("cliente") or "").strip())
-                descricao = _normalize_report_text(str(payload.get("descricao") or "").strip())
-                vencimento = _normalize_report_text(str(payload.get("vencimento") or "").strip())
-                parcela = _normalize_report_text(str(payload.get("parcela") or "").strip())
+                cliente = _normalize_report_text(
+                    str(payload.get("cliente") or "").strip()
+                )
+                descricao = _normalize_report_text(
+                    str(payload.get("descricao") or "").strip()
+                )
+                vencimento = _normalize_report_text(
+                    str(payload.get("vencimento") or "").strip()
+                )
+                parcela = _normalize_report_text(
+                    str(payload.get("parcela") or "").strip()
+                )
                 valor_parcela = _safe_float(payload.get("valor_parcela"))
                 valor_total = _safe_float(payload.get("valor_total"))
                 valor_pago = payload.get("valor_pago")
                 valor_pago_text = _normalize_report_text(str(valor_pago or "").strip())
-                status = _normalize_report_text(str(payload.get("status") or "").strip())
-                sheet_title = _normalize_report_text(str(payload.get("sheet_title") or "").strip())
+                status = _normalize_report_text(
+                    str(payload.get("status") or "").strip()
+                )
+                sheet_title = _normalize_report_text(
+                    str(payload.get("sheet_title") or "").strip()
+                )
                 aba = _normalize_report_text(str(payload.get("aba") or "").strip())
-                empresa_item = _infer_audit_empresa_from_values(sheet_title, aba, nf_value=nf)
-                local = "/".join([x for x in (sheet_title, aba) if x]) or "Botana/RelatÃ³rio"
+                empresa_item = _infer_audit_empresa_from_values(
+                    sheet_title, aba, nf_value=nf
+                )
+                local = (
+                    "/".join([x for x in (sheet_title, aba) if x])
+                    or "Botana/RelatÃ³rio"
+                )
 
                 if empresa != "todos" and empresa_item != empresa:
                     continue
@@ -2249,7 +2611,9 @@ def _history_from_reports(
                     "cnpj_dest": dest,
                     "qtd_parcelas": _safe_int(payload.get("qtd_parcelas"), 1),
                     "raw": _normalize_report_text(line),
-                    "message": _normalize_report_text(f"NF {nf} - {cliente} - {descricao}"),
+                    "message": _normalize_report_text(
+                        f"NF {nf} - {cliente} - {descricao}"
+                    ),
                 }
 
                 if q:
@@ -2334,22 +2698,24 @@ def _format_currency_brl(value) -> str:
 
 
 def _history_csv_rows(items: list[dict]) -> list[list[str]]:
-    rows = [[
-        "Data/Horário",
-        "Vencimento",
-        "NF",
-        "Cliente",
-        "Descrição",
-        "Parcela",
-        "Valor da Parcela",
-        "Valor Total",
-        "Valor Pago",
-        "Status",
-        "Aba",
-        "CNPJ Emitente",
-        "CNPJ Destinatário",
-        "Duplicada",
-    ]]
+    rows = [
+        [
+            "Data/Horário",
+            "Vencimento",
+            "NF",
+            "Cliente",
+            "Descrição",
+            "Parcela",
+            "Valor da Parcela",
+            "Valor Total",
+            "Valor Pago",
+            "Status",
+            "Aba",
+            "CNPJ Emitente",
+            "CNPJ Destinatário",
+            "Duplicada",
+        ]
+    ]
     for item in items or []:
         rows.append(
             [
@@ -2376,7 +2742,11 @@ def _report_files_for_reading(include_all_txt: bool = False) -> list[Path]:
     rel_dir = Path(RELATORIO_DIR)
     if not rel_dir.exists():
         return []
-    patterns = ("*.txt", "*.txt.tmp") if include_all_txt else ("relatorio_*.txt", "relatorio_*.txt.tmp")
+    patterns = (
+        ("*.txt", "*.txt.tmp")
+        if include_all_txt
+        else ("relatorio_*.txt", "relatorio_*.txt.tmp")
+    )
     files: list[Path] = []
     seen = set()
     for pattern in patterns:
@@ -2421,7 +2791,9 @@ def _parse_report_datetime(dt_text: str):
 
 def _history_parcela_key(item: dict) -> str:
     parcela = _normalize_report_text(str((item or {}).get("parcela") or "")).strip()
-    parcela_key = unicodedata.normalize("NFKD", parcela).encode("ascii", "ignore").decode("ascii")
+    parcela_key = (
+        unicodedata.normalize("NFKD", parcela).encode("ascii", "ignore").decode("ascii")
+    )
     parcela_key = re.sub(r"\s+", " ", parcela_key).strip().upper()
     if parcela_key:
         patterns = (
@@ -2440,7 +2812,9 @@ def _history_parcela_key(item: dict) -> str:
             except Exception:
                 continue
         return f"parcela:{parcela_key.lower()}"
-    vencimento = _normalize_report_text(str((item or {}).get("vencimento") or "")).strip()
+    vencimento = _normalize_report_text(
+        str((item or {}).get("vencimento") or "")
+    ).strip()
     valor = 0.0
     try:
         valor = round(float((item or {}).get("valor_parcela") or 0), 2)
@@ -2541,8 +2915,16 @@ def _audit_month_key_from_sheet_title(title: str) -> str:
     m = re.match(r"^\s*([^/]+?)\s*/\s*(\d{4})\s*$", txt)
     if not m:
         return ""
-    month_token = unicodedata.normalize("NFKD", m.group(1)).encode("ascii", "ignore").decode("ascii").strip().lower()
-    month_num = _AUDIT_MONTH_MAP.get(month_token[:3]) or _AUDIT_MONTH_MAP.get(month_token)
+    month_token = (
+        unicodedata.normalize("NFKD", m.group(1))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .strip()
+        .lower()
+    )
+    month_num = _AUDIT_MONTH_MAP.get(month_token[:3]) or _AUDIT_MONTH_MAP.get(
+        month_token
+    )
     if not month_num:
         return ""
     return f"{int(m.group(2)):04d}-{month_num:02d}"
@@ -2557,7 +2939,9 @@ def _normalize_audit_empresa(value: str) -> str:
     return "todos"
 
 
-def _audit_request_signature(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str) -> str:
+def _audit_request_signature(
+    filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str
+) -> str:
     payload = {
         "filtro": str(filtro or "mes").strip().lower(),
         "mes": str(mes or "").strip(),
@@ -2627,7 +3011,11 @@ def _audit_merge_meta_parts(metas: list[dict], empresa_filter: str = "todos") ->
                 seen.add(normalized)
                 out["empresas_lidas"].append(normalized)
         try:
-            loaded_ms = int(datetime.fromisoformat(loaded_at).timestamp() * 1000) if loaded_at else 0
+            loaded_ms = (
+                int(datetime.fromisoformat(loaded_at).timestamp() * 1000)
+                if loaded_at
+                else 0
+            )
         except Exception:
             loaded_ms = 0
         if loaded_ms >= latest_loaded_ms:
@@ -2638,7 +3026,9 @@ def _audit_merge_meta_parts(metas: list[dict], empresa_filter: str = "todos") ->
     return out
 
 
-def _audit_drive_metadata(empresa_filter: str = "todos", force_refresh: bool = False) -> dict:
+def _audit_drive_metadata(
+    empresa_filter: str = "todos", force_refresh: bool = False
+) -> dict:
     companies = _audit_companies_for_filter(empresa_filter)
     now = time.time()
     items = []
@@ -2668,7 +3058,18 @@ def _audit_drive_metadata(empresa_filter: str = "todos", force_refresh: bool = F
             if not fresh:
                 break
         if fresh and items:
-            signature_src = json.dumps(sorted(items, key=lambda item: (item.get("empresa"), item.get("ano"), item.get("id"))), ensure_ascii=True, sort_keys=True)
+            signature_src = json.dumps(
+                sorted(
+                    items,
+                    key=lambda item: (
+                        item.get("empresa"),
+                        item.get("ano"),
+                        item.get("id"),
+                    ),
+                ),
+                ensure_ascii=True,
+                sort_keys=True,
+            )
             return {
                 "loaded_at": datetime.now().isoformat(),
                 "items": items,
@@ -2704,7 +3105,14 @@ def _audit_drive_metadata(empresa_filter: str = "todos", force_refresh: bool = F
                 cache_updates[str(file_id)] = {"at": now, "item": item}
         with _AUDIT_META_CACHE_LOCK:
             _AUDIT_META_CACHE.update(cache_updates)
-        signature_src = json.dumps(sorted(items, key=lambda item: (item.get("empresa"), item.get("ano"), item.get("id"))), ensure_ascii=True, sort_keys=True)
+        signature_src = json.dumps(
+            sorted(
+                items,
+                key=lambda item: (item.get("empresa"), item.get("ano"), item.get("id")),
+            ),
+            ensure_ascii=True,
+            sort_keys=True,
+        )
         return {
             "loaded_at": datetime.now().isoformat(),
             "items": items,
@@ -2712,7 +3120,10 @@ def _audit_drive_metadata(empresa_filter: str = "todos", force_refresh: bool = F
             "mode": "drive",
         }
     except Exception as exc:
-        logger.warning("Metadado do Drive indisponível para a conferência. Usando snapshot local curto: %s", exc)
+        logger.warning(
+            "Metadado do Drive indisponível para a conferência. Usando snapshot local curto: %s",
+            exc,
+        )
         fallback = {
             "loaded_at": datetime.now().isoformat(),
             "items": [],
@@ -2753,8 +3164,11 @@ def _audit_job_public_state(state: dict | None) -> dict:
         "request_signature": str(data.get("request_signature") or "").strip(),
         "sheet_signature": str(data.get("sheet_signature") or "").strip(),
         "result": dict(data.get("result") or {}) if data.get("result") else None,
-        "current_result": dict(data.get("current_result") or {}) if data.get("current_result") else None,
+        "current_result": dict(data.get("current_result") or {})
+        if data.get("current_result")
+        else None,
     }
+
 
 def _audit_sheet_values(worksheet) -> list[list[str]]:
     from sheets_writer import apiCooldown
@@ -2770,7 +3184,9 @@ def _audit_sheet_values(worksheet) -> list[list[str]]:
     return []
 
 
-def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "todos") -> tuple[list[dict], dict]:
+def _load_audit_sheet_rows(
+    force_refresh: bool = False, empresa_filter: str = "todos"
+) -> tuple[list[dict], dict]:
     empresa = _normalize_audit_empresa(empresa_filter)
     if empresa == "todos":
         rows = []
@@ -2778,18 +3194,26 @@ def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "t
         for company in ("MVA", "EH"):
             if not PLANILHAS.get(company):
                 continue
-            company_rows, company_meta = _load_audit_sheet_rows(force_refresh=force_refresh, empresa_filter=company)
+            company_rows, company_meta = _load_audit_sheet_rows(
+                force_refresh=force_refresh, empresa_filter=company
+            )
             rows.extend(company_rows)
             if company_meta:
                 metas.append(company_meta)
         meta = {
             "loaded_at": datetime.now().isoformat(),
-            "planilhas_lidas": sum(int(meta.get("planilhas_lidas") or 0) for meta in metas),
+            "planilhas_lidas": sum(
+                int(meta.get("planilhas_lidas") or 0) for meta in metas
+            ),
             "abas_lidas": sum(int(meta.get("abas_lidas") or 0) for meta in metas),
             "linhas_lidas": len(rows),
             "source": "planilhas",
             "empresa": "todos",
-            "empresas_lidas": [str(meta.get("empresa") or "").strip() for meta in metas if str(meta.get("empresa") or "").strip()],
+            "empresas_lidas": [
+                str(meta.get("empresa") or "").strip()
+                for meta in metas
+                if str(meta.get("empresa") or "").strip()
+            ],
         }
         return rows, meta
 
@@ -2798,7 +3222,9 @@ def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "t
             cache_entry = dict(_AUDIT_SHEET_CACHE.get(empresa) or {})
             cache_at = float(cache_entry.get("at", 0.0) or 0.0)
             if cache_at and (time.time() - cache_at) <= _AUDIT_SHEET_CACHE_TTL:
-                cached_rows = [dict(item or {}) for item in list(cache_entry.get("rows") or [])]
+                cached_rows = [
+                    dict(item or {}) for item in list(cache_entry.get("rows") or [])
+                ]
                 cached_meta = dict(cache_entry.get("meta") or {})
                 if cached_meta:
                     return cached_rows, cached_meta
@@ -2819,14 +3245,21 @@ def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "t
             planilha = gc.open_by_key(planilha_id)
             planilhas_lidas += 1
         except Exception as exc:
-            logger.warning("Falha ao abrir planilha %s %s para conferencia: %s", empresa, ano, exc)
+            logger.warning(
+                "Falha ao abrir planilha %s %s para conferencia: %s", empresa, ano, exc
+            )
             continue
         for worksheet in planilha.worksheets():
             abas_lidas += 1
             try:
                 linhas = _audit_sheet_values(worksheet)
             except Exception as exc:
-                logger.warning("Falha ao ler aba %s/%s: %s", getattr(planilha, "title", empresa), worksheet.title, exc)
+                logger.warning(
+                    "Falha ao ler aba %s/%s: %s",
+                    getattr(planilha, "title", empresa),
+                    worksheet.title,
+                    exc,
+                )
                 continue
             worksheet_month = _audit_month_key_from_sheet_title(worksheet.title)
             for idx, linha in enumerate(linhas):
@@ -2845,31 +3278,46 @@ def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "t
                 vencimento = str(row[0] or "").strip()
                 descricao = _normalize_report_text(str(row[1] or "").strip())
                 parcela = _normalize_report_text(str(row[5] or "").strip())
-                raw_cells = [_normalize_report_text(str(cell or "").strip()) for cell in row]
+                raw_cells = [
+                    _normalize_report_text(str(cell or "").strip()) for cell in row
+                ]
                 rows.append(
                     {
                         "group_key": f"{empresa}:{ano}:{nf_digits}",
                         "planilha_id": str(planilha_id or "").strip(),
                         "sheet_type": str(empresa or "").strip(),
                         "sheet_year": str(ano or "").strip(),
-                        "sheet_title": _normalize_report_text(str(getattr(planilha, "title", "") or "").strip()),
-                        "aba": _normalize_report_text(str(worksheet.title or "").strip()),
-                        "worksheet_title": _normalize_report_text(str(worksheet.title or "").strip()),
+                        "sheet_title": _normalize_report_text(
+                            str(getattr(planilha, "title", "") or "").strip()
+                        ),
+                        "aba": _normalize_report_text(
+                            str(worksheet.title or "").strip()
+                        ),
+                        "worksheet_title": _normalize_report_text(
+                            str(worksheet.title or "").strip()
+                        ),
                         "row_number": int(idx + 1),
-                        "scope_month": _audit_month_key_from_value(vencimento) or worksheet_month,
+                        "scope_month": _audit_month_key_from_value(vencimento)
+                        or worksheet_month,
                         "vencimento": _normalize_report_text(vencimento),
                         "descricao": descricao,
                         "cliente": descricao,
                         "nf": nf_digits,
                         "nf_num": _audit_safe_int(nf_digits, 0),
-                        "valor_total_raw": _normalize_report_text(str(row[3] or "").strip()),
+                        "valor_total_raw": _normalize_report_text(
+                            str(row[3] or "").strip()
+                        ),
                         "valor_total": _audit_safe_float(row[3]),
                         "qtd_parcelas": max(1, _audit_safe_int(row[4], 1)),
                         "parcela": parcela,
-                        "valor_parcela_raw": _normalize_report_text(str(row[6] or "").strip()),
+                        "valor_parcela_raw": _normalize_report_text(
+                            str(row[6] or "").strip()
+                        ),
                         "valor_parcela": _audit_safe_float(row[6]),
                         "valor_pago": _normalize_report_text(str(row[7] or "").strip()),
-                        "status_planilha": _normalize_report_text(str(row[8] or "").strip()),
+                        "status_planilha": _normalize_report_text(
+                            str(row[8] or "").strip()
+                        ),
                         "raw_cells": raw_cells,
                     }
                 )
@@ -2895,7 +3343,9 @@ def _load_audit_sheet_rows(force_refresh: bool = False, empresa_filter: str = "t
 def _audit_row_ref(item: dict) -> tuple[str, str, int]:
     return (
         str((item or {}).get("planilha_id") or "").strip(),
-        str((item or {}).get("worksheet_title") or (item or {}).get("aba") or "").strip(),
+        str(
+            (item or {}).get("worksheet_title") or (item or {}).get("aba") or ""
+        ).strip(),
         max(0, _audit_safe_int((item or {}).get("row_number"), 0)),
     )
 
@@ -2962,12 +3412,18 @@ def _audit_delete_candidates(nf_items: list[dict], qtd_esperada: int) -> list[di
             continue
         keepers[identity] = ordered[0]
         for extra in ordered[1:]:
-            if _audit_row_is_safe_delete(extra) or _audit_row_can_delete_duplicate_extra(extra):
+            if _audit_row_is_safe_delete(
+                extra
+            ) or _audit_row_can_delete_duplicate_extra(extra):
                 removable[_audit_row_ref(extra)] = extra
 
     if qtd_esperada > 0 and len(keepers) > qtd_esperada:
-        ordered_identities = sorted(keepers.items(), key=lambda pair: _audit_identity_order_key(pair[1]))
-        keep_identity_keys = {identity for identity, _ in ordered_identities[:qtd_esperada]}
+        ordered_identities = sorted(
+            keepers.items(), key=lambda pair: _audit_identity_order_key(pair[1])
+        )
+        keep_identity_keys = {
+            identity for identity, _ in ordered_identities[:qtd_esperada]
+        }
         for identity, keeper in ordered_identities[qtd_esperada:]:
             if identity in keep_identity_keys:
                 continue
@@ -3011,7 +3467,12 @@ def _audit_delete_cache_replace(entries: dict):
             worksheet_title = str(ref.get("worksheet_title") or "").strip()
             row_number = max(0, _audit_safe_int(ref.get("row_number"), 0))
             ref_key = (planilha_id, worksheet_title, row_number)
-            if not planilha_id or not worksheet_title or row_number <= 1 or ref_key in seen:
+            if (
+                not planilha_id
+                or not worksheet_title
+                or row_number <= 1
+                or ref_key in seen
+            ):
                 continue
             seen.add(ref_key)
             clean_refs.append(
@@ -3031,7 +3492,9 @@ def _audit_delete_cache_replace(entries: dict):
         _AUDIT_DELETE_CACHE["items"] = current
 
 
-def _audit_delete_cache_get(audit_keys: list[str]) -> tuple[list[dict], list[str], bool]:
+def _audit_delete_cache_get(
+    audit_keys: list[str],
+) -> tuple[list[dict], list[str], bool]:
     with _AUDIT_DELETE_CACHE_LOCK:
         cache_at = float(_AUDIT_DELETE_CACHE.get("at", 0.0) or 0.0)
         cache_items = dict(_AUDIT_DELETE_CACHE.get("items") or {})
@@ -3112,7 +3575,10 @@ def _delete_audit_rows(audit_keys) -> dict:
 
     for cache_key, entries in ranges_by_sheet.items():
         worksheet = sheet_cache[cache_key]
-        clear_ranges = [f"A{row_number}:I{row_number}" for row_number, _ in sorted(entries, key=lambda pair: pair[0])]
+        clear_ranges = [
+            f"A{row_number}:I{row_number}"
+            for row_number, _ in sorted(entries, key=lambda pair: pair[0])
+        ]
         for _ in range(3):
             try:
                 worksheet.batch_clear(clear_ranges)
@@ -3132,7 +3598,13 @@ def _delete_audit_rows(audit_keys) -> dict:
                     continue
                 raise
 
-    nfs = sorted({str(item.get("nf") or "").strip() for item in refs if str(item.get("nf") or "").strip()})
+    nfs = sorted(
+        {
+            str(item.get("nf") or "").strip()
+            for item in refs
+            if str(item.get("nf") or "").strip()
+        }
+    )
     nf_msg = ", ".join(nfs[:4]) + ("..." if len(nfs) > 4 else "")
     if deleted:
         with _AUDIT_DELETE_CACHE_LOCK:
@@ -3181,14 +3653,26 @@ def _gerar_conferencia_parcelas_from_rows(
     }
 
     try:
-        nf_inicio_num = int(re.sub(r"\D+", "", str(nf_inicio or ""))) if str(nf_inicio or "").strip() else None
+        nf_inicio_num = (
+            int(re.sub(r"\D+", "", str(nf_inicio or "")))
+            if str(nf_inicio or "").strip()
+            else None
+        )
     except Exception:
         nf_inicio_num = None
     try:
-        nf_fim_num = int(re.sub(r"\D+", "", str(nf_fim or ""))) if str(nf_fim or "").strip() else None
+        nf_fim_num = (
+            int(re.sub(r"\D+", "", str(nf_fim or "")))
+            if str(nf_fim or "").strip()
+            else None
+        )
     except Exception:
         nf_fim_num = None
-    if nf_inicio_num is not None and nf_fim_num is not None and nf_inicio_num > nf_fim_num:
+    if (
+        nf_inicio_num is not None
+        and nf_fim_num is not None
+        and nf_inicio_num > nf_fim_num
+    ):
         nf_inicio_num, nf_fim_num = nf_fim_num, nf_inicio_num
 
     def _matches_scope(nf_items: list[dict]) -> bool:
@@ -3205,7 +3689,9 @@ def _gerar_conferencia_parcelas_from_rows(
             return True
         if not mes:
             return True
-        return any(str(entry.get("scope_month") or "").strip() == mes for entry in nf_items)
+        return any(
+            str(entry.get("scope_month") or "").strip() == mes for entry in nf_items
+        )
 
     itens_saida = []
     audit_delete_cache = {}
@@ -3247,7 +3733,9 @@ def _gerar_conferencia_parcelas_from_rows(
 
         for item in nf_items:
             chave_parcela = _history_parcela_key(item)
-            parcelas_contagem[chave_parcela] = parcelas_contagem.get(chave_parcela, 0) + 1
+            parcelas_contagem[chave_parcela] = (
+                parcelas_contagem.get(chave_parcela, 0) + 1
+            )
             qtd_item = max(1, _audit_safe_int(item.get("qtd_parcelas"), 1))
             qtd_esperada = max(qtd_esperada, qtd_item)
             if not cliente:
@@ -3284,28 +3772,42 @@ def _gerar_conferencia_parcelas_from_rows(
         qtd_excedente = max(0, qtd_lancada - qtd_esperada)
         delete_candidates = _audit_delete_candidates(nf_items, qtd_esperada)
         audit_key = str((nf_items[0] or {}).get("group_key") or "").strip()
-        audit_delete_cache[audit_key] = [_audit_delete_candidate_ref(item) for item in delete_candidates]
-        abas_view = sorted(abas, key=lambda value: (_audit_month_key_from_sheet_title(value), value))
+        audit_delete_cache[audit_key] = [
+            _audit_delete_candidate_ref(item) for item in delete_candidates
+        ]
+        abas_view = sorted(
+            abas, key=lambda value: (_audit_month_key_from_sheet_title(value), value)
+        )
         if len(abas_view) > 1:
             aba_view = f"{abas_view[0]} +{len(abas_view) - 1}"
         else:
             aba_view = abas_view[0] if abas_view else aba_principal
-        local_view = " - ".join(
-            [
-                x
-                for x in (
-                    str((nf_items[0] or {}).get("sheet_type") or "").strip(),
-                    aba_view,
-                )
-                if x
-            ]
-        ) or local
-        ultimo_vencimento = ultimo_venc_dt.strftime("%Y-%m-%d") if ultimo_venc_dt else ""
+        local_view = (
+            " - ".join(
+                [
+                    x
+                    for x in (
+                        str((nf_items[0] or {}).get("sheet_type") or "").strip(),
+                        aba_view,
+                    )
+                    if x
+                ]
+            )
+            or local
+        )
+        ultimo_vencimento = (
+            ultimo_venc_dt.strftime("%Y-%m-%d") if ultimo_venc_dt else ""
+        )
 
         duplicadas = []
         for item in nf_items:
             chave_parcela = _history_parcela_key(item)
-            label = _normalize_report_text(str(item.get("parcela") or item.get("vencimento") or "-")).strip() or "-"
+            label = (
+                _normalize_report_text(
+                    str(item.get("parcela") or item.get("vencimento") or "-")
+                ).strip()
+                or "-"
+            )
             if parcelas_contagem.get(chave_parcela, 0) > 1 and label not in duplicadas:
                 duplicadas.append(label)
 
@@ -3371,7 +3873,9 @@ def _gerar_conferencia_parcelas_from_rows(
             if diagnose_missing_nfs:
                 reason_hint = missing_reason_cache.get(nf_num)
                 if reason_hint is None:
-                    reason_hint = _audit_missing_nf_reason(nf_num, state=missing_reason_state)
+                    reason_hint = _audit_missing_nf_reason(
+                        nf_num, state=missing_reason_state
+                    )
                     missing_reason_cache[nf_num] = reason_hint
             itens_saida.append(
                 {
@@ -3400,7 +3904,11 @@ def _gerar_conferencia_parcelas_from_rows(
             resumo["nfs_verificadas"] += 1
             resumo["nfs_com_divergencia"] += 1
 
-    if include_missing_diagnostics and filtro_normalizado == "mes" and str(mes or "").strip():
+    if (
+        include_missing_diagnostics
+        and filtro_normalizado == "mes"
+        and str(mes or "").strip()
+    ):
         for missing_item in _audit_missing_nf_candidates_for_month(
             mes,
             month_rows=linhas,
@@ -3439,7 +3947,11 @@ def _gerar_conferencia_parcelas_from_rows(
 
     itens_saida.sort(
         key=lambda item: (
-            0 if item.get("status") == "erro" else 1 if item.get("status") == "aviso" else 2,
+            0
+            if item.get("status") == "erro"
+            else 1
+            if item.get("status") == "aviso"
+            else 2,
             -int(re.sub(r"\D+", "", str(item.get("nf") or "0")) or 0),
         )
     )
@@ -3457,7 +3969,9 @@ def _gerar_conferencia_parcelas_from_rows(
     }
 
 
-def _gerar_conferencia_parcelas(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
+def _gerar_conferencia_parcelas(
+    filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos"
+) -> dict:
     empresa_normalizada = _normalize_audit_empresa(empresa)
     linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa_normalizada)
     return _gerar_conferencia_parcelas_from_rows(
@@ -3503,8 +4017,12 @@ def _audit_job_worker(job_id: str):
     metas_by_company = {}
     try:
         for idx, company in enumerate(companies):
-            _audit_update_job_state(job_id, status="running", message=f"Lendo planilhas {company}...")
-            company_rows, company_meta = _load_audit_sheet_rows(force_refresh=True, empresa_filter=company)
+            _audit_update_job_state(
+                job_id, status="running", message=f"Lendo planilhas {company}..."
+            )
+            company_rows, company_meta = _load_audit_sheet_rows(
+                force_refresh=True, empresa_filter=company
+            )
             rows_by_company[company] = list(company_rows or [])
             metas_by_company[company] = dict(company_meta or {})
             partial_companies = companies[: idx + 1]
@@ -3513,21 +4031,30 @@ def _audit_job_worker(job_id: str):
             for partial_company in partial_companies:
                 partial_rows.extend(list(rows_by_company.get(partial_company) or []))
                 if metas_by_company.get(partial_company):
-                    partial_metas.append(dict(metas_by_company.get(partial_company) or {}))
+                    partial_metas.append(
+                        dict(metas_by_company.get(partial_company) or {})
+                    )
             partial_result = _gerar_conferencia_parcelas_from_rows(
                 filtro,
                 mes,
                 nf_inicio,
                 nf_fim,
                 partial_rows,
-                meta=_audit_merge_meta_parts(partial_metas, empresa_filter=empresa if empresa != "todos" else "todos"),
+                meta=_audit_merge_meta_parts(
+                    partial_metas,
+                    empresa_filter=empresa if empresa != "todos" else "todos",
+                ),
                 empresa=empresa if empresa != "todos" else "todos",
                 include_missing_diagnostics=False,
             )
             stage_label = (
                 f"{company} pronta"
                 if empresa != "todos"
-                else (f"{company} pronta. {companies[idx + 1]} carregando em segundo plano..." if idx + 1 < len(companies) else "Planilhas carregadas. Finalizando diagnósticos...")
+                else (
+                    f"{company} pronta. {companies[idx + 1]} carregando em segundo plano..."
+                    if idx + 1 < len(companies)
+                    else "Planilhas carregadas. Finalizando diagnósticos..."
+                )
             )
             _audit_update_job_state(
                 job_id,
@@ -3541,14 +4068,20 @@ def _audit_job_worker(job_id: str):
             final_rows.extend(list(rows_by_company.get(company) or []))
             if metas_by_company.get(company):
                 final_metas.append(dict(metas_by_company.get(company) or {}))
-        _audit_update_job_state(job_id, status="running", message="Finalizando diagnósticos da conferência...")
+        _audit_update_job_state(
+            job_id,
+            status="running",
+            message="Finalizando diagnósticos da conferência...",
+        )
         final_result = _gerar_conferencia_parcelas_from_rows(
             filtro,
             mes,
             nf_inicio,
             nf_fim,
             final_rows,
-            meta=_audit_merge_meta_parts(final_metas, empresa_filter=empresa if empresa != "todos" else "todos"),
+            meta=_audit_merge_meta_parts(
+                final_metas, empresa_filter=empresa if empresa != "todos" else "todos"
+            ),
             empresa=empresa if empresa != "todos" else "todos",
             include_missing_diagnostics=True,
         )
@@ -3585,20 +4118,30 @@ def _audit_job_worker(job_id: str):
         )
 
 
-def _start_audit_job(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos") -> dict:
+def _start_audit_job(
+    filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa: str = "todos"
+) -> dict:
     _audit_gc_expired_jobs()
     empresa_normalizada = _normalize_audit_empresa(empresa)
-    request_signature = _audit_request_signature(filtro, mes, nf_inicio, nf_fim, empresa_normalizada)
+    request_signature = _audit_request_signature(
+        filtro, mes, nf_inicio, nf_fim, empresa_normalizada
+    )
     metadata = _audit_drive_metadata(empresa_normalizada)
     sheet_signature = str(metadata.get("signature") or "").strip()
     metadata_mode = str(metadata.get("mode") or "").strip()
     with _AUDIT_JOB_LOCK:
         snapshot = dict(_AUDIT_JOB_SNAPSHOTS.get(request_signature) or {})
-        if snapshot and str(snapshot.get("sheet_signature") or "").strip() == sheet_signature and snapshot.get("result"):
+        if (
+            snapshot
+            and str(snapshot.get("sheet_signature") or "").strip() == sheet_signature
+            and snapshot.get("result")
+        ):
             return {
                 "job_id": "",
                 "status": "done",
-                "message": "Conferência pronta a partir do snapshot." if metadata_mode == "drive" else "Conferência pronta a partir do snapshot local recente.",
+                "message": "Conferência pronta a partir do snapshot."
+                if metadata_mode == "drive"
+                else "Conferência pronta a partir do snapshot local recente.",
                 "result": dict(snapshot.get("result") or {}),
                 "current_result": dict(snapshot.get("result") or {}),
                 "request_signature": request_signature,
@@ -3606,9 +4149,18 @@ def _start_audit_job(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa
                 "cached": True,
             }
 
-        existing_job_id = str(_AUDIT_JOBS_BY_REQUEST.get(request_signature) or "").strip()
-        existing_state = dict(_AUDIT_JOBS.get(existing_job_id) or {}) if existing_job_id else {}
-        if existing_state and str(existing_state.get("sheet_signature") or "").strip() == sheet_signature and str(existing_state.get("status") or "").strip() in {"running", "done"}:
+        existing_job_id = str(
+            _AUDIT_JOBS_BY_REQUEST.get(request_signature) or ""
+        ).strip()
+        existing_state = (
+            dict(_AUDIT_JOBS.get(existing_job_id) or {}) if existing_job_id else {}
+        )
+        if (
+            existing_state
+            and str(existing_state.get("sheet_signature") or "").strip()
+            == sheet_signature
+            and str(existing_state.get("status") or "").strip() in {"running", "done"}
+        ):
             return _audit_job_public_state(existing_state)
 
         job_id = secrets.token_hex(8)
@@ -3616,7 +4168,9 @@ def _start_audit_job(filtro: str, mes: str, nf_inicio: str, nf_fim: str, empresa
         state = {
             "job_id": job_id,
             "status": "running",
-            "message": "Iniciando conferência..." if metadata_mode == "drive" else "Iniciando conferência com snapshot local curto...",
+            "message": "Iniciando conferência..."
+            if metadata_mode == "drive"
+            else "Iniciando conferência com snapshot local curto...",
             "started_at": now_iso,
             "updated_at": now_iso,
             "updated_at_ts": time.time(),
@@ -3652,7 +4206,11 @@ def _get_audit_job(job_id: str) -> dict:
 
 
 def _normalize_ascii_key(value: str) -> str:
-    txt = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode("ascii")
+    txt = (
+        unicodedata.normalize("NFKD", str(value or ""))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
     txt = re.sub(r"\s+", " ", txt).strip().upper()
     return txt
 
@@ -3668,7 +4226,9 @@ def _load_watch_search_names() -> list[str]:
         if not _WATCH_SEARCH_NAMES_FILE.exists():
             return []
         try:
-            lines = _WATCH_SEARCH_NAMES_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+            lines = _WATCH_SEARCH_NAMES_FILE.read_text(
+                encoding="utf-8", errors="ignore"
+            ).splitlines()
         except Exception:
             return []
         out = []
@@ -3697,7 +4257,9 @@ def _remember_watch_search_names(*values: str):
         current = []
         if _WATCH_SEARCH_NAMES_FILE.exists():
             try:
-                current = _WATCH_SEARCH_NAMES_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+                current = _WATCH_SEARCH_NAMES_FILE.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).splitlines()
             except Exception:
                 current = []
         merged = []
@@ -3714,9 +4276,13 @@ def _remember_watch_search_names(*values: str):
             if len(merged) >= 200:
                 break
         try:
-            _WATCH_SEARCH_NAMES_FILE.write_text("\n".join(merged) + ("\n" if merged else ""), encoding="utf-8")
+            _WATCH_SEARCH_NAMES_FILE.write_text(
+                "\n".join(merged) + ("\n" if merged else ""), encoding="utf-8"
+            )
         except Exception as exc:
-            logger.warning("Falha ao salvar autocomplete de nomes da busca de prazos: %s", exc)
+            logger.warning(
+                "Falha ao salvar autocomplete de nomes da busca de prazos: %s", exc
+            )
 
 
 def _load_watch_search_suggestions(empresa_filter: str = "todos") -> list[str]:
@@ -3737,9 +4303,13 @@ def _load_watch_search_suggestions(empresa_filter: str = "todos") -> list[str]:
         add_name(raw)
 
     try:
-        linhas, _ = _load_audit_sheet_rows(empresa_filter=_normalize_audit_empresa(empresa_filter))
+        linhas, _ = _load_audit_sheet_rows(
+            empresa_filter=_normalize_audit_empresa(empresa_filter)
+        )
     except Exception as exc:
-        logger.warning("Falha ao montar catálogo de autocomplete da busca de prazos: %s", exc)
+        logger.warning(
+            "Falha ao montar catálogo de autocomplete da busca de prazos: %s", exc
+        )
         return out[:500]
 
     for item in linhas:
@@ -3774,7 +4344,15 @@ def _sheet_status_is_pending(status_value: str) -> bool:
 
 def _sheet_watch_is_baixado(item: dict) -> bool:
     ignore_markers = ("BAIXADO", "BAIXADA", "ESTORNADO", "ESTORNADA")
-    for field in ("descricao", "cliente", "parcela", "valor_pago", "status_planilha", "valor_total_raw", "valor_parcela_raw"):
+    for field in (
+        "descricao",
+        "cliente",
+        "parcela",
+        "valor_pago",
+        "status_planilha",
+        "valor_total_raw",
+        "valor_parcela_raw",
+    ):
         key = _normalize_ascii_key((item or {}).get(field, ""))
         if any(marker in key for marker in ignore_markers):
             return True
@@ -3815,7 +4393,9 @@ def _watch_boleto_status_payload(dias_uteis: int) -> tuple[str, str, str]:
     return "erro", "Vencido", _format_days_label(atraso, future=False)
 
 
-def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int, empresa_filter: str = "todos") -> dict:
+def _gerar_relacao_pendencias(
+    boletos_dias: int, depositos_dias: int, empresa_filter: str = "todos"
+) -> dict:
     boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
     deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
     empresa = _normalize_audit_empresa(empresa_filter)
@@ -3866,7 +4446,14 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int, empresa_fi
             valor_base = _audit_safe_float(item.get("valor_total"))
         nf = str(item.get("nf") or "").strip()
         local = " - ".join(
-            [x for x in (str(item.get("sheet_type") or "").strip(), str(item.get("aba") or "").strip()) if x]
+            [
+                x
+                for x in (
+                    str(item.get("sheet_type") or "").strip(),
+                    str(item.get("aba") or "").strip(),
+                )
+                if x
+            ]
         )
         itens.append(
             {
@@ -3877,14 +4464,22 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int, empresa_fi
                 "dias_uteis": dias_uteis,
                 "dias_label": dias_label,
                 "vencimento": str(item.get("vencimento") or "").strip(),
-                "descricao": _normalize_report_text(str(item.get("descricao") or "").strip()),
-                "cliente": _normalize_report_text(str(item.get("cliente") or "").strip()),
+                "descricao": _normalize_report_text(
+                    str(item.get("descricao") or "").strip()
+                ),
+                "cliente": _normalize_report_text(
+                    str(item.get("cliente") or "").strip()
+                ),
                 "nf": nf,
                 "valor": valor_base,
                 "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
                 "local": _normalize_report_text(local),
-                "empresa": _normalize_report_text(str(item.get("sheet_type") or "").strip()),
-                "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
+                "empresa": _normalize_report_text(
+                    str(item.get("sheet_type") or "").strip()
+                ),
+                "status_planilha": _normalize_report_text(
+                    str(item.get("status_planilha") or "").strip()
+                ),
                 "_sort_date": venc_date.toordinal(),
                 "_sort_nf": _audit_safe_int(nf, 0),
             }
@@ -3911,7 +4506,9 @@ def _gerar_relacao_pendencias(boletos_dias: int, depositos_dias: int, empresa_fi
     }
 
 
-def _buscar_boletos_em_aberto_por_nome(nome: str, empresa_filter: str = "todos") -> dict:
+def _buscar_boletos_em_aberto_por_nome(
+    nome: str, empresa_filter: str = "todos"
+) -> dict:
     nome_busca = _normalize_report_text(str(nome or "").strip())
     termo = _normalize_ascii_key(nome_busca)
     if not termo:
@@ -3967,7 +4564,14 @@ def _buscar_boletos_em_aberto_por_nome(nome: str, empresa_filter: str = "todos")
             valor_base = _audit_safe_float(item.get("valor_total"))
         nf = str(item.get("nf") or "").strip()
         local = " - ".join(
-            [x for x in (str(item.get("sheet_type") or "").strip(), str(item.get("aba") or "").strip()) if x]
+            [
+                x
+                for x in (
+                    str(item.get("sheet_type") or "").strip(),
+                    str(item.get("aba") or "").strip(),
+                )
+                if x
+            ]
         )
         itens.append(
             {
@@ -3978,14 +4582,22 @@ def _buscar_boletos_em_aberto_por_nome(nome: str, empresa_filter: str = "todos")
                 "dias_uteis": dias_uteis,
                 "dias_label": dias_label,
                 "vencimento": str(item.get("vencimento") or "").strip(),
-                "descricao": _normalize_report_text(str(item.get("descricao") or "").strip()),
-                "cliente": _normalize_report_text(str(item.get("cliente") or "").strip()),
+                "descricao": _normalize_report_text(
+                    str(item.get("descricao") or "").strip()
+                ),
+                "cliente": _normalize_report_text(
+                    str(item.get("cliente") or "").strip()
+                ),
                 "nf": nf,
                 "valor": valor_base,
                 "aba": _normalize_report_text(str(item.get("aba") or "").strip()),
                 "local": _normalize_report_text(local),
-                "empresa": _normalize_report_text(str(item.get("sheet_type") or "").strip()),
-                "status_planilha": _normalize_report_text(str(item.get("status_planilha") or "").strip()),
+                "empresa": _normalize_report_text(
+                    str(item.get("sheet_type") or "").strip()
+                ),
+                "status_planilha": _normalize_report_text(
+                    str(item.get("status_planilha") or "").strip()
+                ),
                 "_sort_date": venc_date.toordinal(),
                 "_sort_nf": _audit_safe_int(nf, 0),
             }
@@ -4029,7 +4641,12 @@ def _daily_report_data() -> dict:
             "exists": False,
             "path": "",
             "updated_at": "",
-            "totals": {"processados": 0, "ignorados": 0, "avisos_ciclo": 0, "avisos_dia": 0},
+            "totals": {
+                "processados": 0,
+                "ignorados": 0,
+                "avisos_ciclo": 0,
+                "avisos_dia": 0,
+            },
             "processados": [],
             "ignorados": [],
             "avisos": [],
@@ -4038,7 +4655,9 @@ def _daily_report_data() -> dict:
     lines = []
     for report_file in report_files:
         try:
-            lines.extend(report_file.read_text(encoding="utf-8", errors="ignore").splitlines())
+            lines.extend(
+                report_file.read_text(encoding="utf-8", errors="ignore").splitlines()
+            )
         except Exception:
             continue
 
@@ -4058,7 +4677,9 @@ def _daily_report_data() -> dict:
                 cliente = str(payload.get("cliente") or "-").strip()
                 parcela = str(payload.get("parcela") or "-").strip()
                 venc = str(payload.get("vencimento") or "-").strip()
-                processados.append(f"NF {nf} | Cliente: {cliente} | {parcela} | Venc: {venc}")
+                processados.append(
+                    f"NF {nf} | Cliente: {cliente} | {parcela} | Venc: {venc}"
+                )
                 continue
             except Exception:
                 pass
@@ -4096,7 +4717,11 @@ def _daily_report_data() -> dict:
 
 def _connected_email(force: bool = False) -> dict:
     now = time.time()
-    if not force and _EMAIL_CACHE.get("at", 0.0) and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120):
+    if (
+        not force
+        and _EMAIL_CACHE.get("at", 0.0)
+        and (now - float(_EMAIL_CACHE.get("at", 0.0)) < 120)
+    ):
         return dict(_EMAIL_CACHE)
     try:
         service = _get_gmail_service_locked(timeout=0.3 if not force else 1.0)
@@ -4112,7 +4737,11 @@ def _connected_email(force: bool = False) -> dict:
     except TimeoutError:
         _EMAIL_CACHE.update({"error": "", "pending": True, "at": now})
     except Exception as exc:
-        msg = str(exc).strip() or getattr(exc, "__class__", type(exc)).__name__ or "Falha ao obter perfil do e-mail"
+        msg = (
+            str(exc).strip()
+            or getattr(exc, "__class__", type(exc)).__name__
+            or "Falha ao obter perfil do e-mail"
+        )
         _EMAIL_CACHE.update({"error": msg, "pending": False, "at": now})
     return dict(_EMAIL_CACHE)
 
@@ -4150,11 +4779,15 @@ def _parse_iso_date_input(value: str):
 
 
 def _join_gmail_query(*parts: str) -> str:
-    return " ".join(str(part or "").strip() for part in parts if str(part or "").strip())
+    return " ".join(
+        str(part or "").strip() for part in parts if str(part or "").strip()
+    )
 
 
 def _cycle_search_query() -> str:
-    return build_sent_xml_query(filter_mode=str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")))
+    return build_sent_xml_query(
+        filter_mode=str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days"))
+    )
 
 
 def _normalize_recovery_mode(value: str) -> str:
@@ -4223,7 +4856,9 @@ def _recover_nf_query_terms(nf_start: str = "", nf_end: str = "", nf_list=None) 
     if start_nf == end_nf:
         return str(start_nf)
     if end_nf - start_nf <= 20:
-        return "{" + " ".join(str(numero) for numero in range(start_nf, end_nf + 1)) + "}"
+        return (
+            "{" + " ".join(str(numero) for numero in range(start_nf, end_nf + 1)) + "}"
+        )
     return ""
 
 
@@ -4235,7 +4870,14 @@ def _recover_search_query(
     date_to: str = "",
     nf_list=None,
 ) -> str:
-    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
+    mode_norm = _resolve_recovery_mode(
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_list,
+    )
     extra_parts = []
     if mode_norm == "period":
         start_date = _parse_iso_date_input(date_from)
@@ -4243,15 +4885,23 @@ def _recover_search_query(
         if start_date:
             extra_parts.append(f"after:{start_date.strftime('%Y/%m/%d')}")
         if end_date:
-            extra_parts.append(f"before:{(end_date + timedelta(days=1)).strftime('%Y/%m/%d')}")
+            extra_parts.append(
+                f"before:{(end_date + timedelta(days=1)).strftime('%Y/%m/%d')}"
+            )
     else:
-        nf_query = _recover_nf_query_terms(nf_start=nf_start, nf_end=nf_end, nf_list=nf_list)
+        nf_query = _recover_nf_query_terms(
+            nf_start=nf_start, nf_end=nf_end, nf_list=nf_list
+        )
         if nf_query:
             extra_parts.append(nf_query)
-    return _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), " ".join(extra_parts))
+    return _join_gmail_query(
+        build_sent_xml_query(filter_mode="", extra_query=""), " ".join(extra_parts)
+    )
 
 
-def _parse_nf_filter_range(nf_start: str = "", nf_end: str = "") -> tuple[int | None, int | None]:
+def _parse_nf_filter_range(
+    nf_start: str = "", nf_end: str = ""
+) -> tuple[int | None, int | None]:
     start_txt = re.sub(r"\D+", "", str(nf_start or "").strip())
     end_txt = re.sub(r"\D+", "", str(nf_end or "").strip())
     start_val = int(start_txt) if start_txt else None
@@ -4321,7 +4971,9 @@ def _format_nf_number_list(values, limit: int = 8) -> str:
     return f"{head} e mais {len(numeros) - max(1, int(limit or 8))}"
 
 
-def _preview_matches_nf_range(subject: str, nf_start: int | None, nf_end: int | None) -> bool:
+def _preview_matches_nf_range(
+    subject: str, nf_start: int | None, nf_end: int | None
+) -> bool:
     if nf_start is None or nf_end is None:
         return True
     numeros = _extract_nf_numbers_from_text(subject)
@@ -4331,8 +4983,12 @@ def _preview_matches_nf_range(subject: str, nf_start: int | None, nf_end: int | 
 
 
 def _manual_scan_page_limit(wanted: int, page_size: int) -> int:
-    runtime_pages = max(1, min(50, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3)))
-    estimated = max(1, (max(1, int(wanted or 1)) + max(1, page_size) - 1) // max(1, page_size))
+    runtime_pages = max(
+        1, min(50, int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3) or 3))
+    )
+    estimated = max(
+        1, (max(1, int(wanted or 1)) + max(1, page_size) - 1) // max(1, page_size)
+    )
     return max(runtime_pages, min(50, max(10, estimated * 4)))
 
 
@@ -4344,7 +5000,14 @@ def _describe_recovery_filters(
     date_to: str = "",
     nf_list=None,
 ) -> str:
-    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
+    mode_norm = _resolve_recovery_mode(
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_list,
+    )
     parts = []
     if mode_norm == "list":
         numeros = _parse_nf_selection_list(nf_list)
@@ -4353,12 +5016,16 @@ def _describe_recovery_filters(
     elif mode_norm == "range":
         start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
         if start_nf is not None and end_nf is not None:
-            parts.append(f"NFs {start_nf} a {end_nf}" if start_nf != end_nf else f"NF {start_nf}")
+            parts.append(
+                f"NFs {start_nf} a {end_nf}" if start_nf != end_nf else f"NF {start_nf}"
+            )
     elif mode_norm == "period":
         start_date = _parse_iso_date_input(date_from)
         end_date = _parse_iso_date_input(date_to)
         if start_date and end_date:
-            parts.append(f"período {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}")
+            parts.append(
+                f"período {start_date.strftime('%d/%m/%Y')} a {end_date.strftime('%d/%m/%Y')}"
+            )
         elif start_date:
             parts.append(f"a partir de {start_date.strftime('%d/%m/%Y')}")
         elif end_date:
@@ -4430,10 +5097,12 @@ def _preview_matches_recovery_filters(
             return False
         return True
     texto = " ".join(
-        x for x in (
+        x
+        for x in (
             str(preview.get("subject", "") or "").strip(),
             str(preview.get("snippet", "") or "").strip(),
-        ) if x
+        )
+        if x
     )
     numeros = _extract_nf_numbers_from_text(texto)
     if not numeros:
@@ -4461,7 +5130,9 @@ def _message_attachment_text(service, msg_id: str) -> str:
             or {}
         )
     except Exception as exc:
-        logger.warning("Falha ao carregar anexos da mensagem %s para filtro de NF: %s", msg_id, exc)
+        logger.warning(
+            "Falha ao carregar anexos da mensagem %s para filtro de NF: %s", msg_id, exc
+        )
         return ""
     parts = list(payload.get("parts", []) or [])
     if not parts:
@@ -4496,8 +5167,16 @@ def _recovery_match_details(
     def _warning_from_numbers(preview_numbers, attachment_numbers) -> str:
         if not (preview_numbers or attachment_numbers):
             return ""
-        preview_label = ", ".join(str(numero) for numero in preview_numbers) if preview_numbers else "nenhuma NF"
-        attachment_label = ", ".join(str(numero) for numero in attachment_numbers) if attachment_numbers else "nenhuma NF"
+        preview_label = (
+            ", ".join(str(numero) for numero in preview_numbers)
+            if preview_numbers
+            else "nenhuma NF"
+        )
+        attachment_label = (
+            ", ".join(str(numero) for numero in attachment_numbers)
+            if attachment_numbers
+            else "nenhuma NF"
+        )
         if preview_label == attachment_label:
             return ""
         return (
@@ -4540,10 +5219,12 @@ def _recovery_match_details(
             "warning_note": "",
         }
     preview_text = " ".join(
-        x for x in (
+        x
+        for x in (
             str(preview.get("subject", "") or "").strip(),
             str(preview.get("snippet", "") or "").strip(),
-        ) if x
+        )
+        if x
     )
     preview_numbers = _extract_nf_numbers_from_text(preview_text)
     xml_attachment_numbers = _extract_xml_hint_numbers(text)
@@ -4553,7 +5234,9 @@ def _recovery_match_details(
             xml_match = bool(
                 nf_start is not None
                 and nf_end is not None
-                and any(nf_start <= numero <= nf_end for numero in xml_attachment_numbers)
+                and any(
+                    nf_start <= numero <= nf_end for numero in xml_attachment_numbers
+                )
             )
         elif mode_norm == "list":
             wanted = set(_parse_nf_selection_list(nf_list))
@@ -4561,10 +5244,12 @@ def _recovery_match_details(
     attachment_numbers = _extract_nf_numbers_from_text(text)
     merged_preview = dict(preview or {})
     merged_preview["subject"] = " ".join(
-        x for x in (
+        x
+        for x in (
             str(preview.get("subject", "") or "").strip(),
             text,
-        ) if x
+        )
+        if x
     )
     attachment_match = _preview_matches_recovery_filters(
         merged_preview,
@@ -4575,7 +5260,9 @@ def _recovery_match_details(
         start_date=start_date,
         end_date=end_date,
     )
-    warning_note = _warning_from_numbers(preview_numbers, xml_attachment_numbers or attachment_numbers)
+    warning_note = _warning_from_numbers(
+        preview_numbers, xml_attachment_numbers or attachment_numbers
+    )
     if preview_match and xml_attachment_numbers and not xml_match:
         return {
             "matched": False,
@@ -4631,7 +5318,9 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
             ctx["disabled"] = True
             return ""
         ctx["service"] = service
-    query = _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), str(nf_value))
+    query = _join_gmail_query(
+        build_sent_xml_query(filter_mode="", extra_query=""), str(nf_value)
+    )
     page_token = None
     pages = 0
     seen_ids = set()
@@ -4644,7 +5333,9 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
                 query=query,
             )
         except Exception as exc:
-            logger.warning("Falha ao diagnosticar NF ausente %s no Gmail: %s", nf_value, exc)
+            logger.warning(
+                "Falha ao diagnosticar NF ausente %s no Gmail: %s", nf_value, exc
+            )
             ctx["disabled"] = True
             return ""
         pages += 1
@@ -4665,7 +5356,9 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
                 nf_list=[nf_value],
                 attachment_text=attachment_text,
             )
-            attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+            attachment_text_cache[msg_id] = str(
+                match_info.get("attachment_text", "") or ""
+            ).strip()
             warning_note = str(match_info.get("warning_note", "") or "").strip()
             date_view = str(preview.get("date", "") or "").strip()
             subject_view = str(preview.get("subject", "") or "").strip()
@@ -4679,7 +5372,9 @@ def _audit_missing_nf_reason(nf_num: int, state: dict | None = None) -> str:
                 return base
             if bool(match_info.get("matched")):
                 if context:
-                    return f"E-mail com XML localizado no Gmail para esta NF. {context}."
+                    return (
+                        f"E-mail com XML localizado no Gmail para esta NF. {context}."
+                    )
                 return "E-mail com XML localizado no Gmail para esta NF."
         if not next_page_token:
             break
@@ -4721,12 +5416,18 @@ def _audit_month_gap_candidates(month_rows, month_key: str) -> list[int]:
     return out
 
 
-def _audit_missing_nf_candidates_for_month(mes: str, month_rows=None, existing_nfs=None) -> list[dict]:
+def _audit_missing_nf_candidates_for_month(
+    mes: str, month_rows=None, existing_nfs=None
+) -> list[dict]:
     month_key = str(mes or "").strip()
     if not re.match(r"^\d{4}-\d{2}$", month_key):
         return []
     seen_nfs = {int(n) for n in (existing_nfs or set()) if int(n or 0) > 0}
-    candidates = [nf for nf in _audit_month_gap_candidates(month_rows or [], month_key) if nf not in seen_nfs]
+    candidates = [
+        nf
+        for nf in _audit_month_gap_candidates(month_rows or [], month_key)
+        if nf not in seen_nfs
+    ]
     if not candidates:
         return []
 
@@ -4736,7 +5437,10 @@ def _audit_missing_nf_candidates_for_month(mes: str, month_rows=None, existing_n
     now = time.time()
     with _AUDIT_MONTH_MISSING_CACHE_LOCK:
         cache_entry = dict(_AUDIT_MONTH_MISSING_CACHE.get(cache_key) or {})
-        if cache_entry and (now - float(cache_entry.get("at", 0.0) or 0.0) <= _AUDIT_MONTH_MISSING_CACHE_TTL):
+        if cache_entry and (
+            now - float(cache_entry.get("at", 0.0) or 0.0)
+            <= _AUDIT_MONTH_MISSING_CACHE_TTL
+        ):
             return list(cache_entry.get("items") or [])
 
     state = {}
@@ -4789,12 +5493,17 @@ def _reprocess_message_preview(service, msg_id: str) -> dict:
     if not msg_id:
         return preview
     try:
-        meta = service.users().messages().get(
-            userId="me",
-            id=msg_id,
-            format="metadata",
-            metadataHeaders=["From", "Subject", "Date"],
-        ).execute()
+        meta = (
+            service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=msg_id,
+                format="metadata",
+                metadataHeaders=["From", "Subject", "Date"],
+            )
+            .execute()
+        )
         headers = ((meta or {}).get("payload") or {}).get("headers", []) or []
         header_map = {}
         for item in headers:
@@ -4821,7 +5530,11 @@ def _reprocess_message_preview(service, msg_id: str) -> dict:
 
 
 def _selected_preview_window(items: list[dict]) -> dict:
-    selected = [dict(item.get("preview") or {}) for item in list(items or []) if isinstance(item, dict)]
+    selected = [
+        dict(item.get("preview") or {})
+        for item in list(items or [])
+        if isinstance(item, dict)
+    ]
     selected = [item for item in selected if item]
     if not selected:
         return {"selected": 0, "oldest_date": "", "newest_date": ""}
@@ -4861,7 +5574,9 @@ def _find_missing_messages_for_nf_list(
     attachment_text_cache = {}
     subject_mismatch_notes = []
     subject_mismatch_count = 0
-    criteria_desc = _describe_recovery_filters(mode="list", nf_list=requested) or "NFs selecionadas"
+    criteria_desc = (
+        _describe_recovery_filters(mode="list", nf_list=requested) or "NFs selecionadas"
+    )
     if callable(progress_cb):
         progress_cb(
             phase="searching",
@@ -4879,12 +5594,18 @@ def _find_missing_messages_for_nf_list(
             detail=f"Criterios: {criteria_desc}.",
         )
     for idx, nf in enumerate(requested, start=1):
-        query = _join_gmail_query(build_sent_xml_query(filter_mode="", extra_query=""), str(nf))
+        query = _join_gmail_query(
+            build_sent_xml_query(filter_mode="", extra_query=""), str(nf)
+        )
         page_token = None
         local_pages = 0
         local_matches = 0
         found_for_nf = False
-        while local_pages < page_limit and local_matches < per_nf_limit and len(targets) < message_limit:
+        while (
+            local_pages < page_limit
+            and local_matches < per_nf_limit
+            and len(targets) < message_limit
+        ):
             batch, next_page_token = buscarMessagesEnviadosPagina(
                 service,
                 max_results=page_size,
@@ -4918,7 +5639,11 @@ def _find_missing_messages_for_nf_list(
                         current_date=current_date,
                         requested_nf_count=requested_total,
                         found_nf_numbers=found_nf_numbers[:],
-                        missing_nf_numbers=[numero for numero in requested if numero not in set(found_nf_numbers)],
+                        missing_nf_numbers=[
+                            numero
+                            for numero in requested
+                            if numero not in set(found_nf_numbers)
+                        ],
                         message=f"Buscando NF {nf} ({idx} de {requested_total}).",
                         detail=f"{inspected} mensagem(ns) analisada(s) ate agora.",
                     )
@@ -4931,7 +5656,9 @@ def _find_missing_messages_for_nf_list(
                     nf_list=[nf],
                     attachment_text=attachment_text,
                 )
-                attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+                attachment_text_cache[msg_id] = str(
+                    match_info.get("attachment_text", "") or ""
+                ).strip()
                 warning_note = str(match_info.get("warning_note", "") or "").strip()
                 if warning_note:
                     subject_mismatch_count += 1
@@ -4981,13 +5708,21 @@ def _find_missing_messages_for_nf_list(
                         current_date=current_date,
                         requested_nf_count=requested_total,
                         found_nf_numbers=found_nf_numbers[:],
-                        missing_nf_numbers=[numero for numero in requested if numero not in set(found_nf_numbers)],
+                        missing_nf_numbers=[
+                            numero
+                            for numero in requested
+                            if numero not in set(found_nf_numbers)
+                        ],
                         message=f"NFs localizadas: {len(found_nf_numbers)} de {requested_total}.",
                         detail=f"NF {nf} localizada em {local_matches} mensagem(ns).",
                     )
                 if local_matches >= per_nf_limit or len(targets) >= message_limit:
                     break
-            if local_matches >= per_nf_limit or len(targets) >= message_limit or not next_page_token:
+            if (
+                local_matches >= per_nf_limit
+                or len(targets) >= message_limit
+                or not next_page_token
+            ):
                 break
             page_token = next_page_token
         if not found_for_nf:
@@ -5029,7 +5764,12 @@ def _reprocess_recent_query() -> str:
     return f"newer_than:{int(_REPROCESS_LOOKBACK_DAYS)}d"
 
 
-def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=None, continue_after_id: str = "") -> dict:
+def _reprocess_recent(
+    max_messages: int,
+    mark_unread: bool = False,
+    progress_cb=None,
+    continue_after_id: str = "",
+) -> dict:
     service = _get_gmail_service_locked()
     wanted = max(1, min(1000, int(max_messages)))
     messages_raw = listar_mensagens_com_labels_botana(
@@ -5051,7 +5791,10 @@ def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=
                 "preview": preview,
             }
         )
-    mensagens_com_meta.sort(key=lambda item: int((item.get("preview") or {}).get("timestamp", 0) or 0), reverse=True)
+    mensagens_com_meta.sort(
+        key=lambda item: int((item.get("preview") or {}).get("timestamp", 0) or 0),
+        reverse=True,
+    )
     start_index = 0
     continue_after_id = str(continue_after_id or "").strip()
     if continue_after_id:
@@ -5061,7 +5804,9 @@ def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=
                 break
     messages = mensagens_com_meta[start_index : start_index + wanted]
     window_info = _selected_preview_window(messages)
-    selected_oldest_id = str((messages[-1] or {}).get("id", "")).strip() if messages else ""
+    selected_oldest_id = (
+        str((messages[-1] or {}).get("id", "")).strip() if messages else ""
+    )
     remaining_after = max(0, len(mensagens_com_meta) - (start_index + len(messages)))
     changed = 0
     failed = 0
@@ -5073,7 +5818,9 @@ def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=
                 f"Lote selecionado: {int(window_info.get('selected', 0) or 0)} mensagens, de {window_info.get('newest_date')} até {window_info.get('oldest_date')}."
             )
         if continue_after_id:
-            detail_parts.append("Continuação do reprocessamento a partir do lote anterior.")
+            detail_parts.append(
+                "Continuação do reprocessamento a partir do lote anterior."
+            )
         progress_cb(
             progress_current=0,
             progress_total=len(messages),
@@ -5117,7 +5864,9 @@ def _reprocess_recent(max_messages: int, mark_unread: bool = False, progress_cb=
             )
         novo_label = ""
         try:
-            novo_label = marcar_mensagem_para_reprocessar(service, msg_id, mark_unread=mark_unread)
+            novo_label = marcar_mensagem_para_reprocessar(
+                service, msg_id, mark_unread=mark_unread
+            )
             if not novo_label:
                 raise RuntimeError("Falha ao atualizar label de reprocessamento")
             changed += 1
@@ -5171,24 +5920,41 @@ def _find_missing_messages(
     nf_list=None,
     progress_cb=None,
 ) -> dict:
-    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
+    mode_norm = _resolve_recovery_mode(
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_list,
+    )
     start_nf, end_nf = _parse_nf_filter_range(nf_start, nf_end)
     start_date = _parse_iso_date_input(date_from)
     end_date = _parse_iso_date_input(date_to)
     nf_values = _parse_nf_selection_list(nf_list)
     if mode_norm == "period":
         if not start_date and not end_date:
-            raise ValueError("Informe ao menos uma data para recuperar e-mails por período.")
+            raise ValueError(
+                "Informe ao menos uma data para recuperar e-mails por período."
+            )
     elif mode_norm == "range":
         if start_nf is None and end_nf is None:
-            raise ValueError("Informe uma faixa de NF para recuperar e-mails por intervalo.")
+            raise ValueError(
+                "Informe uma faixa de NF para recuperar e-mails por intervalo."
+            )
     elif mode_norm == "list":
         if not nf_values:
-            raise ValueError("Adicione ao menos uma NF na lista manual para recuperar e-mails.")
+            raise ValueError(
+                "Adicione ao menos uma NF na lista manual para recuperar e-mails."
+            )
     else:
-        raise ValueError("Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails.")
+        raise ValueError(
+            "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."
+        )
     service = _get_gmail_service_locked()
-    page_size = max(1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50)))
+    page_size = max(
+        1, min(500, int(_RUNTIME_SETTINGS.get("gmail_page_size", 50) or 50))
+    )
     if mode_norm == "list":
         return _find_missing_messages_for_nf_list(
             service,
@@ -5199,7 +5965,14 @@ def _find_missing_messages(
         )
     wanted = max(1, min(1000, int(max_messages)))
     page_limit = _manual_scan_page_limit(wanted, page_size)
-    query = _recover_search_query(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values)
+    query = _recover_search_query(
+        mode=mode_norm,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_values,
+    )
     targets = []
     seen_ids = set()
     inspected = 0
@@ -5208,7 +5981,17 @@ def _find_missing_messages(
     attachment_text_cache = {}
     subject_mismatch_notes = []
     subject_mismatch_count = 0
-    criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_values) or "filtros informados"
+    criteria_desc = (
+        _describe_recovery_filters(
+            mode=mode_norm,
+            nf_start=nf_start,
+            nf_end=nf_end,
+            date_from=date_from,
+            date_to=date_to,
+            nf_list=nf_values,
+        )
+        or "filtros informados"
+    )
     if callable(progress_cb):
         progress_cb(
             phase="searching",
@@ -5268,7 +6051,9 @@ def _find_missing_messages(
                 end_date=end_date,
                 attachment_text=attachment_text,
             )
-            attachment_text_cache[msg_id] = str(match_info.get("attachment_text", "") or "").strip()
+            attachment_text_cache[msg_id] = str(
+                match_info.get("attachment_text", "") or ""
+            ).strip()
             warning_note = str(match_info.get("warning_note", "") or "").strip()
             if warning_note:
                 subject_mismatch_count += 1
@@ -5276,7 +6061,9 @@ def _find_missing_messages(
                     note_parts = []
                     nf_hits = _extract_nf_numbers_from_text(warning_note)
                     if nf_hits:
-                        note_parts.append("NF " + ", ".join(str(numero) for numero in nf_hits))
+                        note_parts.append(
+                            "NF " + ", ".join(str(numero) for numero in nf_hits)
+                        )
                     if current_date:
                         note_parts.append(current_date)
                     if current_subject:
@@ -5339,12 +6126,30 @@ def _start_recover_missing_background(
     date_to: str = "",
     nf_list=None,
 ) -> tuple[bool, dict]:
-    mode_norm = _resolve_recovery_mode(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
-    criteria_desc = _describe_recovery_filters(mode=mode_norm, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list)
-    requested_nf_values = _parse_nf_selection_list(nf_list) if mode_norm == "list" else []
+    mode_norm = _resolve_recovery_mode(
+        mode=mode,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_list,
+    )
+    criteria_desc = _describe_recovery_filters(
+        mode=mode_norm,
+        nf_start=nf_start,
+        nf_end=nf_end,
+        date_from=date_from,
+        date_to=date_to,
+        nf_list=nf_list,
+    )
+    requested_nf_values = (
+        _parse_nf_selection_list(nf_list) if mode_norm == "list" else []
+    )
     initial_requested_nf_count = len(requested_nf_values)
     if not criteria_desc:
-        return False, {"message": "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."}
+        return False, {
+            "message": "Escolha um período, uma faixa de NF ou uma lista manual para recuperar e-mails."
+        }
     snap = _manual_action_snapshot()
     if bool(snap.get("active")):
         if not snap.get("message"):
@@ -5356,7 +6161,9 @@ def _start_recover_missing_background(
         "Recuperação de e-mails",
         "Recuperação iniciada.",
         detail=f"Buscando mensagens com XML em {criteria_desc}.",
-        progress_total=initial_requested_nf_count if initial_requested_nf_count > 0 else 0,
+        progress_total=initial_requested_nf_count
+        if initial_requested_nf_count > 0
+        else 0,
         requested_limit=int(max_messages),
         matched=0,
         inspected=0,
@@ -5379,7 +6186,9 @@ def _start_recover_missing_background(
                     detail="O loop automático será retomado depois da recuperação.",
                 )
                 parar_verificacao(wait=True, timeout=120.0)
-                if (_LOOP_THREAD and _LOOP_THREAD.is_alive()) or not _wait_for_processing_idle(timeout=5.0):
+                if (
+                    _LOOP_THREAD and _LOOP_THREAD.is_alive()
+                ) or not _wait_for_processing_idle(timeout=5.0):
                     _manual_action_finish(
                         False,
                         "Não foi possível iniciar a recuperação.",
@@ -5394,7 +6203,9 @@ def _start_recover_missing_background(
                 phase="searching",
                 matched=0,
                 inspected=0,
-                progress_total=initial_requested_nf_count if initial_requested_nf_count > 0 else 0,
+                progress_total=initial_requested_nf_count
+                if initial_requested_nf_count > 0
+                else 0,
                 requested_nf_count=initial_requested_nf_count,
                 found_nf_numbers=[],
                 missing_nf_numbers=requested_nf_values[:],
@@ -5414,9 +6225,15 @@ def _start_recover_missing_background(
             inspected = int(result.get("inspected", 0) or 0)
             subject_mismatch_count = int(result.get("subject_mismatch_count", 0) or 0)
             subject_mismatch_notes = list(result.get("subject_mismatch_notes") or [])
-            found_nf_numbers = _parse_nf_selection_list(result.get("found_nf_numbers") or [])
-            missing_nf_numbers = _parse_nf_selection_list(result.get("missing_nf_numbers") or [])
-            requested_nf_count = int(result.get("requested_nf_count", initial_requested_nf_count) or 0)
+            found_nf_numbers = _parse_nf_selection_list(
+                result.get("found_nf_numbers") or []
+            )
+            missing_nf_numbers = _parse_nf_selection_list(
+                result.get("missing_nf_numbers") or []
+            )
+            requested_nf_count = int(
+                result.get("requested_nf_count", initial_requested_nf_count) or 0
+            )
             if targets:
                 nf_progress_note = ""
                 if requested_nf_count > 0:
@@ -5573,8 +6390,15 @@ def _start_recover_missing_background(
                 try:
                     iniciar_verificacao()
                 except Exception:
-                    logger.exception("Falha ao retomar loop automatico apos erro na recuperação.")
-            _manual_action_finish(False, "Erro na recuperação de e-mails.", detail=str(exc), requested_limit=int(max_messages))
+                    logger.exception(
+                        "Falha ao retomar loop automatico apos erro na recuperação."
+                    )
+            _manual_action_finish(
+                False,
+                "Erro na recuperação de e-mails.",
+                detail=str(exc),
+                requested_limit=int(max_messages),
+            )
 
     threading.Thread(target=_worker, daemon=True, name="botana-recover-emails").start()
     return True, snap
@@ -5590,7 +6414,6 @@ def _reauthenticate_gmail() -> dict:
     _get_gmail_service_locked()
     _connected_email(force=True)
     return {"ok": True, "message": "Reautenticação concluída"}
-
 
 
 def _render_login_html() -> str:
@@ -5685,6 +6508,8 @@ async function login(){
 ['u','p'].forEach(id=>{document.getElementById(id).addEventListener('keydown',(e)=>{if(e.key==='Enter')login();});});
 initHubBackLogin();
 </script></body></html>"""
+
+
 def _render_server_html() -> str:
     return """<!doctype html>
 <html lang="pt-BR"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -5804,10 +6629,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .action-title{font-size:.84rem;font-weight:700;color:#5b321c}
 .action-detail{font-size:.78rem;color:#6c4a35}
 .action-progress{font-size:.78rem;color:#6b4128}
-.hist-filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,180px));gap:10px 12px;align-items:end;justify-content:center;max-width:1320px;margin:0 auto}
-.hist-filters > div{display:flex;flex-direction:column;justify-content:center;align-items:center;width:min(180px,100%);min-height:72px}
-.hist-filters > div label{width:100%;text-align:center}
-.hist-filters > div input,.hist-filters > div select{width:min(180px,100%);text-align:center}
+.hist-head{display:grid;justify-items:center;gap:6px;margin-bottom:14px}
+.hist-title{margin:0;text-align:center;font-size:1.62rem;line-height:1.08;font-weight:800;letter-spacing:-.02em;color:#4f2c18}
+.hist-filters{display:grid;grid-template-columns:minmax(280px,360px) minmax(180px,200px) minmax(180px,200px);gap:12px;align-items:end;justify-content:center;max-width:980px;margin:0 auto}
+.hist-search-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:10px;min-height:72px;padding:10px 12px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
+.hist-search-title{width:100%;text-align:center;font-weight:800;color:#5c341c;font-size:.9rem}
+.hist-search-row{width:100%;display:flex;align-items:end;justify-content:center;gap:10px;flex-wrap:wrap}
+.hist-search-row select{width:min(170px,100%);text-align:center}
+.hist-search-field{display:flex;align-items:center;justify-content:center;min-width:210px}
+.hist-search-field[hidden]{display:none!important}
+.hist-search-field input{width:min(240px,100%);text-align:center}
 .hist-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(180px,100%);min-height:72px}
 .hist-run-wrap label{width:100%;text-align:center;visibility:hidden}
 .hist-run-wrap button{width:min(180px,100%)}
@@ -6102,8 +6933,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-fields input{width:min(110px,100%);text-align:center}
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:1fr 1fr 1fr}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(280px,360px) minmax(150px,180px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
-@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-filters{grid-template-columns:1fr}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-days-grid{grid-template-columns:1fr}.watch-run-wrap{grid-column:auto}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:minmax(260px,360px) minmax(180px,200px)}.hist-run-wrap{grid-column:1 / -1}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(280px,360px) minmax(150px,180px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
+@media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-title{font-size:1.38rem}.hist-filters{grid-template-columns:1fr}.hist-search-row{flex-direction:column;align-items:center}.hist-search-field{min-width:0;width:100%}.hist-search-row select,.hist-search-field input{width:min(240px,100%)}.hist-run-wrap{grid-column:auto}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-days-grid{grid-template-columns:1fr}.watch-run-wrap{grid-column:auto}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
 </style>
 <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
 </head><body>
@@ -6291,8 +7122,42 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 
   <section id="tabHist" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
-      <h3>Histórico de processamento e lançamentos</h3>
+      <div class="hist-head">
+        <h3 class="hist-title">Histórico de processamento e lançamentos</h3>
+      </div>
       <div class="hist-filters">
+        <div class="hist-search-card">
+          <div class="hist-search-title">Buscar por:</div>
+          <div class="hist-search-row">
+            <select id="hFilterMode" aria-label="Buscar histórico por" onchange="toggleHistoryFilter()">
+              <option value="date">Data</option>
+              <option value="datetime">Data / Hora</option>
+              <option value="venc">Vencimento</option>
+              <option value="nf">NF</option>
+              <option value="cliente">Cliente</option>
+              <option value="aba">Aba</option>
+              <option value="none" selected>Sem Filtro</option>
+            </select>
+            <div id="hFieldDateWrap" class="hist-search-field" hidden>
+              <input id="hAtDate" type="date" aria-label="Buscar histórico por data"/>
+            </div>
+            <div id="hFieldDateTimeWrap" class="hist-search-field" hidden>
+              <input id="hAtDateTime" type="datetime-local" step="60" aria-label="Buscar histórico por data e hora"/>
+            </div>
+            <div id="hFieldVencWrap" class="hist-search-field" hidden>
+              <input id="hVenc" type="date" aria-label="Buscar histórico por vencimento"/>
+            </div>
+            <div id="hFieldNfWrap" class="hist-search-field" hidden>
+              <input id="hNf" type="text" placeholder="49001" aria-label="Buscar histórico por NF"/>
+            </div>
+            <div id="hFieldClienteWrap" class="hist-search-field" hidden>
+              <input id="hCliente" type="text" placeholder="Nome curto ou completo" aria-label="Buscar histórico por cliente"/>
+            </div>
+            <div id="hFieldAbaWrap" class="hist-search-field" hidden>
+              <input id="hAba" type="text" placeholder="Janeiro ou MVA/Janeiro" aria-label="Buscar histórico por aba"/>
+            </div>
+          </div>
+        </div>
         <div class="audit-source-wrap">
           <label>Origem</label>
           <div id="historyEmpresaGroup" class="audit-source-group" data-value="mva" role="group" aria-label="Origem do histórico">
@@ -6310,12 +7175,6 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
             </button>
           </div>
         </div>
-        <div><label>Data / Horário</label><input id="hAt" type="text" placeholder="06/04/2026 12:30 ou 2026-04-06"/></div>
-        <div><label>Vencimento</label><input id="hVenc" type="date"/></div>
-        <div><label>NF</label><input id="hNf" type="text" placeholder="49001"/></div>
-        <div><label>Cliente</label><input id="hCliente" type="text" placeholder="Nome curto ou completo"/></div>
-        <div><label>Aba</label><input id="hAba" type="text" placeholder="Janeiro ou MVA/Janeiro"/></div>
-        <div><label>Limite</label><input id="hLimit" type="number" min="10" max="2000" value="300"/></div>
         <div class="hist-run-wrap"><label aria-hidden="true">&nbsp;</label><button onclick="loadHistory()">Aplicar filtros</button></div>
       </div>
       <div class="hist-toolbar">
@@ -7412,6 +8271,40 @@ function setHistoryEmpresa(value,reload=true){
     loadHistory(false).catch(()=>{});
   }
 }
+function _normalizeHistoryFilterMode(value){
+  const key=String(value||'none').trim().toLowerCase();
+  return ['date','datetime','venc','nf','cliente','aba','none'].includes(key)?key:'none';
+}
+function _getHistoryFilterMode(){
+  const select=document.getElementById('hFilterMode');
+  return _normalizeHistoryFilterMode(select&&select.value||'none');
+}
+function _historyFilterConfig(mode){
+  switch(_normalizeHistoryFilterMode(mode)){
+    case 'date':
+      return {param:'at',inputId:'hAtDate',wrapId:'hFieldDateWrap'};
+    case 'datetime':
+      return {param:'at',inputId:'hAtDateTime',wrapId:'hFieldDateTimeWrap',normalize:(value)=>String(value||'').trim().replace('T',' ')};
+    case 'venc':
+      return {param:'venc',inputId:'hVenc',wrapId:'hFieldVencWrap'};
+    case 'nf':
+      return {param:'nf',inputId:'hNf',wrapId:'hFieldNfWrap'};
+    case 'cliente':
+      return {param:'cliente',inputId:'hCliente',wrapId:'hFieldClienteWrap'};
+    case 'aba':
+      return {param:'aba',inputId:'hAba',wrapId:'hFieldAbaWrap'};
+    default:
+      return {param:'',inputId:'',wrapId:''};
+  }
+}
+function toggleHistoryFilter(){
+  const active=_getHistoryFilterMode();
+  ['date','datetime','venc','nf','cliente','aba'].forEach((mode)=>{
+    const cfg=_historyFilterConfig(mode);
+    const wrap=cfg&&cfg.wrapId?document.getElementById(cfg.wrapId):null;
+    if(wrap)wrap.hidden=mode!==active;
+  });
+}
 function _fmtLocal(local){const s=String(local||'');if(!s)return '-';const parts=s.split('/');if(parts.length>=2)return parts.slice(-2).join('/');return s;}
 function _fmtMoney(v){
   if(v===null||v===undefined) return '-';
@@ -7613,20 +8506,15 @@ document.querySelectorAll('.hist-table th.sortable').forEach(th=>{th.addEventLis
 _bindAuditSortHeaders();
 function _historyParams(){
   const p=new URLSearchParams();
-  const vAt=((document.getElementById('hAt')||{}).value||'').trim();
-  const vVenc=((document.getElementById('hVenc')||{}).value||'').trim();
-  const vNf=((document.getElementById('hNf')||{}).value||'').trim();
-  const vCliente=((document.getElementById('hCliente')||{}).value||'').trim();
-  const vAba=((document.getElementById('hAba')||{}).value||'').trim();
-  const vLimit=Number((document.getElementById('hLimit')||{}).value||300);
   const vEmpresa=_getHistoryEmpresa();
-  if(vAt)p.set('at',vAt);
-  if(vVenc)p.set('venc',vVenc);
-  if(vNf)p.set('nf',vNf);
-  if(vCliente)p.set('cliente',vCliente);
-  if(vAba)p.set('aba',vAba);
+  const cfg=_historyFilterConfig(_getHistoryFilterMode());
+  if(cfg&&cfg.param&&cfg.inputId){
+    const raw=((document.getElementById(cfg.inputId)||{}).value||'').trim();
+    const value=cfg.normalize?cfg.normalize(raw):raw;
+    if(value)p.set(cfg.param,value);
+  }
   p.set('empresa',vEmpresa);
-  p.set('limit',String(Math.max(10,Math.min(2000,vLimit||300))));
+  p.set('limit','300');
   return p;
 }
 function exportHistoryCsv(){
@@ -8702,7 +9590,7 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 ['limit'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();reprocess();}});});
 ['recoverDateFrom','recoverDateTo','recoverNfStart','recoverNfEnd','recoverMode'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleRecoverFieldKeydown);});
 ['recoverNfStart','recoverNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
-document.querySelectorAll('#hAt,#hVenc,#hNf,#hCliente,#hAba,#hLimit').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
+document.querySelectorAll('#hFilterMode,#hAtDate,#hAtDateTime,#hVenc,#hNf,#hCliente,#hAba').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 ['aMode','aMonth','aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleAuditFieldKeydown);});
 ['aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
 document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
@@ -8729,6 +9617,7 @@ if(_auditMonthEl&&!_auditMonthEl.value){
   try{_auditMonthEl.value=new Date().toISOString().slice(0,7);}catch(_){}
 }
 setHistoryEmpresa(_getHistoryEmpresa(),false);
+toggleHistoryFilter();
 setAuditEmpresa(_getAuditEmpresa(),false);
 setWatchEmpresa(_getWatchEmpresa(),false);
 toggleRecoverFilters();
@@ -9081,6 +9970,7 @@ toggleAuditFilters();
 _ensureAuditPreviewTable();
 </script></body></html>"""
 
+
 def start_server(host: str, port: int, no_loop: bool = False):
     _load_auth()
     _load_settings()
@@ -9093,9 +9983,21 @@ def start_server(host: str, port: int, no_loop: bool = False):
             user = _current_session_user(self)
             if user:
                 return user
-            
+
             # Hub acessa o botana pelo localhost, permitimos essas acoes pelo proxy sem token
-            if self.client_address[0] in ["127.0.0.1", "::1", "localhost"] and parsed_path in ["/api/relatorio-nfs", "/api/conferencia-parcelas", "/api/prazos", "/api/prazos/search", "/api/prazos/search-suggestions", "/api/clean-sheets", "/api/clean-sheets/log"]:
+            if self.client_address[0] in [
+                "127.0.0.1",
+                "::1",
+                "localhost",
+            ] and parsed_path in [
+                "/api/relatorio-nfs",
+                "/api/conferencia-parcelas",
+                "/api/prazos",
+                "/api/prazos/search",
+                "/api/prazos/search-suggestions",
+                "/api/clean-sheets",
+                "/api/clean-sheets/log",
+            ]:
                 return "hub_internal"
 
             if parsed_path.startswith("/api/"):
@@ -9127,7 +10029,10 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 return _html_response(self, 200, _render_server_html())
             if parsed.path == "/api/state":
                 email_info = _connected_email()
-                if not str(email_info.get("email", "")).strip() and not str(email_info.get("error", "")).strip():
+                if (
+                    not str(email_info.get("email", "")).strip()
+                    and not str(email_info.get("error", "")).strip()
+                ):
                     email_info = _connected_email(force=True)
                 last_msg = str((last_status or {}).get("message", "") or "")
                 reading_info = _reading_state()
@@ -9140,10 +10045,14 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     friendly = "Falha ao validar o e-mail conectado"
                 elif email_pending:
                     acc_status = "waiting"
-                    friendly = "Autenticação em andamento. Aguarde a confirmação no navegador"
+                    friendly = (
+                        "Autenticação em andamento. Aguarde a confirmação no navegador"
+                    )
                 elif not email_value:
                     acc_status = "waiting"
-                    friendly = "Autenticação pendente. Clique em Autenticação > Principal"
+                    friendly = (
+                        "Autenticação pendente. Clique em Autenticação > Principal"
+                    )
                 elif reading_now:
                     acc_status = "running"
                     friendly = "Lendo os e-mails agora"
@@ -9170,13 +10079,25 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "ok": True,
                         "running": bool(running),
                         "reading": bool(reading_now),
-                        "interval_seconds": int(_RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)),
+                        "interval_seconds": int(
+                            _RUNTIME_SETTINGS.get("interval_seconds", INTERVALO)
+                        ),
                         "max_messages": int(_RUNTIME_SETTINGS.get("max_messages", 100)),
                         "settings": {
-                            "gmail_filter_mode": str(_RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
-                            "gmail_max_pages": int(_RUNTIME_SETTINGS.get("gmail_max_pages", 3)),
-                            "gmail_page_size": int(_RUNTIME_SETTINGS.get("gmail_page_size", 50)),
-                            "loop_interval_minutes": int(_RUNTIME_SETTINGS.get("loop_interval_minutes", 30)),
+                            "gmail_filter_mode": str(
+                                _RUNTIME_SETTINGS.get(
+                                    "gmail_filter_mode", "last_30_days"
+                                )
+                            ),
+                            "gmail_max_pages": int(
+                                _RUNTIME_SETTINGS.get("gmail_max_pages", 3)
+                            ),
+                            "gmail_page_size": int(
+                                _RUNTIME_SETTINGS.get("gmail_page_size", 50)
+                            ),
+                            "loop_interval_minutes": int(
+                                _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)
+                            ),
                         },
                         "last_status": status_view,
                         "account": {
@@ -9193,9 +10114,15 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         "manual_action": _manual_action_snapshot(),
                         "diagnostic": {
                             "reading_source": str(reading_info.get("source", "")),
-                            "reading_flag_raw": bool(reading_info.get("flag_raw", False)),
-                            "reading_current_active": bool(reading_info.get("current_active", False)),
-                            "reading_corrected": bool(reading_info.get("corrected", False)),
+                            "reading_flag_raw": bool(
+                                reading_info.get("flag_raw", False)
+                            ),
+                            "reading_current_active": bool(
+                                reading_info.get("current_active", False)
+                            ),
+                            "reading_corrected": bool(
+                                reading_info.get("corrected", False)
+                            ),
                         },
                         "daily_report": _daily_report_data(),
                         "auth": {"user": user, "role": _role_of(user)},
@@ -9209,10 +10136,14 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
                 empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
-                    resultado = _gerar_relatorio_nfs(filtro, mes, nf_inicio, nf_fim, empresa)
+                    resultado = _gerar_relatorio_nfs(
+                        filtro, mes, nf_inicio, nf_fim, empresa
+                    )
                     return _json_response(self, 200, {"status": "success", **resultado})
                 except Exception as e:
-                    return _json_response(self, 500, {"status": "error", "message": str(e)})
+                    return _json_response(
+                        self, 500, {"status": "error", "message": str(e)}
+                    )
 
             if parsed.path == "/api/conferencia-parcelas":
                 qs = parse_qs(parsed.query or "")
@@ -9222,7 +10153,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
                 empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
-                    resultado = _gerar_conferencia_parcelas(filtro, mes, nf_inicio, nf_fim, empresa)
+                    resultado = _gerar_conferencia_parcelas(
+                        filtro, mes, nf_inicio, nf_fim, empresa
+                    )
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
@@ -9235,7 +10168,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 nf_fim = (qs.get("nf_fim", [""])[0] or "").strip()
                 empresa = (qs.get("empresa", [""])[0] or "todos").strip()
                 try:
-                    resultado = _start_audit_job(filtro, mes, nf_inicio, nf_fim, empresa)
+                    resultado = _start_audit_job(
+                        filtro, mes, nf_inicio, nf_fim, empresa
+                    )
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
@@ -9257,11 +10192,15 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 except Exception:
                     boleto_dias = 7
                 try:
-                    deposito_dias = int((qs.get("deposito_dias", ["7"])[0] or "7").strip())
+                    deposito_dias = int(
+                        (qs.get("deposito_dias", ["7"])[0] or "7").strip()
+                    )
                 except Exception:
                     deposito_dias = 7
                 try:
-                    resultado = _gerar_relacao_pendencias(boleto_dias, deposito_dias, empresa)
+                    resultado = _gerar_relacao_pendencias(
+                        boleto_dias, deposito_dias, empresa
+                    )
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
@@ -9270,7 +10209,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 try:
                     qs = parse_qs(parsed.query or "")
                     empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
-                    return _json_response(self, 200, {"ok": True, "items": _load_watch_search_suggestions(empresa)})
+                    return _json_response(
+                        self,
+                        200,
+                        {"ok": True, "items": _load_watch_search_suggestions(empresa)},
+                    )
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
 
@@ -9279,7 +10222,11 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 nome = (qs.get("nome", [""])[0] or "").strip()
                 empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 if not nome:
-                    return _json_response(self, 400, {"ok": False, "message": "Informe um nome para consultar."})
+                    return _json_response(
+                        self,
+                        400,
+                        {"ok": False, "message": "Informe um nome para consultar."},
+                    )
                 try:
                     resultado = _buscar_boletos_em_aberto_por_nome(nome, empresa)
                     return _json_response(self, 200, {"ok": True, **resultado})
@@ -9294,6 +10241,7 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     desdeIndice = 0
                 try:
                     import correcao_planilhas
+
                     logData = correcao_planilhas.obterLog(desdeIndice)
                     return _json_response(self, 200, {"ok": True, **logData})
                 except Exception as e:
@@ -9362,9 +10310,13 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     cnpj_dest=cnpj_dest,
                     empresa_filter=empresa,
                 )
-                file_name = f"historico_botana_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                file_name = (
+                    f"historico_botana_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                )
                 return _csv_response(self, 200, file_name, _history_csv_rows(items))
-            return _json_response(self, 404, {"ok": False, "message": "NÃ£o encontrado"})
+            return _json_response(
+                self, 404, {"ok": False, "message": "NÃ£o encontrado"}
+            )
 
         def do_POST(self):
             try:
@@ -9375,10 +10327,19 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     username = str(data.get("username", "")).strip()
                     password = str(data.get("password", ""))
                     if not _verify_login(username, password):
-                        return _json_response(self, 401, {"ok": False, "message": "UsuÃ¡rio ou senha invÃ¡lidos"})
+                        return _json_response(
+                            self,
+                            401,
+                            {"ok": False, "message": "UsuÃ¡rio ou senha invÃ¡lidos"},
+                        )
                     token = _create_session(username)
                     cookie = f"{_COOKIE_SESSION}={token}; Path=/; HttpOnly; Max-Age={_SESSION_TTL_SECONDS}; SameSite=Lax"
-                    return _json_response(self, 200, {"ok": True, "message": "Login efetuado"}, {"Set-Cookie": cookie})
+                    return _json_response(
+                        self,
+                        200,
+                        {"ok": True, "message": "Login efetuado"},
+                        {"Set-Cookie": cookie},
+                    )
 
                 if parsed.path == "/api/logout":
                     token = _read_cookie_session(self)
@@ -9389,7 +10350,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                         self,
                         200,
                         {"ok": True},
-                        {"Set-Cookie": f"{_COOKIE_SESSION}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"},
+                        {
+                            "Set-Cookie": f"{_COOKIE_SESSION}=; Path=/; HttpOnly; Max-Age=0; SameSite=Lax"
+                        },
                     )
 
                 user = self._require_auth(parsed.path)
@@ -9398,52 +10361,98 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
                 if parsed.path == "/api/start":
                     started = iniciar_verificacao()
-                    return _json_response(self, 200, {"ok": True, "started": bool(started)})
+                    return _json_response(
+                        self, 200, {"ok": True, "started": bool(started)}
+                    )
                 if parsed.path == "/api/stop":
                     stopped = parar_verificacao()
-                    return _json_response(self, 200, {"ok": True, "stopped": bool(stopped)})
+                    return _json_response(
+                        self, 200, {"ok": True, "stopped": bool(stopped)}
+                    )
                 if parsed.path == "/api/run-now":
                     _ = str(data.get("account", "principal"))
                     try:
-                        max_messages = max(1, min(1000, int(data.get("max_messages", 0) or 0)))
+                        max_messages = max(
+                            1, min(1000, int(data.get("max_messages", 0) or 0))
+                        )
                     except Exception:
                         max_messages = 0
-                    started, info = _start_run_now_background(max_messages_override=max_messages or None)
+                    started, info = _start_run_now_background(
+                        max_messages_override=max_messages or None
+                    )
                     if not started:
-                        msg = _manual_action_busy_message() or str((info or {}).get("message") or "Não foi possível iniciar a execução manual.")
-                        return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
+                        msg = _manual_action_busy_message() or str(
+                            (info or {}).get("message")
+                            or "Não foi possível iniciar a execução manual."
+                        )
+                        return _json_response(
+                            self, 409, {"ok": False, "message": msg, "action": info}
+                        )
                     friendly = "Execucao manual iniciada."
                     if max_messages:
                         friendly = f"Execucao manual iniciada com limite de {max_messages} mensagens."
-                    return _json_response(self, 202, {"ok": True, "started": True, "message": friendly, "action": info})
+                    return _json_response(
+                        self,
+                        202,
+                        {
+                            "ok": True,
+                            "started": True,
+                            "message": friendly,
+                            "action": info,
+                        },
+                    )
                 if parsed.path == "/api/reprocess":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissao"}
+                        )
                     try:
-                        max_messages = max(1, min(1000, int(data.get("max_messages", 100))))
+                        max_messages = max(
+                            1, min(1000, int(data.get("max_messages", 100)))
+                        )
                     except Exception:
                         max_messages = 100
                     mark_unread = bool(data.get("mark_unread", False))
-                    continue_after_id = str(data.get("continue_after_id", "") or "").strip()
+                    continue_after_id = str(
+                        data.get("continue_after_id", "") or ""
+                    ).strip()
                     started, info = _start_reprocess_background(
                         max_messages=max_messages,
                         mark_unread=mark_unread,
                         continue_after_id=continue_after_id,
                     )
                     if not started:
-                        msg = _manual_action_busy_message() or str((info or {}).get("message") or "Nao foi possivel iniciar o reprocessamento.")
-                        return _json_response(self, 409, {"ok": False, "message": msg, "action": info})
+                        msg = _manual_action_busy_message() or str(
+                            (info or {}).get("message")
+                            or "Nao foi possivel iniciar o reprocessamento."
+                        )
+                        return _json_response(
+                            self, 409, {"ok": False, "message": msg, "action": info}
+                        )
                     friendly = (
                         f"Continuação do reprocessamento iniciada para até {max_messages} mensagens mais antigas dentro dos últimos {_REPROCESS_LOOKBACK_DAYS} dias; a leitura será executada em seguida."
                         if continue_after_id
                         else f"Reprocessamento iniciado para até {max_messages} mensagens mais recentes dos últimos {_REPROCESS_LOOKBACK_DAYS} dias; a leitura será executada em seguida."
                     )
-                    return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
+                    return _json_response(
+                        self,
+                        202,
+                        {
+                            "ok": True,
+                            "started": True,
+                            "friendly": friendly,
+                            "action": info,
+                        },
+                    )
                 if parsed.path in ("/api/recover-emails", "/api/recover-missing"):
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissao"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissao"}
+                        )
                     try:
-                        max_messages = max(1, min(1000, int(data.get("max_messages", 1000))))
+                        max_messages = max(
+                            1, min(1000, int(data.get("max_messages", 1000)))
+                        )
                     except Exception:
                         max_messages = 1000
                     mode = str(data.get("mode", "") or "").strip()
@@ -9464,51 +10473,150 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if not started:
                         msg = str((info or {}).get("message") or "").strip()
                         if not msg:
-                            msg = _manual_action_busy_message() or "Nao foi possivel iniciar a recuperacao."
-                        status_code = 400 if any(token in msg for token in ("Informe", "Escolha", "Adicione")) else 409
-                        return _json_response(self, status_code, {"ok": False, "message": msg, "action": info})
-                    filtros = _describe_recovery_filters(mode=mode, nf_start=nf_start, nf_end=nf_end, date_from=date_from, date_to=date_to, nf_list=nf_list) or "os filtros informados"
-                    friendly = f"Recuperação iniciada para mensagens com XML em {filtros}."
-                    return _json_response(self, 202, {"ok": True, "started": True, "friendly": friendly, "action": info})
+                            msg = (
+                                _manual_action_busy_message()
+                                or "Nao foi possivel iniciar a recuperacao."
+                            )
+                        status_code = (
+                            400
+                            if any(
+                                token in msg
+                                for token in ("Informe", "Escolha", "Adicione")
+                            )
+                            else 409
+                        )
+                        return _json_response(
+                            self,
+                            status_code,
+                            {"ok": False, "message": msg, "action": info},
+                        )
+                    filtros = (
+                        _describe_recovery_filters(
+                            mode=mode,
+                            nf_start=nf_start,
+                            nf_end=nf_end,
+                            date_from=date_from,
+                            date_to=date_to,
+                            nf_list=nf_list,
+                        )
+                        or "os filtros informados"
+                    )
+                    friendly = (
+                        f"Recuperação iniciada para mensagens com XML em {filtros}."
+                    )
+                    return _json_response(
+                        self,
+                        202,
+                        {
+                            "ok": True,
+                            "started": True,
+                            "friendly": friendly,
+                            "action": info,
+                        },
+                    )
                 if parsed.path == "/api/settings":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissÃ£o"}
+                        )
                     _save_settings(
                         {
-                            "gmail_filter_mode": data.get("gmail_filter_mode", _RUNTIME_SETTINGS.get("gmail_filter_mode", "last_30_days")),
-                            "gmail_max_pages": data.get("gmail_max_pages", _RUNTIME_SETTINGS.get("gmail_max_pages", 3)),
-                            "gmail_page_size": data.get("gmail_page_size", _RUNTIME_SETTINGS.get("gmail_page_size", 50)),
-                            "loop_interval_minutes": data.get("loop_interval_minutes", _RUNTIME_SETTINGS.get("loop_interval_minutes", 30)),
-                            "max_messages": data.get("max_messages", _RUNTIME_SETTINGS.get("max_messages", 100)),
+                            "gmail_filter_mode": data.get(
+                                "gmail_filter_mode",
+                                _RUNTIME_SETTINGS.get(
+                                    "gmail_filter_mode", "last_30_days"
+                                ),
+                            ),
+                            "gmail_max_pages": data.get(
+                                "gmail_max_pages",
+                                _RUNTIME_SETTINGS.get("gmail_max_pages", 3),
+                            ),
+                            "gmail_page_size": data.get(
+                                "gmail_page_size",
+                                _RUNTIME_SETTINGS.get("gmail_page_size", 50),
+                            ),
+                            "loop_interval_minutes": data.get(
+                                "loop_interval_minutes",
+                                _RUNTIME_SETTINGS.get("loop_interval_minutes", 30),
+                            ),
+                            "max_messages": data.get(
+                                "max_messages",
+                                _RUNTIME_SETTINGS.get("max_messages", 100),
+                            ),
                         }
                     )
-                    return _json_response(self, 200, {"ok": True, "message": "ConfiguraÃ§Ã£o salva"})
+                    return _json_response(
+                        self, 200, {"ok": True, "message": "ConfiguraÃ§Ã£o salva"}
+                    )
                 if parsed.path == "/api/reauth":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissÃ£o"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissÃ£o"}
+                        )
                     account = str(data.get("account", "principal")).strip().lower()
                     if account != "principal":
                         account = "principal"
                     info = _reauthenticate_gmail()
-                    return _json_response(self, 200, {"ok": True, "account": account, "message": info.get("message", "ReautenticaÃ§Ã£o concluÃ­da"), "friendly": "ReautenticaÃ§Ã£o concluÃ­da"})
+                    return _json_response(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "account": account,
+                            "message": info.get(
+                                "message", "ReautenticaÃ§Ã£o concluÃ­da"
+                            ),
+                            "friendly": "ReautenticaÃ§Ã£o concluÃ­da",
+                        },
+                    )
                 if parsed.path == "/api/clean-sheets":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissão"}
+                        )
                     try:
                         import correcao_planilhas
-                        empresaFiltro = str(data.get("empresa", "todos")).strip() or "todos"
+
+                        empresaFiltro = (
+                            str(data.get("empresa", "todos")).strip() or "todos"
+                        )
                         abaFiltro = str(data.get("aba", "")).strip()
-                        iniciou = correcao_planilhas.iniciar_assistente_em_background(empresaFiltro, abaFiltro)
+                        iniciou = correcao_planilhas.iniciar_assistente_em_background(
+                            empresaFiltro, abaFiltro
+                        )
                         if iniciou:
-                            return _json_response(self, 200, {"ok": True, "friendly": "Assistente de correção iniciado."})
+                            return _json_response(
+                                self,
+                                200,
+                                {
+                                    "ok": True,
+                                    "friendly": "Assistente de correção iniciado.",
+                                },
+                            )
                         else:
-                            return _json_response(self, 409, {"ok": False, "friendly": "Já existe uma correção em andamento."})
+                            return _json_response(
+                                self,
+                                409,
+                                {
+                                    "ok": False,
+                                    "friendly": "Já existe uma correção em andamento.",
+                                },
+                            )
                     except Exception as e:
-                        return _json_response(self, 500, {"ok": False, "friendly": f"Falha ao iniciar o assistente: {e}"})
+                        return _json_response(
+                            self,
+                            500,
+                            {
+                                "ok": False,
+                                "friendly": f"Falha ao iniciar o assistente: {e}",
+                            },
+                        )
 
                 if parsed.path == "/api/conferencia-parcelas/delete":
                     if not _can_operate(user):
-                        return _json_response(self, 403, {"ok": False, "message": "Sem permissão"})
+                        return _json_response(
+                            self, 403, {"ok": False, "message": "Sem permissão"}
+                        )
                     auditKeys = []
                     for rawKey in list(data.get("audit_keys") or []):
                         key = str(rawKey or "").strip()
@@ -9518,15 +10626,23 @@ def start_server(host: str, port: int, no_loop: bool = False):
                     if auditKey and auditKey not in auditKeys:
                         auditKeys.append(auditKey)
                     if not auditKeys:
-                        return _json_response(self, 400, {"ok": False, "message": "NF da conferência não informada"})
+                        return _json_response(
+                            self,
+                            400,
+                            {"ok": False, "message": "NF da conferência não informada"},
+                        )
                     resultado = _delete_audit_rows(auditKeys)
                     statusCode = 200 if resultado.get("ok") else 400
                     return _json_response(self, statusCode, resultado)
 
-                return _json_response(self, 404, {"ok": False, "message": "Não encontrado"})
+                return _json_response(
+                    self, 404, {"ok": False, "message": "Não encontrado"}
+                )
             except Exception as exc:
                 logger.exception("Erro no endpoint POST %s: %s", self.path, exc)
-                return _json_response(self, 500, {"ok": False, "message": "Erro interno no servidor"})
+                return _json_response(
+                    self, 500, {"ok": False, "message": "Erro interno no servidor"}
+                )
 
     if not no_loop:
         iniciar_verificacao()
@@ -9544,10 +10660,16 @@ def start_server(host: str, port: int, no_loop: bool = False):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Botana")
-    p.add_argument("--server", action="store_true", help="Executa em modo servidor HTTP")
+    p.add_argument(
+        "--server", action="store_true", help="Executa em modo servidor HTTP"
+    )
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8865)
-    p.add_argument("--no-loop", action="store_true", help="NÃ£o inicia o loop automaticamente no modo servidor")
+    p.add_argument(
+        "--no-loop",
+        action="store_true",
+        help="NÃ£o inicia o loop automaticamente no modo servidor",
+    )
     return p.parse_args()
 
 
