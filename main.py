@@ -7930,7 +7930,7 @@ function updManualAction(action,processing,maxMessages){
       barEl.style.width=String(view.visibleTotal>0?Math.max(6,view.perc):18)+'%';
       progressEl.textContent=`Mensagens: ${view.current}/${view.visibleTotal||'-'} | Limite pedido ${view.requested||'-'} | Falhas ${Number(a.failed||0)}${currentParts.length?` | ${currentParts.join(' | ')}`:''}`;
       msgEl.textContent=String(a.message||'Reprocessamento em andamento.');
-      detailEl.textContent=String(a.detail||'Atualizando a label do Botana para Reprocessado.');
+      detailEl.textContent=String(a.detail||'Atualizando a label estável do Botana.');
       _setManualBadge('ok','Remarcando');
     }
   }else if(active&&kind==='recover_missing'){

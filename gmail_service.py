@@ -17,20 +17,15 @@ SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
 logger = logging.getLogger("bot.gmail_service")
 LABEL_NAME = "XML Processado Botana"
+# Prefixo legado mantido apenas para localizar e limpar labels antigas/datadas.
 REPROCESS_LABEL_NAME = "XML Reprocessado Botana"
 BOTANA_LABEL_PREFIXES = (LABEL_NAME, REPROCESS_LABEL_NAME)
 _LABEL_CACHE = {"at": 0.0, "labels": []}
 DEFAULT_SENT_XML_QUERY = "in:sent has:attachment filename:xml"
 
 
-def _label_date(when=None) -> str:
-    ref = when or datetime.now()
-    return ref.strftime("%d/%m/%Y")
-
-
 def build_botana_label_name(reprocessed: bool = False, when=None) -> str:
-    prefix = REPROCESS_LABEL_NAME if reprocessed else LABEL_NAME
-    return f"{prefix} - {_label_date(when)}"
+    return LABEL_NAME
 
 
 def _list_labels(service, force: bool = False) -> List[Dict[str, Any]]:
@@ -403,7 +398,7 @@ def listar_mensagens_com_labels_botana(service, max_results: int = 1000, query: 
         page_token = None
         collected_for_label = 0
         # Busca até o mesmo limite em cada label e deixa a ordenação final para o caller.
-        # Isso evita que labels antigas "consumam" todo o pool antes de chegar nas labels datadas mais novas.
+        # Isso também cobre labels antigas/datadas enquanto o sistema converge tudo para a label estável.
         while collected_for_label < wanted:
             batch_size = min(500, wanted - collected_for_label)
             req_kwargs = {"userId": "me", "labelIds": [label_id], "maxResults": batch_size}
@@ -430,13 +425,7 @@ def listar_mensagens_com_labels_botana(service, max_results: int = 1000, query: 
 
 def marcar_mensagem_com_label(service, msg_id: str, label_name: str | None = None, existing_label_ids=None, reprocessed: bool | None = None, when=None):
     try:
-        id_to_name, botana_ids = _botana_label_ids(service)
-        if reprocessed is None:
-            existing = set(existing_label_ids or [])
-            reprocessed = any(
-                str(id_to_name.get(label_id, "")).startswith(REPROCESS_LABEL_NAME)
-                for label_id in existing
-            )
+        _, botana_ids = _botana_label_ids(service)
         target_name = str(label_name or build_botana_label_name(reprocessed=bool(reprocessed), when=when)).strip()
         target_id = ensure_label(service, target_name)
         remove_ids = [label_id for label_id in botana_ids if label_id != target_id]

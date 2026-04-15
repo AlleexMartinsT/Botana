@@ -84,10 +84,10 @@ No `instances.json` do Hub, use:
 - Os cards `Reprocessar e-mails` e `Recuperar e-mails` agora mostram esse `?` ao lado do próprio título, em vez de deixar a ajuda solta abaixo dos campos.
 - O balão de ajuda desses `?` abre alinhado ao ícone e foi ajustado para não ser cortado pela lateral do painel.
 - Para mensagens mais antigas do que essa janela padrão, o caminho recomendado é `Recuperar e-mails`.
-- O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, para que labels datadas mais novas não fiquem escondidas atrás da label antiga `XML Processado Botana`.
+- O reprocessamento monta o lote olhando todas as labels do Botana dentro dessa janela, incluindo labels antigas/datadas ainda existentes no Gmail, para convergir tudo de volta para a label estável `XML Processado Botana`.
 - Depois de remarcar as labels, o Botana relê exatamente as mensagens selecionadas nesse reprocessamento, em vez de depender só do lote padrão do ciclo automático.
 - A recuperação de faltantes usa a mesma área visual de `Ações manuais`, mostrando o andamento da varredura e quantas mensagens combinaram com os filtros.
-- As labels do Gmail passaram a incluir a data no formato `DD/MM/AAAA`; no fluxo normal viram `XML Processado Botana - 07/04/2026` e, ao reprocessar, mudam para `XML Reprocessado Botana - 07/04/2026`.
+- O Botana voltou a usar uma label estável única no Gmail, `XML Processado Botana`; labels antigas/datadas continuam sendo reconhecidas e removidas automaticamente quando a mensagem passa de novo pelo fluxo.
 - Durante o reprocessamento, o painel mostra a fase atual, quantas mensagens já foram tratadas, quantas falharam e a data do item atual, sem repetir label anterior nem o e-mail completo na linha de resumo.
 - O reprocessamento também informa a janela real coberta pelo lote selecionado, mostrando de qual data mais recente até qual data mais antiga ele conseguiu ir com o limite pedido.
 - Ao concluir um reprocessamento com mensagens mais antigas ainda disponíveis, o painel abre um popup automático perguntando se você quer continuar do próximo lote; se confirmar, basta informar a quantidade adicional.
