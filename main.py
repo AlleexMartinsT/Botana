@@ -6529,6 +6529,7 @@ body{margin:0;min-height:100vh;font-family:'Lexend',Arial,sans-serif;background:
 .logout-btn{padding:7px 10px;border:1px solid rgba(255,244,234,.5);border-radius:8px;background:rgba(255,244,234,.12);color:#fff9f3;font-weight:700;cursor:pointer}
 .logout-btn:hover{background:rgba(255,244,234,.2)}
 .hub-back-btn{margin-right:8px}
+@media print{#backHubBtn,.hub-back-btn,#hub-back-button{display:none!important}}
 .status-pill{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;font-size:.76rem;font-weight:700;border:1px solid}
 .ok{background:#e8f6ea;color:#2e7d32;border-color:#b6dfbf}
 .off{background:#fff3e0;color:#8b4f19;border-color:#f2c8a3}
@@ -7339,8 +7340,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <div class="watch-days-title">Filtrar em dias:</div>
           <div class="watch-days-grid">
             <div class="watch-days-field">
-              <label>Global</label>
-              <input id="wWatchDays" type="number" min="1" max="7" value="7"/>
+              <input id="wWatchDays" type="number" min="1" max="7" value="7" aria-label="Filtrar em dias"/>
             </div>
           </div>
         </div>
@@ -9584,6 +9584,7 @@ th,td{border:1px solid #c9a17f;padding:5px 6px;text-align:center;vertical-align:
 th{background:#f6e3d0;color:#4e2c18}
 tr:nth-child(even) td{background:#fff7ef}
 td{word-break:break-word}
+@media print{#backHubBtn,.hub-back-btn,#hub-back-button{display:none!important}}
 </style>
 </head>
 <body>
