@@ -172,12 +172,14 @@ No `instances.json` do Hub, use:
 
 - A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.
 - Linhas marcadas como `BAIXADO`, `BAIXADA`, `ESTORNADO` ou `ESTORNADA` em qualquer coluna relevante da linha, inclusive quando o texto cair fora da coluna de `Status`, são ignoradas na aba `Prazos`.
-- O painel separa boletos próximos do vencimento e depósitos atrasados, usando dias úteis e filtros customizáveis de `1` a `7`.
-- Por padrão, boletos entram quando vencem em até `7` dias úteis e depósitos entram quando estão atrasados há pelo menos `7` dias úteis.
+- O painel usa um único filtro global de dias úteis, customizável de `1` a `7`, aplicado a boletos próximos do vencimento e depósitos atrasados.
+- Por padrão, o limite global é de `7` dias úteis.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
 - A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos atrasados e depósitos atrasados.
 - A aba `Prazos` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), no mesmo padrão da `Conferência`.
-- Os filtros de `Prazos` agora se dividem em uma caixa `Filtrar em dias:` com os campos compactos de `Boletos` e `Depósitos`, alinhada na mesma linha de `Origem` e do botão `Atualizar relação`.
+- Os filtros de `Prazos` agora usam uma caixa compacta `Filtrar em dias:` com campo global, filtro de `Situação`, `Origem` e o botão `Atualizar relação`.
+- O filtro de `Situação` permite exibir só `A vencer`, `Vence hoje`, `Vencido` ou `Depósito atrasado`.
+- O botão `Imprimir` abre uma seleção vertical de colunas, marcada por padrão, e envia a relação filtrada para o diálogo nativo de impressão do navegador/Windows.
 - A grade principal de `Prazos` agora usa `Tabulator`, com paginação local, filtros por coluna e fallback para a tabela HTML antiga se a biblioteca não carregar.
 - Ao recarregar `Prazos`, a relação anterior fica coberta por uma tela de loading enquanto a nova leitura das planilhas está em andamento.
 - A grade de `Prazos` também preserva a página atual quando a mesma consulta é atualizada, evitando reset desnecessário da paginação durante recargas equivalentes.

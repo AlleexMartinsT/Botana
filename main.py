@@ -4393,11 +4393,8 @@ def _watch_boleto_status_payload(dias_uteis: int) -> tuple[str, str, str]:
     return "erro", "Vencido", _format_days_label(atraso, future=False)
 
 
-def _gerar_relacao_pendencias(
-    boletos_dias: int, depositos_dias: int, empresa_filter: str = "todos"
-) -> dict:
-    boleto_limit = max(1, min(7, _audit_safe_int(boletos_dias, 7)))
-    deposito_limit = max(1, min(7, _audit_safe_int(depositos_dias, 7)))
+def _gerar_relacao_pendencias(dias_limite: int, empresa_filter: str = "todos") -> dict:
+    dias_limit = max(1, min(7, _audit_safe_int(dias_limite, 7)))
     empresa = _normalize_audit_empresa(empresa_filter)
     linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa)
     hoje = datetime.now().date()
@@ -4423,7 +4420,7 @@ def _gerar_relacao_pendencias(
         venc_date = venc_dt.date()
         dias_uteis = _business_days_distance(hoje, venc_date)
         if tipo == "boleto":
-            if dias_uteis > boleto_limit:
+            if dias_uteis > dias_limit:
                 continue
             status, status_label, dias_label = _watch_boleto_status_payload(dias_uteis)
             if dias_uteis > 0:
@@ -4432,7 +4429,7 @@ def _gerar_relacao_pendencias(
                 resumo["boletos_vencidos"] += 1
             tipo_label = "Boleto"
         else:
-            if dias_uteis > -deposito_limit:
+            if dias_uteis > -dias_limit:
                 continue
             atraso = abs(dias_uteis)
             status = "erro"
@@ -4501,7 +4498,11 @@ def _gerar_relacao_pendencias(
     return {
         "summary": resumo,
         "meta": {**meta, "loaded_at": datetime.now().isoformat(), "empresa": empresa},
-        "limits": {"boletos_dias": boleto_limit, "depositos_dias": deposito_limit},
+        "limits": {
+            "dias": dias_limit,
+            "boletos_dias": dias_limit,
+            "depositos_dias": dias_limit,
+        },
         "items": itens,
     }
 
@@ -6837,13 +6838,16 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-row.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed .tabulator-cell{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
-.watch-filters{display:grid;grid-template-columns:minmax(320px,380px) minmax(150px,180px) minmax(180px,200px);gap:10px 12px;align-items:end;justify-content:center;max-width:940px;margin:0 auto}
-.watch-days-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;min-height:72px;padding:10px 12px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
+.watch-filters{display:grid;grid-template-columns:minmax(150px,170px) minmax(170px,190px) minmax(150px,180px) minmax(180px,200px);gap:10px 12px;align-items:end;justify-content:center;max-width:940px;margin:0 auto}
+.watch-days-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;width:min(170px,100%);min-height:72px;padding:8px 10px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
 .watch-days-title{width:100%;text-align:center;font-weight:700;color:#5c341c;font-size:.86rem}
-.watch-days-grid{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end}
+.watch-days-grid{width:100%;display:flex;justify-content:center;align-items:end}
 .watch-days-field{display:flex;flex-direction:column;align-items:center;justify-content:center}
 .watch-days-field label{width:100%;text-align:center}
-.watch-days-field input{width:52px;min-width:52px;text-align:center}
+.watch-days-field input{width:58px;min-width:58px;text-align:center}
+.watch-situation-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(190px,100%);min-height:72px}
+.watch-situation-wrap label{width:100%;text-align:center}
+.watch-situation-wrap select{width:min(190px,100%);text-align:center}
 .watch-run-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(200px,100%);min-height:72px}
 .watch-run-wrap label{width:100%;text-align:center;visibility:hidden}
 .watch-run-wrap button{width:min(200px,100%)}
@@ -6883,9 +6887,11 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-badge{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;font-size:.72rem;font-weight:700;border:1px solid transparent}
 .watch-badge.aviso{background:#fff3dd;color:#8b5a00;border-color:#e7bf6e}
 .watch-badge.erro{background:#fde7ea;color:#a61d2d;border-color:#dc3545}
-.watch-pop{position:fixed;inset:0;z-index:99998;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.68);backdrop-filter:blur(3px);padding:20px}
+.watch-pop,.watch-print-pop{position:fixed;inset:0;z-index:99998;display:none;align-items:center;justify-content:center;background:rgba(22,10,5,.68);backdrop-filter:blur(3px);padding:20px}
 .watch-pop.show{display:flex}
+.watch-print-pop.show{display:flex}
 .watch-pop-box{width:min(920px,94vw);max-height:min(82vh,760px);overflow:hidden;display:grid;grid-template-rows:auto auto auto 1fr;background:linear-gradient(180deg,#fff9f3,#fff2e5);border:1px solid #efc9a3;border-radius:16px;box-shadow:0 18px 42px rgba(20,10,4,.22)}
+.watch-print-box{width:min(520px,94vw);max-height:min(82vh,680px);overflow:hidden;display:grid;grid-template-rows:auto auto 1fr auto;background:linear-gradient(180deg,#fff9f3,#fff2e5);border:1px solid #efc9a3;border-radius:16px;box-shadow:0 18px 42px rgba(20,10,4,.22)}
 .watch-pop-head{position:relative;display:flex;justify-content:center;align-items:center;gap:12px;padding:14px 16px 10px;border-bottom:1px solid #efd6bf}
 .watch-pop-head h4{margin:0;color:#5f341a;text-align:center}
 .watch-pop-close{position:absolute;right:16px;top:10px;border:1px solid #d7ab82;background:#fff7ef;color:#6d3b1a;border-radius:10px;padding:6px 10px;cursor:pointer;font-weight:700}
@@ -6903,6 +6909,12 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .watch-pop-state.loading{color:#a25b18;font-weight:700}
 .watch-pop-results{padding:0 16px 16px;overflow:auto}
 .watch-pop-empty{border:1px dashed #e0b68c;border-radius:12px;background:#fffaf6;padding:16px;text-align:center;color:#6b4126}
+.watch-print-text{padding:12px 16px 0;text-align:center;color:#6b4126;font-size:.84rem;line-height:1.45}
+.watch-print-columns{display:grid;gap:8px;overflow:auto;padding:14px 16px}
+.watch-print-option{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid #e7c4a5;border-radius:10px;background:#fffaf6;color:#5f341a;font-size:.86rem;font-weight:700}
+.watch-print-option input{width:16px;height:16px;flex:0 0 auto;accent-color:#cf8a4c}
+.watch-print-actions{display:flex;align-items:center;justify-content:center;gap:8px;flex-wrap:wrap;padding:0 16px 16px}
+.watch-print-actions button{width:auto}
 .watch-pop-table{width:100%;min-width:760px;border-collapse:collapse;font-size:.8rem;table-layout:fixed;border:1px solid #ddb38d;background:#fffdfb}
 .watch-pop-table th,.watch-pop-table td{border:1px solid #e7c4a5;padding:7px 8px;text-align:center;vertical-align:middle;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .watch-pop-table th{position:sticky;top:0;background:#fff1e3;color:#5c341c;z-index:1;border-bottom:2px solid #cf9c73}
@@ -6933,7 +6945,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-fields input{width:min(110px,100%);text-align:center}
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:minmax(260px,360px) minmax(180px,200px)}.hist-run-wrap{grid-column:1 / -1}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(280px,360px) minmax(150px,180px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:minmax(260px,360px) minmax(180px,200px)}.hist-run-wrap{grid-column:1 / -1}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(150px,170px) minmax(170px,190px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-title{font-size:1.38rem}.hist-filters{grid-template-columns:1fr}.hist-search-row{flex-direction:column;align-items:center}.hist-search-field{min-width:0;width:100%}.hist-search-row select,.hist-search-field input{width:min(240px,100%)}.hist-run-wrap{grid-column:auto}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-days-grid{grid-template-columns:1fr}.watch-run-wrap{grid-column:auto}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
 </style>
 <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
@@ -7327,14 +7339,20 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
           <div class="watch-days-title">Filtrar em dias:</div>
           <div class="watch-days-grid">
             <div class="watch-days-field">
-              <label>Boletos</label>
-              <input id="wBoletoDays" type="number" min="1" max="7" value="7"/>
-            </div>
-            <div class="watch-days-field">
-              <label>Depósitos</label>
-              <input id="wDepositoDays" type="number" min="1" max="7" value="7"/>
+              <label>Global</label>
+              <input id="wWatchDays" type="number" min="1" max="7" value="7"/>
             </div>
           </div>
+        </div>
+        <div class="watch-situation-wrap">
+          <label for="watchSituacaoFilter">Situa&ccedil;&atilde;o</label>
+          <select id="watchSituacaoFilter" onchange="applyWatchSituacaoFilter()">
+            <option value="todos">Todas</option>
+            <option value="a_vencer">A vencer</option>
+            <option value="vence_hoje">Vence hoje</option>
+            <option value="vencido">Vencido</option>
+            <option value="deposito_atrasado">Dep&oacute;sito atrasado</option>
+          </select>
         </div>
         <div class="audit-source-wrap">
           <label>Origem</label>
@@ -7357,6 +7375,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       </div>
       <div class="watch-actions">
         <button type="button" class="sec" onclick="openWatchSearchModal()">Buscar boletos em aberto</button>
+        <button type="button" class="sec" onclick="openWatchPrintModal()">Imprimir</button>
       </div>
       <div class="watch-toolbar">
         <div id="watchStatus" class="watch-state">Pronto para consultar.</div>
@@ -7428,6 +7447,21 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
     <div id="watchSearchState" class="watch-pop-state">Digite um nome para consultar boletos em aberto.</div>
     <div id="watchSearchResults" class="watch-pop-results">
       <div class="watch-pop-empty">Nenhuma busca executada ainda.</div>
+    </div>
+  </div>
+</div>
+<div id="watchPrintModal" class="watch-print-pop" onclick="closeWatchPrintModal(event)">
+  <div class="watch-print-box" onclick="event.stopPropagation()">
+    <div class="watch-pop-head">
+      <h4>Imprimir prazos</h4>
+      <button type="button" class="watch-pop-close" onclick="closeWatchPrintModal()">Fechar</button>
+    </div>
+    <div class="watch-print-text">Marque as colunas que devem sair na impress&atilde;o.</div>
+    <div id="watchPrintColumnList" class="watch-print-columns"></div>
+    <div class="watch-print-actions">
+      <button type="button" class="sec" onclick="setWatchPrintColumns(true)">Marcar todas</button>
+      <button type="button" class="sec" onclick="setWatchPrintColumns(false)">Limpar</button>
+      <button id="watchPrintConfirmBtn" type="button" onclick="printDueWatch()">Imprimir</button>
     </div>
   </div>
 </div>
@@ -8150,6 +8184,18 @@ let _auditSort={key:'',dir:'asc'};
 let _auditTable=null;
 let _historyTable=null;
 let _watchTable=null;
+let _watchRawItems=[];
+let _watchFilteredItems=[];
+const _watchPrintColumns=[
+  {key:'tipo',title:'Tipo',value:(it)=>it.tipo_label||'-'},
+  {key:'situacao',title:'Situa\u00e7\u00e3o',value:(it)=>it.status_label||'-'},
+  {key:'vencimento',title:'Vencimento',value:(it)=>_fmtAuditDate(it.vencimento)||'-'},
+  {key:'dias',title:'Dias \u00fateis',value:(it)=>it.dias_label||'-'},
+  {key:'cliente',title:'Cliente',value:(it)=>it._cliente_view||it.cliente||it.descricao||'-'},
+  {key:'nf',title:'NF',value:(it)=>it.nf||'-'},
+  {key:'valor',title:'Valor',value:(it)=>_fmtMoney(it.valor)},
+  {key:'aba',title:'Aba',value:(it)=>it._local_view||it.local||it.aba||'-'},
+];
 let _historyGridStateKey='';
 let _historyActiveRequestKey='';
 let _watchGridStateKey='';
@@ -9258,6 +9304,49 @@ async function loadParcelAudit(silent=false){
     _setAuditLoading(false,'Falha ao conferir as planilhas.');
   }
 }
+function _watchSituationKey(value){
+  let text=String(value||'').trim();
+  try{text=text.normalize('NFD').replace(/[\u0300-\u036f]/g,'');}catch(_){}
+  const key=text.toLowerCase();
+  if(!key||key==='todos')return 'todos';
+  if(key==='a vencer')return 'a_vencer';
+  if(key==='vence hoje')return 'vence_hoje';
+  if(key==='vencido')return 'vencido';
+  if(key==='deposito atrasado')return 'deposito_atrasado';
+  return key.replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'');
+}
+function _getWatchSituacao(){
+  const el=document.getElementById('watchSituacaoFilter');
+  return _watchSituationKey(el&&el.value||'todos');
+}
+function _filterWatchItemsBySituacao(items){
+  const selected=_getWatchSituacao();
+  const arr=Array.isArray(items)?items:[];
+  if(selected==='todos')return arr.slice();
+  return arr.filter((it)=>_watchSituationKey(it&&it.status_label||'')===selected);
+}
+function _watchSummaryFromItems(items){
+  const out={total_itens:0,boletos_a_vencer:0,boletos_vencidos:0,depositos_atrasados:0};
+  (Array.isArray(items)?items:[]).forEach((it)=>{
+    if(!it)return;
+    out.total_itens+=1;
+    if(String(it.tipo||'')==='deposito'){
+      out.depositos_atrasados+=1;
+      return;
+    }
+    if(_watchSituationKey(it.status_label||'')==='a_vencer')out.boletos_a_vencer+=1;
+    else out.boletos_vencidos+=1;
+  });
+  return out;
+}
+function _applyWatchFilters(){
+  _watchFilteredItems=_filterWatchItemsBySituacao(_watchRawItems);
+  _setWatchSummary(_watchSummaryFromItems(_watchFilteredItems));
+  _renderDueWatch(_watchFilteredItems);
+}
+function applyWatchSituacaoFilter(){
+  _applyWatchFilters();
+}
 function _setWatchSummary(summary){
   const s=summary||{};
   [['watchK1','total_itens'],['watchK2','boletos_a_vencer'],['watchK3','boletos_vencidos'],['watchK4','depositos_atrasados']].forEach(([id,key])=>{
@@ -9387,12 +9476,13 @@ function _renderDueWatch(items){
   if(_historyHasTabulator()){
     const table=_ensureWatchTabulator(arr);
     if(table){
-      const resetState=_watchGridStateKey!==_watchActiveRequestKey;
+      const displayStateKey=String(_watchActiveRequestKey||'')+'|situacao='+_getWatchSituacao();
+      const resetState=_watchGridStateKey!==displayStateKey;
       _toggleWatchRenderMode(true);
       _setTabulatorDataPreservingState(table,arr,{resetState}).catch((err)=>{
         console.warn('Falha ao atualizar grade de prazos:',err);
       });
-      _watchGridStateKey=_watchActiveRequestKey;
+      _watchGridStateKey=displayStateKey;
       return;
     }
   }
@@ -9413,30 +9503,138 @@ function _renderDueWatch(items){
     body.appendChild(tr);
   });
 }
+function _currentWatchRowsForPrint(){
+  let tableTried=false;
+  if(_historyHasTabulator()&&_watchTable){
+    try{
+      tableTried=true;
+      const activeRows=typeof _watchTable.getRows==='function'?_watchTable.getRows('active'):[];
+      const data=activeRows.map((row)=>row&&typeof row.getData==='function'?row.getData():null).filter(Boolean);
+      return data;
+    }catch(_){}
+    try{
+      tableTried=true;
+      const data=typeof _watchTable.getData==='function'?_watchTable.getData('active'):[];
+      if(Array.isArray(data))return data;
+    }catch(_){}
+  }
+  if(tableTried)return [];
+  return _prepareWatchRows(_watchFilteredItems);
+}
+function _renderWatchPrintColumnList(){
+  const box=document.getElementById('watchPrintColumnList');
+  if(!box)return;
+  box.innerHTML=_watchPrintColumns.map((col)=>{
+    return `<label class="watch-print-option"><input class="watch-print-col" type="checkbox" value="${_esc(col.key)}" checked><span>${_esc(col.title)}</span></label>`;
+  }).join('');
+}
+function openWatchPrintModal(){
+  const rows=_currentWatchRowsForPrint();
+  if(!rows.length){
+    alert('Nao ha dados de Prazos para imprimir.');
+    return;
+  }
+  _renderWatchPrintColumnList();
+  const modal=document.getElementById('watchPrintModal');
+  if(modal)modal.classList.add('show');
+}
+function closeWatchPrintModal(event){
+  if(event&&event.target&&event.target.id!=='watchPrintModal')return;
+  const modal=document.getElementById('watchPrintModal');
+  if(modal)modal.classList.remove('show');
+}
+function setWatchPrintColumns(checked){
+  document.querySelectorAll('#watchPrintColumnList .watch-print-col').forEach((el)=>{
+    el.checked=!!checked;
+  });
+}
+function _selectedWatchPrintColumns(){
+  const selected=new Set(Array.from(document.querySelectorAll('#watchPrintColumnList .watch-print-col:checked')).map((el)=>String(el.value||'')));
+  return _watchPrintColumns.filter((col)=>selected.has(col.key));
+}
+function _watchPrintMeta(rows){
+  const dias=((document.getElementById('wWatchDays')||{}).value||'7').trim()||'7';
+  const situacaoEl=document.getElementById('watchSituacaoFilter');
+  const situacao=situacaoEl&&situacaoEl.selectedOptions&&situacaoEl.selectedOptions[0]?situacaoEl.selectedOptions[0].textContent:'Todas';
+  const empresaMap={mva:'MVA',eh:'EH',todos:'MVA + EH'};
+  return {
+    generatedAt:new Date().toLocaleString('pt-BR'),
+    dias,
+    situacao:String(situacao||'Todas').trim()||'Todas',
+    empresa:empresaMap[_getWatchEmpresa()]||'MVA + EH',
+    total:Array.isArray(rows)?rows.length:0,
+  };
+}
+function _buildWatchPrintHtml(rows,columns){
+  const meta=_watchPrintMeta(rows);
+  const head=columns.map((col)=>`<th>${_esc(col.title)}</th>`).join('');
+  const body=rows.map((row)=>`<tr>${columns.map((col)=>`<td>${_esc(col.value(row))}</td>`).join('')}</tr>`).join('');
+  return `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Botana - Prazos</title>
+<style>
+@page{size:A4 landscape;margin:10mm}
+body{font-family:Arial,Helvetica,sans-serif;color:#2f241c;margin:0}
+h1{font-size:18px;margin:0 0 6px;text-align:center}
+.meta{font-size:11px;text-align:center;margin-bottom:12px;color:#5d493b}
+table{width:100%;border-collapse:collapse;font-size:10px}
+th,td{border:1px solid #c9a17f;padding:5px 6px;text-align:center;vertical-align:middle}
+th{background:#f6e3d0;color:#4e2c18}
+tr:nth-child(even) td{background:#fff7ef}
+td{word-break:break-word}
+</style>
+</head>
+<body>
+<h1>Botana - Prazos</h1>
+<div class="meta">Origem: ${_esc(meta.empresa)} | Dias: ${_esc(meta.dias)} | Situa&ccedil;&atilde;o: ${_esc(meta.situacao)} | Itens: ${_esc(meta.total)} | Gerado em: ${_esc(meta.generatedAt)}</div>
+<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
+</body>
+</html>`;
+}
+function printDueWatch(){
+  const rows=_currentWatchRowsForPrint();
+  if(!rows.length){
+    alert('Nao ha dados de Prazos para imprimir.');
+    return;
+  }
+  const columns=_selectedWatchPrintColumns();
+  if(!columns.length){
+    alert('Marque pelo menos uma coluna para imprimir.');
+    return;
+  }
+  const printWindow=window.open('','botana-watch-print','width=1100,height=800,resizable=yes,scrollbars=yes');
+  if(!printWindow){
+    alert('Nao foi possivel abrir a janela de impressao.');
+    return;
+  }
+  printWindow.document.open();
+  printWindow.document.write(_buildWatchPrintHtml(rows,columns));
+  printWindow.document.close();
+  closeWatchPrintModal();
+  setTimeout(()=>{try{printWindow.focus();printWindow.print();}catch(_){}},250);
+}
 async function loadDueWatch(silent=false){
   const reqId=++_watchLoadSeq;
   const showLoading=!silent||_activeTab==='watch';
-  const boletoInput=document.getElementById('wBoletoDays');
-  const depositoInput=document.getElementById('wDepositoDays');
+  const diasInput=document.getElementById('wWatchDays');
   const empresa=_getWatchEmpresa();
-  let boletoDays=Math.max(1,Math.min(7,Number((boletoInput&&boletoInput.value)||7)||7));
-  let depositoDays=Math.max(1,Math.min(7,Number((depositoInput&&depositoInput.value)||7)||7));
-  if(boletoInput)boletoInput.value=String(boletoDays);
-  if(depositoInput)depositoInput.value=String(depositoDays);
+  let watchDays=Math.max(1,Math.min(7,Number((diasInput&&diasInput.value)||7)||7));
+  if(diasInput)diasInput.value=String(watchDays);
   if(showLoading){
     _resetWatchSummary();
     _setWatchLoading(true,'Lendo planilhas...');
   }
   try{
     const p=new URLSearchParams();
-    p.set('boleto_dias',String(boletoDays));
-    p.set('deposito_dias',String(depositoDays));
+    p.set('dias',String(watchDays));
     p.set('empresa',empresa);
     _watchActiveRequestKey=p.toString();
     const j=await api('/api/prazos?'+p.toString());
     if(reqId!==_watchLoadSeq)return;
-    _setWatchSummary(j&&j.summary||{});
-    _renderDueWatch(j&&j.items||[]);
+    _watchRawItems=Array.isArray(j&&j.items)?j.items:[];
+    _applyWatchFilters();
     const meta=(j&&j.meta)||{};
     const loadedAt=String(meta.loaded_at||'').trim();
     const linhas=Number(meta.linhas_lidas||0);
@@ -9447,6 +9645,8 @@ async function loadDueWatch(silent=false){
     _setWatchLoading(false,statusMsg);
   }catch(err){
     if(reqId!==_watchLoadSeq)return;
+    _watchRawItems=[];
+    _watchFilteredItems=[];
     _setWatchSummary({});
     if(_historyHasTabulator()&&_watchTable){
       try{_watchTable.setData([]);}catch(_){}
@@ -9593,7 +9793,7 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 document.querySelectorAll('#hFilterMode,#hAtDate,#hAtDateTime,#hVenc,#hNf,#hCliente,#hAba').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 ['aMode','aMonth','aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleAuditFieldKeydown);});
 ['aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
-document.querySelectorAll('#wBoletoDays,#wDepositoDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
+document.querySelectorAll('#wWatchDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();searchOpenBoletos();}});});
 ['continueReprocessQty'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();continueReprocessFromPrompt();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{_renderWatchSearchSuggestions(el.value||'');});el.addEventListener('focus',()=>{_renderWatchSearchSuggestions(el.value||'');});});
@@ -9603,6 +9803,12 @@ window.addEventListener('keydown',(e)=>{
   if(continueModal&&continueModal.classList.contains('show')){
     e.preventDefault();
     closeContinueReprocessModal();
+    return;
+  }
+  const printModal=document.getElementById('watchPrintModal');
+  if(printModal&&printModal.classList.contains('show')){
+    e.preventDefault();
+    closeWatchPrintModal();
     return;
   }
   const modal=document.getElementById('watchSearchModal');
@@ -10188,19 +10394,19 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 qs = parse_qs(parsed.query or "")
                 empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
                 try:
-                    boleto_dias = int((qs.get("boleto_dias", ["7"])[0] or "7").strip())
-                except Exception:
-                    boleto_dias = 7
-                try:
-                    deposito_dias = int(
-                        (qs.get("deposito_dias", ["7"])[0] or "7").strip()
+                    dias = int(
+                        (
+                            qs.get("dias")
+                            or qs.get("boleto_dias")
+                            or qs.get("deposito_dias")
+                            or ["7"]
+                        )[0]
+                        or "7"
                     )
                 except Exception:
-                    deposito_dias = 7
+                    dias = 7
                 try:
-                    resultado = _gerar_relacao_pendencias(
-                        boleto_dias, deposito_dias, empresa
-                    )
+                    resultado = _gerar_relacao_pendencias(dias, empresa)
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})
