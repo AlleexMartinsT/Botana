@@ -4393,8 +4393,23 @@ def _watch_boleto_status_payload(dias_uteis: int) -> tuple[str, str, str]:
     return "erro", "Vencido", _format_days_label(atraso, future=False)
 
 
-def _gerar_relacao_pendencias(dias_limite: int, empresa_filter: str = "todos") -> dict:
+def _watch_range_date(value: str):
+    parsed = _parse_audit_date(str(value or "").strip())
+    return parsed.date() if parsed else None
+
+
+def _gerar_relacao_pendencias(
+    dias_limite: int,
+    empresa_filter: str = "todos",
+    data_inicio: str = "",
+    data_fim: str = "",
+) -> dict:
     dias_limit = max(1, min(7, _audit_safe_int(dias_limite, 7)))
+    range_inicio = _watch_range_date(data_inicio)
+    range_fim = _watch_range_date(data_fim)
+    range_ativo = bool(range_inicio or range_fim)
+    if range_inicio and range_fim and range_fim < range_inicio:
+        range_inicio, range_fim = range_fim, range_inicio
     empresa = _normalize_audit_empresa(empresa_filter)
     linhas, meta = _load_audit_sheet_rows(empresa_filter=empresa)
     hoje = datetime.now().date()
@@ -4419,24 +4434,46 @@ def _gerar_relacao_pendencias(dias_limite: int, empresa_filter: str = "todos") -
             continue
         venc_date = venc_dt.date()
         dias_uteis = _business_days_distance(hoje, venc_date)
+        if range_ativo:
+            if range_inicio and venc_date < range_inicio:
+                continue
+            if range_fim and venc_date > range_fim:
+                continue
         if tipo == "boleto":
-            if dias_uteis > dias_limit:
+            if not range_ativo and dias_uteis > dias_limit:
                 continue
             status, status_label, dias_label = _watch_boleto_status_payload(dias_uteis)
-            if dias_uteis > 0:
-                resumo["boletos_a_vencer"] += 1
-            else:
-                resumo["boletos_vencidos"] += 1
             tipo_label = "Boleto"
         else:
-            if dias_uteis > -dias_limit:
-                continue
-            atraso = abs(dias_uteis)
-            status = "erro"
-            status_label = "Dep\u00f3sito atrasado"
-            dias_label = _format_days_label(atraso, future=False)
+            if range_ativo:
+                if dias_uteis > 0:
+                    status = "aviso"
+                    status_label = "A vencer"
+                    dias_label = _format_days_label(dias_uteis, future=True)
+                elif dias_uteis == 0:
+                    status = "erro"
+                    status_label = "Vence hoje"
+                    dias_label = "Hoje"
+                else:
+                    atraso = abs(dias_uteis)
+                    status = "erro"
+                    status_label = "Dep\u00f3sito atrasado"
+                    dias_label = _format_days_label(atraso, future=False)
+            else:
+                if dias_uteis > -dias_limit:
+                    continue
+                atraso = abs(dias_uteis)
+                status = "erro"
+                status_label = "Dep\u00f3sito atrasado"
+                dias_label = _format_days_label(atraso, future=False)
             tipo_label = "Dep\u00f3sito"
+
+        if status_label == "Dep\u00f3sito atrasado":
             resumo["depositos_atrasados"] += 1
+        elif status_label == "A vencer":
+            resumo["boletos_a_vencer"] += 1
+        else:
+            resumo["boletos_vencidos"] += 1
 
         valor_base = _audit_safe_float(item.get("valor_parcela"))
         if valor_base <= 0:
@@ -4502,6 +4539,8 @@ def _gerar_relacao_pendencias(dias_limite: int, empresa_filter: str = "todos") -
             "dias": dias_limit,
             "boletos_dias": dias_limit,
             "depositos_dias": dias_limit,
+            "data_inicio": range_inicio.isoformat() if range_inicio else "",
+            "data_fim": range_fim.isoformat() if range_fim else "",
         },
         "items": itens,
     }
@@ -6839,13 +6878,13 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 #auditTableTabulator .tabulator-row.audit-row-local-removed:hover{background:rgba(240,198,79,.22)!important}
 #auditTableTabulator .tabulator-row.audit-row-local-removed .tabulator-cell{border-bottom:3px solid #f0c64f!important}
 .watch-title{text-align:center}
-.watch-filters{display:grid;grid-template-columns:minmax(150px,170px) minmax(170px,190px) minmax(150px,180px) minmax(180px,200px);gap:10px 12px;align-items:end;justify-content:center;max-width:940px;margin:0 auto}
-.watch-days-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;width:min(170px,100%);min-height:72px;padding:8px 10px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
+.watch-filters{display:grid;grid-template-columns:minmax(300px,340px) minmax(170px,190px) minmax(150px,180px) minmax(180px,200px);gap:10px 12px;align-items:end;justify-content:center;max-width:1120px;margin:0 auto}
+.watch-days-card{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:8px;width:min(340px,100%);min-height:72px;padding:8px 10px;border:1px solid #e4c6a7;border-radius:12px;background:linear-gradient(180deg,#fff9f3,#fff2e6)}
 .watch-days-title{width:100%;text-align:center;font-weight:700;color:#5c341c;font-size:.86rem}
-.watch-days-grid{width:100%;display:flex;justify-content:center;align-items:end}
+.watch-days-grid{width:100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:end}
 .watch-days-field{display:flex;flex-direction:column;align-items:center;justify-content:center}
 .watch-days-field label{width:100%;text-align:center}
-.watch-days-field input{width:58px;min-width:58px;text-align:center}
+.watch-days-field input{width:min(142px,100%);min-width:0;text-align:center}
 .watch-situation-wrap{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:4px;width:min(190px,100%);min-height:72px}
 .watch-situation-wrap label{width:100%;text-align:center}
 .watch-situation-wrap select{width:min(190px,100%);text-align:center}
@@ -6946,7 +6985,7 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
 .continue-pop-fields input{width:min(110px,100%);text-align:center}
 .continue-pop-actions{display:flex;gap:10px;justify-content:center;align-items:center;flex-wrap:wrap}
 @media(max-width:900px){.lists{grid-template-columns:1fr}.cfg-grid{grid-template-columns:1fr}.cfg-fields{grid-template-columns:1fr 1fr}.reproc-grid{grid-template-columns:1fr}.recover-grid{grid-template-columns:1fr;grid-template-areas:"mode" "filter" "action"}.recover-mode-box,.recover-period-box,.recover-range-box,.recover-list-box,.recover-action-box{max-width:none}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr 1fr}}
-@media(max-width:1020px){.hist-filters{grid-template-columns:minmax(260px,360px) minmax(180px,200px)}.hist-run-wrap{grid-column:1 / -1}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(150px,170px) minmax(170px,190px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
+@media(max-width:1020px){.hist-filters{grid-template-columns:minmax(260px,360px) minmax(180px,200px)}.hist-run-wrap{grid-column:1 / -1}.audit-filters{grid-template-columns:1fr 1fr}.audit-summary{grid-template-columns:1fr 1fr 1fr}.watch-filters{grid-template-columns:minmax(300px,340px) minmax(170px,190px);}.watch-run-wrap{grid-column:1 / -1}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}}
 @media(max-width:640px){.top-right{flex-direction:column;align-items:flex-end}.hist-title{font-size:1.38rem}.hist-filters{grid-template-columns:1fr}.hist-search-row{flex-direction:column;align-items:center}.hist-search-field{min-width:0;width:100%}.hist-search-row select,.hist-search-field input{width:min(240px,100%)}.hist-run-wrap{grid-column:auto}.audit-filters{grid-template-columns:1fr}.audit-summary{grid-template-columns:1fr 1fr}.watch-filters{grid-template-columns:1fr}.watch-days-grid{grid-template-columns:1fr}.watch-run-wrap{grid-column:auto}.watch-summary{grid-template-columns:1fr 1fr}.recover-range-fields,.recover-period-fields{grid-template-columns:1fr}.recover-action-row{flex-direction:column;align-items:center}.watch-pop-search{grid-template-columns:1fr}.watch-pop-close{position:static}.continue-pop-fields,.continue-pop-actions{flex-direction:column;align-items:center}.help-tip-bubble{right:-8px;width:min(280px,calc(100vw - 24px));max-width:min(280px,calc(100vw - 24px))}}
 </style>
 <script src="https://unpkg.com/tabulator-tables@6.3.1/dist/js/tabulator.min.js"></script>
@@ -7330,17 +7369,22 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
   <section id="tabWatch" class="tab-panel hidden">
     <section class="card" style="margin-top:10px">
       <div class="title-help-row">
-        <h3 class="watch-title">Boletos e depósitos próximos do limite</h3>
+        <h3 class="watch-title">Boletos e depósitos por vencimento</h3>
         <span class="help-tip" tabindex="0" aria-label="Ajuda dos prazos">?
-          <span class="help-tip-bubble">A relação lê diretamente as planilhas e lista apenas títulos com Status vazio ou A Receber. Boletos futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</span>
+          <span class="help-tip-bubble">A relação lê diretamente as planilhas e lista apenas títulos com Status vazio ou A Receber dentro do intervalo de vencimento escolhido. Itens futuros ficam em amarelo; itens que vencem hoje ou já passaram ficam em vermelho.</span>
         </span>
       </div>
       <div class="watch-filters">
         <div class="watch-days-card">
-          <div class="watch-days-title">Filtrar em dias:</div>
+          <div class="watch-days-title">Filtrar por data:</div>
           <div class="watch-days-grid">
             <div class="watch-days-field">
-              <input id="wWatchDays" type="number" min="1" max="7" value="7" aria-label="Filtrar em dias"/>
+              <label for="wDateStart">Data inicial</label>
+              <input id="wDateStart" type="date"/>
+            </div>
+            <div class="watch-days-field">
+              <label for="wDateEnd">Data final</label>
+              <input id="wDateEnd" type="date"/>
             </div>
           </div>
         </div>
@@ -7382,8 +7426,8 @@ input,select{padding:8px;margin-top:4px;border:1px solid #d6b18f;border-radius:8
       </div>
       <div class="watch-summary">
         <div class="k"><div id="watchK1" class="n">0</div><div class="t">Total na relação</div></div>
-        <div class="k"><div id="watchK2" class="n">0</div><div class="t">Boletos a vencer</div></div>
-        <div class="k"><div id="watchK3" class="n">0</div><div class="t">Boletos atrasados</div></div>
+        <div class="k"><div id="watchK2" class="n">0</div><div class="t">A vencer</div></div>
+        <div class="k"><div id="watchK3" class="n">0</div><div class="t">Vence hoje/vencidos</div></div>
         <div class="k"><div id="watchK4" class="n">0</div><div class="t">Depósitos atrasados</div></div>
       </div>
       <div class="table-wrap has-loading" style="margin-top:10px">
@@ -9330,12 +9374,13 @@ function _watchSummaryFromItems(items){
   (Array.isArray(items)?items:[]).forEach((it)=>{
     if(!it)return;
     out.total_itens+=1;
-    if(String(it.tipo||'')==='deposito'){
+    const situation=_watchSituationKey(it.status_label||'');
+    if(situation==='deposito_atrasado'){
       out.depositos_atrasados+=1;
       return;
     }
-    if(_watchSituationKey(it.status_label||'')==='a_vencer')out.boletos_a_vencer+=1;
-    else out.boletos_vencidos+=1;
+    if(situation==='a_vencer')out.boletos_a_vencer+=1;
+    else if(situation==='vence_hoje'||situation==='vencido')out.boletos_vencidos+=1;
   });
   return out;
 }
@@ -9552,14 +9597,51 @@ function _selectedWatchPrintColumns(){
   const selected=new Set(Array.from(document.querySelectorAll('#watchPrintColumnList .watch-print-col:checked')).map((el)=>String(el.value||'')));
   return _watchPrintColumns.filter((col)=>selected.has(col.key));
 }
+function _dateToInputValue(date){
+  const d=date instanceof Date&&!Number.isNaN(date.getTime())?date:new Date();
+  const y=d.getFullYear();
+  const m=String(d.getMonth()+1).padStart(2,'0');
+  const day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function _inputValueToDate(value){
+  const match=String(value||'').trim().match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);
+  if(!match)return null;
+  const d=new Date(Number(match[1]),Number(match[2])-1,Number(match[3]));
+  return Number.isNaN(d.getTime())?null:d;
+}
+function _addCalendarDays(value,days){
+  const base=_inputValueToDate(value)||new Date();
+  base.setDate(base.getDate()+Number(days||0));
+  return _dateToInputValue(base);
+}
+function _ensureWatchDateRange(){
+  const startEl=document.getElementById('wDateStart');
+  const endEl=document.getElementById('wDateEnd');
+  let start=String(startEl&&startEl.value||'').trim();
+  let end=String(endEl&&endEl.value||'').trim();
+  if(!start)start=_dateToInputValue(new Date());
+  if(!end)end=_addCalendarDays(start,7);
+  if(start>end){
+    const prev=start;
+    start=end;
+    end=prev;
+  }
+  if(startEl)startEl.value=start;
+  if(endEl)endEl.value=end;
+  return {start,end};
+}
+function initWatchDateRange(){
+  _ensureWatchDateRange();
+}
 function _watchPrintMeta(rows){
-  const dias=((document.getElementById('wWatchDays')||{}).value||'7').trim()||'7';
+  const range=_ensureWatchDateRange();
   const situacaoEl=document.getElementById('watchSituacaoFilter');
   const situacao=situacaoEl&&situacaoEl.selectedOptions&&situacaoEl.selectedOptions[0]?situacaoEl.selectedOptions[0].textContent:'Todas';
   const empresaMap={mva:'MVA',eh:'EH',todos:'MVA + EH'};
   return {
     generatedAt:new Date().toLocaleString('pt-BR'),
-    dias,
+    periodo:`${_fmtAuditDate(range.start)} ate ${_fmtAuditDate(range.end)}`,
     situacao:String(situacao||'Todas').trim()||'Todas',
     empresa:empresaMap[_getWatchEmpresa()]||'MVA + EH',
     total:Array.isArray(rows)?rows.length:0,
@@ -9589,7 +9671,7 @@ td{word-break:break-word}
 </head>
 <body>
 <h1>Botana - Prazos</h1>
-<div class="meta">Origem: ${_esc(meta.empresa)} | Dias: ${_esc(meta.dias)} | Situa&ccedil;&atilde;o: ${_esc(meta.situacao)} | Itens: ${_esc(meta.total)} | Gerado em: ${_esc(meta.generatedAt)}</div>
+<div class="meta">Origem: ${_esc(meta.empresa)} | Per&iacute;odo: ${_esc(meta.periodo)} | Situa&ccedil;&atilde;o: ${_esc(meta.situacao)} | Itens: ${_esc(meta.total)} | Gerado em: ${_esc(meta.generatedAt)}</div>
 <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
 </body>
 </html>`;
@@ -9619,17 +9701,16 @@ function printDueWatch(){
 async function loadDueWatch(silent=false){
   const reqId=++_watchLoadSeq;
   const showLoading=!silent||_activeTab==='watch';
-  const diasInput=document.getElementById('wWatchDays');
   const empresa=_getWatchEmpresa();
-  let watchDays=Math.max(1,Math.min(7,Number((diasInput&&diasInput.value)||7)||7));
-  if(diasInput)diasInput.value=String(watchDays);
+  const range=_ensureWatchDateRange();
   if(showLoading){
     _resetWatchSummary();
     _setWatchLoading(true,'Lendo planilhas...');
   }
   try{
     const p=new URLSearchParams();
-    p.set('dias',String(watchDays));
+    p.set('data_inicio',range.start);
+    p.set('data_fim',range.end);
     p.set('empresa',empresa);
     _watchActiveRequestKey=p.toString();
     const j=await api('/api/prazos?'+p.toString());
@@ -9794,7 +9875,7 @@ async function logout(){await fetch(_url('/api/logout'),{method:'POST',headers:{
 document.querySelectorAll('#hFilterMode,#hAtDate,#hAtDateTime,#hVenc,#hNf,#hCliente,#hAba').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadHistory();}});});
 ['aMode','aMonth','aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',handleAuditFieldKeydown);});
 ['aNfStart','aNfEnd'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{el.value=_recoverDigits(el.value||'');});});
-document.querySelectorAll('#wWatchDays').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
+document.querySelectorAll('#wDateStart,#wDateEnd').forEach(el=>{el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();loadDueWatch();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();searchOpenBoletos();}});});
 ['continueReprocessQty'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();continueReprocessFromPrompt();}});});
 ['watchSearchInput'].forEach(id=>{const el=document.getElementById(id);if(!el)return;el.addEventListener('input',()=>{_renderWatchSearchSuggestions(el.value||'');});el.addEventListener('focus',()=>{_renderWatchSearchSuggestions(el.value||'');});});
@@ -9826,6 +9907,7 @@ if(_auditMonthEl&&!_auditMonthEl.value){
 setHistoryEmpresa(_getHistoryEmpresa(),false);
 toggleHistoryFilter();
 setAuditEmpresa(_getAuditEmpresa(),false);
+initWatchDateRange();
 setWatchEmpresa(_getWatchEmpresa(),false);
 toggleRecoverFilters();
 _renderRecoverNfTags();
@@ -10394,6 +10476,8 @@ def start_server(host: str, port: int, no_loop: bool = False):
             if parsed.path == "/api/prazos":
                 qs = parse_qs(parsed.query or "")
                 empresa = (qs.get("empresa", ["todos"])[0] or "todos").strip()
+                data_inicio = (qs.get("data_inicio", [""])[0] or "").strip()
+                data_fim = (qs.get("data_fim", [""])[0] or "").strip()
                 try:
                     dias = int(
                         (
@@ -10407,7 +10491,9 @@ def start_server(host: str, port: int, no_loop: bool = False):
                 except Exception:
                     dias = 7
                 try:
-                    resultado = _gerar_relacao_pendencias(dias, empresa)
+                    resultado = _gerar_relacao_pendencias(
+                        dias, empresa, data_inicio, data_fim
+                    )
                     return _json_response(self, 200, {"ok": True, **resultado})
                 except Exception as e:
                     return _json_response(self, 500, {"ok": False, "message": str(e)})

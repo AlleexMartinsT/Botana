@@ -172,12 +172,12 @@ No `instances.json` do Hub, use:
 
 - A aba `Prazos` lê diretamente as planilhas e lista apenas títulos com `Status` vazio ou `A Receber`.
 - Linhas marcadas como `BAIXADO`, `BAIXADA`, `ESTORNADO` ou `ESTORNADA` em qualquer coluna relevante da linha, inclusive quando o texto cair fora da coluna de `Status`, são ignoradas na aba `Prazos`.
-- O painel usa um único filtro global de dias úteis, customizável de `1` a `7`, aplicado a boletos próximos do vencimento e depósitos atrasados.
-- Por padrão, o limite global é de `7` dias úteis.
+- O painel usa um intervalo de datas inclusivo (`Data inicial` até `Data final`) aplicado ao vencimento dos títulos.
+- Por padrão, o intervalo inicial vai da data atual até 7 dias corridos à frente.
 - Linhas amarelas representam boletos que ainda vão vencer; linhas vermelhas representam itens que vencem hoje ou já passaram da data.
-- A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais de boletos a vencer, boletos atrasados e depósitos atrasados.
+- A aba atualiza ao abrir, mostra estado de carregamento fora da tabela e resume totais a vencer, vencidos/vence hoje e depósitos atrasados.
 - A aba `Prazos` agora também tem o filtro de origem por ícone (`MVA`, `EH` ou ambas), no mesmo padrão da `Conferência`.
-- Os filtros de `Prazos` agora usam uma caixa compacta `Filtrar em dias:` com campo global, filtro de `Situação`, `Origem` e o botão `Atualizar relação`.
+- Os filtros de `Prazos` agora usam uma caixa compacta `Filtrar por data:` com intervalo inicial/final, filtro de `Situação`, `Origem` e o botão `Atualizar relação`.
 - O filtro de `Situação` permite exibir só `A vencer`, `Vence hoje`, `Vencido` ou `Depósito atrasado`.
 - O botão `Imprimir` abre uma seleção vertical de colunas, marcada por padrão, e envia a relação filtrada para o diálogo nativo de impressão do navegador/Windows.
 - A grade principal de `Prazos` agora usa `Tabulator`, com paginação local, filtros por coluna e fallback para a tabela HTML antiga se a biblioteca não carregar.
