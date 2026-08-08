@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 
+from sheet_registry import sheet_ids_from_environment
+
 # Carrega variaveis de ambiente do arquivo .env dentro de secrets/
 dotenv_path = os.path.join(os.path.dirname(__file__), "secrets", ".env")
 load_dotenv(dotenv_path)
@@ -33,14 +35,7 @@ GOOGLE_CREDENTIALS_SHEETS = os.path.join(
 )
 
 # Planilhas
-PLANILHAS = {
-    "MVA": {
-        "2026": os.getenv("SHEET_MVA_2026"),
-    },
-    "EH": {
-        "2026": os.getenv("SHEET_EH_2026"),
-    },
-}
+PLANILHAS = sheet_ids_from_environment(os.environ)
 
 # CNPJs
 CNPJ_MVA = os.getenv("CNPJ_MVA")
