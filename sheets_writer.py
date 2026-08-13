@@ -154,6 +154,13 @@ def _has_matching_parcela(rows, nf, parcel_identity):
     return False
 
 
+def _next_financial_row(rows):
+    for row_number, row in enumerate(rows[1:], start=2):
+        if not any(str(cell or "").strip() for cell in row[:9]):
+            return row_number
+    return max(2, len(rows) + 1)
+
+
 def atualizarPlanilha(planilha, dados, gc):
     """
     Atualiza a planilha Google Sheets com os dados extraidos do XML.
@@ -298,10 +305,11 @@ def atualizarPlanilha(planilha, dados, gc):
 
     for _ in range(3):
         try:
-            aba.append_row(
-                novaLinha,
+            target_range = f"A{_next_financial_row(linhas)}:I{_next_financial_row(linhas)}"
+            aba.update(
+                [novaLinha],
+                range_name=target_range,
                 value_input_option="USER_ENTERED",
-                table_range="A:I",
             )
             linhas_confirmadas = _read_worksheet_values(aba)
             if not _has_matching_parcela(linhas_confirmadas, nf, incoming_identity):

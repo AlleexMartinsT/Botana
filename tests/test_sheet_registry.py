@@ -22,7 +22,7 @@ class _WorksheetThatLosesAppendedRows:
             ]
         ]
 
-    def append_row(self, values, value_input_option, table_range):
+    def update(self, values, range_name, value_input_option):
         return {"updates": {"updatedRows": 1}}
 
 
@@ -39,14 +39,17 @@ class _WorksheetThatPersistsRows:
                 "Valor Parcela",
             ]
         ]
-        self.append_ranges = []
+        self.updated_ranges = []
 
     def get_values(self):
         return self.rows
 
-    def append_row(self, values, value_input_option, table_range):
-        self.append_ranges.append(table_range)
-        self.rows.append(values)
+    def update(self, values, range_name, value_input_option):
+        self.updated_ranges.append(range_name)
+        row_number = int(range_name.split(":", 1)[0][1:])
+        while len(self.rows) < row_number:
+            self.rows.append([])
+        self.rows[row_number - 1] = values[0]
         return {"updates": {"updatedRows": 1}}
 
 
@@ -103,7 +106,7 @@ class SheetRegistryTests(unittest.TestCase):
         self.assertFalse(resultado["inserted"])
         self.assertEqual(resultado["reason"], "append_unverified")
 
-    def test_appends_into_the_main_financial_table_and_confirms_the_row(self):
+    def test_writes_into_the_first_empty_row_of_the_main_financial_table(self):
         aba = _WorksheetThatPersistsRows()
         planilha = _HorizonteSpreadsheet(aba)
         planilha.url = f"https://docs.google.com/spreadsheets/d/{PLANILHAS['EH']['2026']}"
@@ -121,4 +124,4 @@ class SheetRegistryTests(unittest.TestCase):
 
         self.assertTrue(resultado["ok"])
         self.assertTrue(resultado["inserted"])
-        self.assertEqual(aba.append_ranges, ["A:I"])
+        self.assertEqual(aba.updated_ranges, ["A2:I2"])
