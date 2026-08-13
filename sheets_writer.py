@@ -132,6 +132,28 @@ def _parcel_identity(parcela, vencimento="", valor_parcela=0):
     return f"raw:{raw}" if raw else ""
 
 
+def _read_worksheet_values(worksheet):
+    for _ in range(3):
+        try:
+            return worksheet.get_values()
+        except gspread.exceptions.APIError as exc:
+            if "429" in str(exc):
+                apiCooldown()
+                continue
+            raise
+    return []
+
+
+def _has_matching_parcela(rows, nf, parcel_identity):
+    for row in rows:
+        if len(row) < 7 or str(row[2] or "").strip() != nf:
+            continue
+        row_identity = _parcel_identity(row[5], row[0], row[6])
+        if parcel_identity and row_identity == parcel_identity:
+            return True
+    return False
+
+
 def atualizarPlanilha(planilha, dados, gc):
     """
     Atualiza a planilha Google Sheets com os dados extraidos do XML.
@@ -217,26 +239,14 @@ def atualizarPlanilha(planilha, dados, gc):
             ]
         )
 
-    linhas = []
-    for _ in range(3):
-        try:
-            linhas = aba.get_all_values()
-            break
-        except gspread.exceptions.APIError as e:
-            if "429" in str(e):
-                apiCooldown()
-                continue
-            raise e
+    linhas = _read_worksheet_values(aba)
 
     incoming_identity = _parcel_identity(parcela, venc_str, valor_parcela)
     nf_existing_identities = set()
     duplicado = False
 
     for linha in linhas:
-        if len(linha) < 7:
-            continue
-        nf_linha = str(linha[2] or "").strip()
-        if nf_linha != nf:
+        if len(linha) < 7 or str(linha[2] or "").strip() != nf:
             continue
         existing_identity = _parcel_identity(linha[5], linha[0], linha[6])
         if existing_identity:
@@ -288,7 +298,19 @@ def atualizarPlanilha(planilha, dados, gc):
 
     for _ in range(3):
         try:
-            aba.append_row(novaLinha, value_input_option="USER_ENTERED")
+            aba.append_row(
+                novaLinha,
+                value_input_option="USER_ENTERED",
+                table_range="A:I",
+            )
+            linhas_confirmadas = _read_worksheet_values(aba)
+            if not _has_matching_parcela(linhas_confirmadas, nf, incoming_identity):
+                logger.error(
+                    "NF %s nao foi confirmada na aba %s apos o append; historico nao sera gravado.",
+                    nf,
+                    nomeAba,
+                )
+                return _result(False, False, "append_unverified", **base_payload)
             logger.info(f"{cor_ciano}NF {nf} registrada em '{planilha.title}' / aba '{nomeAba}'{reset}")
             return _result(True, True, "inserted", **base_payload)
         except gspread.exceptions.APIError as e:

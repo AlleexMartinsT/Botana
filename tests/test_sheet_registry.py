@@ -1,6 +1,65 @@
 import unittest
 
+from config import PLANILHAS
 from sheet_registry import DEFAULT_SHEET_IDS, sheet_ids_from_environment
+from sheets_writer import atualizarPlanilha
+
+
+class _WorksheetThatLosesAppendedRows:
+    def get_values(self):
+        return self.get_all_values()
+
+    def get_all_values(self):
+        return [
+            [
+                "Vencimento",
+                "Descrição",
+                "NF",
+                "Valor Total",
+                "Qtd Parcelas",
+                "Parcela",
+                "Valor Parcela",
+            ]
+        ]
+
+    def append_row(self, values, value_input_option, table_range):
+        return {"updates": {"updatedRows": 1}}
+
+
+class _WorksheetThatPersistsRows:
+    def __init__(self):
+        self.rows = [
+            [
+                "Vencimento",
+                "Descrição",
+                "NF",
+                "Valor Total",
+                "Qtd Parcelas",
+                "Parcela",
+                "Valor Parcela",
+            ]
+        ]
+        self.append_ranges = []
+
+    def get_values(self):
+        return self.rows
+
+    def append_row(self, values, value_input_option, table_range):
+        self.append_ranges.append(table_range)
+        self.rows.append(values)
+        return {"updates": {"updatedRows": 1}}
+
+
+class _HorizonteSpreadsheet:
+    title = "Contas a Receber Horizonte 2026"
+    url = "https://docs.google.com/spreadsheets/d/eh-2026"
+
+    def __init__(self, worksheet):
+        self._worksheet = worksheet
+
+    def worksheet(self, title):
+        self.last_requested_worksheet = title
+        return self._worksheet
 
 
 class SheetRegistryTests(unittest.TestCase):
@@ -24,3 +83,42 @@ class SheetRegistryTests(unittest.TestCase):
             sheet_ids["EH"]["2027"],
             DEFAULT_SHEET_IDS["EH"]["2027"],
         )
+
+    def test_does_not_report_inserted_when_the_appended_row_cannot_be_read_back(self):
+        planilha = _HorizonteSpreadsheet(_WorksheetThatLosesAppendedRows())
+        planilha.url = f"https://docs.google.com/spreadsheets/d/{PLANILHAS['EH']['2026']}"
+        dados = {
+            "vencimento": "11/09/2026",
+            "descricao": "FACOM BLT 7505-9",
+            "nf": "22618",
+            "qtdParcelas": 1,
+            "numParcela": "1ª Parcela",
+            "valorTotal": 206.0,
+            "valorParcela": 206.0,
+        }
+
+        resultado = atualizarPlanilha(planilha, dados, gc=None)
+
+        self.assertFalse(resultado["ok"])
+        self.assertFalse(resultado["inserted"])
+        self.assertEqual(resultado["reason"], "append_unverified")
+
+    def test_appends_into_the_main_financial_table_and_confirms_the_row(self):
+        aba = _WorksheetThatPersistsRows()
+        planilha = _HorizonteSpreadsheet(aba)
+        planilha.url = f"https://docs.google.com/spreadsheets/d/{PLANILHAS['EH']['2026']}"
+        dados = {
+            "vencimento": "11/09/2026",
+            "descricao": "FACOM BLT 7505-9",
+            "nf": "22618",
+            "qtdParcelas": 1,
+            "numParcela": "1ª Parcela",
+            "valorTotal": 206.0,
+            "valorParcela": 206.0,
+        }
+
+        resultado = atualizarPlanilha(planilha, dados, gc=None)
+
+        self.assertTrue(resultado["ok"])
+        self.assertTrue(resultado["inserted"])
+        self.assertEqual(aba.append_ranges, ["A:I"])
